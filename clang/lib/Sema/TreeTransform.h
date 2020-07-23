@@ -963,6 +963,12 @@ public:
   /// By default, builds a new TypeOfType with the given underlying type.
   QualType RebuildTypeOfType(QualType Underlying);
 
+  /// Build a new jy_typeof(expr) type.
+  ///
+  /// By default, performs semantic analysis when building the typeof type.
+  /// Subclasses may override this routine to provide different behavior.
+  QualType RebuildJennyTypeOfExprType(Expr *Underlying, SourceLocation Loc);
+
   /// Build a new unary transform type.
   QualType RebuildUnaryTransformType(QualType BaseType,
                                      UnaryTransformType::UTTKind UKind,
@@ -6023,6 +6029,39 @@ QualType TreeTransform<Derived>::TransformTypeOfType(TypeLocBuilder &TLB,
   NewTL.setLParenLoc(TL.getLParenLoc());
   NewTL.setRParenLoc(TL.getRParenLoc());
   NewTL.setUnderlyingTInfo(New_Under_TI);
+
+  return Result;
+}
+
+template<typename Derived>
+QualType TreeTransform<Derived>::TransformJennyTypeOfExprType(TypeLocBuilder &TLB,
+                                                      JennyTypeOfExprTypeLoc TL) {
+  // jy_typeof expressions are not potentially evaluated contexts
+  EnterExpressionEvaluationContext Unevaluated(
+      SemaRef, Sema::ExpressionEvaluationContext::Unevaluated,
+      Sema::ReuseLambdaContextDecl);
+
+  ExprResult E = getDerived().TransformExpr(TL.getUnderlyingExpr());
+  if (E.isInvalid())
+    return QualType();
+
+  E = SemaRef.HandleExprEvaluationContextForTypeof(E.get());
+  if (E.isInvalid())
+    return QualType();
+
+  QualType Result = TL.getType();
+  if (getDerived().AlwaysRebuild() ||
+      E.get() != TL.getUnderlyingExpr()) {
+    Result = getDerived().RebuildJennyTypeOfExprType(E.get(), TL.getTypeofLoc());
+    if (Result.isNull())
+      return QualType();
+  }
+  else E.get();
+
+  JennyTypeOfExprTypeLoc NewTL = TLB.push<JennyTypeOfExprTypeLoc>(Result);
+  NewTL.setTypeofLoc(TL.getTypeofLoc());
+  NewTL.setLParenLoc(TL.getLParenLoc());
+  NewTL.setRParenLoc(TL.getRParenLoc());
 
   return Result;
 }
@@ -14071,6 +14110,12 @@ QualType TreeTransform<Derived>::RebuildTypeOfExprType(Expr *E,
 template<typename Derived>
 QualType TreeTransform<Derived>::RebuildTypeOfType(QualType Underlying) {
   return SemaRef.Context.getTypeOfType(Underlying);
+}
+
+template<typename Derived>
+QualType TreeTransform<Derived>::RebuildJennyTypeOfExprType(Expr *E,
+                                                       SourceLocation Loc) {
+  return SemaRef.BuildJennyTypeofExprType(E, Loc);
 }
 
 template<typename Derived>

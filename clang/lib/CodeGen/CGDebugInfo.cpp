@@ -3038,6 +3038,9 @@ static QualType UnwrapTypeForDebugInfo(QualType T, const ASTContext &C) {
     case Type::TypeOf:
       T = cast<TypeOfType>(T)->getUnderlyingType();
       break;
+    case Type::JennyTypeOfExpr:
+      T = cast<JennyTypeOfExprType>(T)->getUnderlyingExpr()->getType();
+      break;
     case Type::Decltype:
       T = cast<DecltypeType>(T)->getUnderlyingType();
       break;
@@ -3250,6 +3253,7 @@ llvm::DIType *CGDebugInfo::CreateTypeNode(QualType Ty, llvm::DIFile *Unit) {
   case Type::SubstTemplateTypeParm:
   case Type::TypeOfExpr:
   case Type::TypeOf:
+  case Type::JennyTypeOfExpr:
   case Type::Decltype:
   case Type::UnaryTransform:
   case Type::PackExpansion:

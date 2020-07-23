@@ -1125,6 +1125,7 @@ public:
   }
 
   SUGARED_TYPE_CLASS(TypeOfExpr)
+  SUGARED_TYPE_CLASS(JennyTypeOfExpr)
   SUGARED_TYPE_CLASS(TypeOf)
   SUGARED_TYPE_CLASS(Decltype)
   SUGARED_TYPE_CLASS(UnaryTransform)
@@ -3987,6 +3988,7 @@ bool Type::canHaveNullability(bool ResultIfUnknown) const {
 
   // Dependent types that could instantiate to pointer types.
   case Type::UnresolvedUsing:
+  case Type::JennyTypeOfExpr:
   case Type::TypeOfExpr:
   case Type::TypeOf:
   case Type::Decltype:

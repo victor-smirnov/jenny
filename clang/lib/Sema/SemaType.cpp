@@ -1613,6 +1613,17 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
     }
     break;
   }
+  case DeclSpec::TST_jennyTypeofExpr: {
+    Expr *E = DS.getRepAsExpr();
+    assert(E && "Didn't get an expression for jy_typeof?");
+    // TypeQuals handled by caller.
+    Result = S.BuildJennyTypeofExprType(E, DS.getTypeSpecTypeLoc());
+    if (Result.isNull()) {
+      Result = Context.IntTy;
+      declarator.setInvalidType(true);
+    }
+    break;
+  }
   case DeclSpec::TST_decltype: {
     Expr *E = DS.getRepAsExpr();
     assert(E && "Didn't get an expression for decltype?");
@@ -5593,6 +5604,7 @@ TypeSourceInfo *Sema::GetTypeForDeclarator(Declarator &D, Scope *S) {
 
   TypeSourceInfo *ReturnTypeInfo = nullptr;
   QualType T = GetDeclSpecTypeForDeclarator(state, ReturnTypeInfo);
+
   if (D.isPrototypeContext() && getLangOpts().ObjCAutoRefCount)
     inferARCWriteback(state, T);
 
@@ -5799,6 +5811,13 @@ namespace {
       Sema::GetTypeFromParser(DS.getRepAsType(), &TInfo);
       TL.setUnderlyingTInfo(TInfo);
     }
+
+    void VisitJennyTypeOfExprTypeLoc(JennyTypeOfExprTypeLoc TL) {
+      assert(DS.getTypeSpecType() == DeclSpec::TST_jennyTypeofExpr);
+      TL.setTypeofLoc(DS.getTypeSpecTypeLoc());
+      TL.setParensRange(DS.getTypeofParensRange());
+    }
+
     void VisitUnaryTransformTypeLoc(UnaryTransformTypeLoc TL) {
       // FIXME: This holds only because we only have one unary transform.
       assert(DS.getTypeSpecType() == DeclSpec::TST_underlyingType);
@@ -8736,6 +8755,20 @@ QualType Sema::BuildTypeofExprType(Expr *E, SourceLocation Loc) {
       DiagnoseUseOfDecl(TT->getDecl(), E->getExprLoc());
   }
   return Context.getTypeOfExprType(E);
+}
+
+QualType Sema::BuildJennyTypeofExprType(Expr *E, SourceLocation Loc) {
+  assert(!E->hasPlaceholderType() && "unexpected placeholder");
+
+  if (!getLangOpts().CPlusPlus && E->refersToBitField())
+    Diag(E->getExprLoc(), diag::err_sizeof_alignof_typeof_bitfield) << 2;
+
+  if (!E->isTypeDependent()) {
+    QualType T = E->getType();
+    if (const TagType *TT = T->getAs<TagType>())
+      DiagnoseUseOfDecl(TT->getDecl(), E->getExprLoc());
+  }
+  return Context.getJennyTypeOfExprType(E);
 }
 
 /// getDecltypeForExpr - Given an expr, will return the decltype for

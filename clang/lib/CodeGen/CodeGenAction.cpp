@@ -45,6 +45,8 @@
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Transforms/IPO/Internalize.h"
 
+#include "clang/Jenny/JennyProcessor.h"
+
 #include <memory>
 using namespace clang;
 using namespace llvm;
@@ -1013,7 +1015,9 @@ CodeGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
     CI.getPreprocessor().addPPCallbacks(std::move(Callbacks));
   }
 
-  return std::move(Result);
+  auto jennyProcessor = JennyProcessor::create(CI, std::move(Result));
+
+  return std::move(jennyProcessor);
 }
 
 static void BitcodeInlineAsmDiagHandler(const llvm::SMDiagnostic &SM,

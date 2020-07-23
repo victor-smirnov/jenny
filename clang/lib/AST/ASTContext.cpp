@@ -3395,6 +3395,7 @@ QualType ASTContext::getVariableArrayDecayedType(QualType type) const {
   case Type::UnresolvedUsing:
   case Type::TypeOfExpr:
   case Type::TypeOf:
+  case Type::JennyTypeOfExpr:
   case Type::Decltype:
   case Type::UnaryTransform:
   case Type::DependentName:

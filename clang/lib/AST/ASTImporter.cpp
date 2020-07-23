@@ -360,6 +360,7 @@ namespace clang {
     ExpectedType VisitParenType(const ParenType *T);
     ExpectedType VisitTypedefType(const TypedefType *T);
     ExpectedType VisitTypeOfExprType(const TypeOfExprType *T);
+    ExpectedType VisitJennyTypeOfExprType(const JennyTypeOfExprType *T);
     // FIXME: DependentTypeOfExprType
     ExpectedType VisitTypeOfType(const TypeOfType *T);
     ExpectedType VisitDecltypeType(const DecltypeType *T);
@@ -1310,6 +1311,15 @@ ExpectedType ASTNodeImporter::VisitTypeOfExprType(const TypeOfExprType *T) {
 
   return Importer.getToContext().getTypeOfExprType(*ToExprOrErr);
 }
+
+ExpectedType ASTNodeImporter::VisitJennyTypeOfExprType(const JennyTypeOfExprType *T) {
+  ExpectedExpr ToExprOrErr = import(T->getUnderlyingExpr());
+  if (!ToExprOrErr)
+    return ToExprOrErr.takeError();
+
+  return Importer.getToContext().getJennyTypeOfExprType(*ToExprOrErr);
+}
+
 
 ExpectedType ASTNodeImporter::VisitTypeOfType(const TypeOfType *T) {
   ExpectedType ToUnderlyingTypeOrErr = import(T->getUnderlyingType());

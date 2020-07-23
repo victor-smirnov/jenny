@@ -1064,6 +1064,15 @@ public:
     VisitType(T);
   }
 
+  void VisitJennyTypeOfExprType(const JennyTypeOfExprType *T) {
+    AddStmt(T->getUnderlyingExpr());
+    Hash.AddBoolean(T->isSugared());
+    if (T->isSugared())
+      AddQualType(T->desugar());
+
+    VisitType(T);
+  }
+
   void VisitTypeWithKeyword(const TypeWithKeyword *T) {
     ID.AddInteger(T->getKeyword());
     VisitType(T);

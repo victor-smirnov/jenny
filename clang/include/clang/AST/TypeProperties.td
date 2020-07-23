@@ -399,6 +399,16 @@ let Class = TypeOfType in {
   }]>;
 }
 
+let Class = JennyTypeOfExprType in {
+  def : Property<"expression", ExprRef> {
+    let Read = [{ node->getUnderlyingExpr() }];
+  }
+
+  def : Creator<[{
+    return ctx.getJennyTypeOfExprType(expression);
+  }]>;
+}
+
 let Class = DecltypeType in {
   def : Property<"underlyingType", QualType> {
     let Read = [{ node->getUnderlyingType() }];

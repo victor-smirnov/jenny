@@ -1725,6 +1725,13 @@ bool CursorVisitor::VisitTypeOfTypeLoc(TypeOfTypeLoc TL) {
   return false;
 }
 
+
+bool CursorVisitor::VisitJennyTypeOfExprTypeLoc(JennyTypeOfExprTypeLoc TL) {
+  return Visit(MakeCXCursor(TL.getUnderlyingExpr(), StmtParent, TU));
+}
+
+
+
 bool CursorVisitor::VisitUnaryTransformTypeLoc(UnaryTransformTypeLoc TL) {
   if (TypeSourceInfo *TSInfo = TL.getUnderlyingTInfo())
     return Visit(TSInfo->getTypeLoc());

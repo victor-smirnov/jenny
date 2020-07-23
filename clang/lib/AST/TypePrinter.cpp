@@ -210,6 +210,7 @@ bool TypePrinter::canPrefixQualifiers(const Type *T,
     case Type::Typedef:
     case Type::TypeOfExpr:
     case Type::TypeOf:
+    case Type::JennyTypeOfExpr:
     case Type::Decltype:
     case Type::UnaryTransform:
     case Type::Record:
@@ -1040,6 +1041,17 @@ void TypePrinter::printTypeOfBefore(const TypeOfType *T, raw_ostream &OS) {
 }
 
 void TypePrinter::printTypeOfAfter(const TypeOfType *T, raw_ostream &OS) {}
+
+void TypePrinter::printJennyTypeOfExprBefore(const JennyTypeOfExprType *T,
+                                        raw_ostream &OS) {
+  OS << "jy_typeof ";
+  if (T->getUnderlyingExpr())
+    T->getUnderlyingExpr()->printPretty(OS, nullptr, Policy);
+  spaceBeforePlaceHolder(OS);
+}
+
+void TypePrinter::printJennyTypeOfExprAfter(const JennyTypeOfExprType *T,
+                                       raw_ostream &OS) {}
 
 void TypePrinter::printDecltypeBefore(const DecltypeType *T, raw_ostream &OS) {
   OS << "decltype(";

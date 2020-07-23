@@ -2250,7 +2250,14 @@ void Parser::ParseCXXSimpleTypeSpecifier(DeclSpec &DS) {
     ParseTypeofSpecifier(DS);
     DS.Finish(Actions, Policy);
     return;
+
+  // Jenny jy_typeof support.
+  case tok::kw_jy_typeof:
+      ParseJennyTypeofSpecifier(DS);
+      DS.Finish(Actions, Policy);
+      return;
   }
+
   ConsumeAnyToken();
   DS.SetRangeEnd(PrevTokLocation);
   DS.Finish(Actions, Policy);

@@ -356,6 +356,13 @@ void TypeLocWriter::VisitTypeOfTypeLoc(TypeOfTypeLoc TL) {
   Record.AddTypeSourceInfo(TL.getUnderlyingTInfo());
 }
 
+void TypeLocWriter::VisitJennyTypeOfExprTypeLoc(JennyTypeOfExprTypeLoc TL) {
+  Record.AddSourceLocation(TL.getTypeofLoc());
+  Record.AddSourceLocation(TL.getLParenLoc());
+  Record.AddSourceLocation(TL.getRParenLoc());
+}
+
+
 void TypeLocWriter::VisitDecltypeTypeLoc(DecltypeTypeLoc TL) {
   Record.AddSourceLocation(TL.getNameLoc());
 }

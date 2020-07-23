@@ -339,6 +339,9 @@ public:
   void VisitTypeOfExprType(const TypeOfExprType *T) {
     Visit(T->getUnderlyingExpr());
   }
+  void VisitJennyTypeOfExprType(const JennyTypeOfExprType *T) {
+    Visit(T->getUnderlyingExpr());
+  }
   void VisitDecltypeType(const DecltypeType *T) {
     Visit(T->getUnderlyingExpr());
   }

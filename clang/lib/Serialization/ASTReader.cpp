@@ -6626,6 +6626,13 @@ void TypeLocReader::VisitTypeOfTypeLoc(TypeOfTypeLoc TL) {
   TL.setUnderlyingTInfo(GetTypeSourceInfo());
 }
 
+void TypeLocReader::VisitJennyTypeOfExprTypeLoc(JennyTypeOfExprTypeLoc TL) {
+  TL.setTypeofLoc(readSourceLocation());
+  TL.setLParenLoc(readSourceLocation());
+  TL.setRParenLoc(readSourceLocation());
+}
+
+
 void TypeLocReader::VisitDecltypeTypeLoc(DecltypeTypeLoc TL) {
   TL.setNameLoc(readSourceLocation());
 }

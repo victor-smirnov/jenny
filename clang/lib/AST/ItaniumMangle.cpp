@@ -2114,6 +2114,7 @@ bool CXXNameMangler::mangleUnresolvedTypeOrSimpleId(QualType Ty,
   // (this last is not official yet)
   case Type::TypeOfExpr:
   case Type::TypeOf:
+  case Type::JennyTypeOfExpr:
   case Type::Decltype:
   case Type::TemplateTypeParm:
   case Type::UnaryTransform:
@@ -3522,6 +3523,13 @@ void CXXNameMangler::mangleType(const TypeOfExprType *T) {
   // FIXME: this is pretty unsatisfactory, but there isn't an obvious
   // "extension with parameters" mangling.
   Out << "u6typeof";
+}
+
+
+void CXXNameMangler::mangleType(const JennyTypeOfExprType *T) {
+  // FIXME: this is pretty unsatisfactory, but there isn't an obvious
+  // "extension with parameters" mangling.
+  Out << "u9jy_typeof";
 }
 
 void CXXNameMangler::mangleType(const DecltypeType *T) {

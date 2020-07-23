@@ -5959,6 +5959,10 @@ bool UnnamedLocalNoLinkageFinder::VisitTypeOfType(const TypeOfType* T) {
   return Visit(T->getUnderlyingType());
 }
 
+bool UnnamedLocalNoLinkageFinder::VisitJennyTypeOfExprType(const JennyTypeOfExprType*) {
+  return false;
+}
+
 bool UnnamedLocalNoLinkageFinder::VisitDecltypeType(const DecltypeType*) {
   return false;
 }

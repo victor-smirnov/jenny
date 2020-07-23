@@ -54,6 +54,7 @@
 #include "clang/Sema/SemaConcept.h"
 #include "clang/Sema/TypoCorrection.h"
 #include "clang/Sema/Weak.h"
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SetVector.h"
@@ -338,6 +339,8 @@ private:
 
 /// Sema - This implements semantic analysis and AST building for C.
 class Sema final {
+  friend class JennyProcessorImpl;
+
   Sema(const Sema &) = delete;
   void operator=(const Sema &) = delete;
 
@@ -2034,6 +2037,9 @@ public:
                              TagDecl *OwnedTagDecl = nullptr);
 
   QualType BuildTypeofExprType(Expr *E, SourceLocation Loc);
+
+  QualType BuildJennyTypeofExprType(Expr *E, SourceLocation Loc);
+
   /// If AsUnevaluated is false, E is treated as though it were an evaluated
   /// context, such as when building a type for decltype(auto).
   QualType BuildDecltypeType(Expr *E, SourceLocation Loc,

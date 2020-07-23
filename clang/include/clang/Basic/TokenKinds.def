@@ -447,6 +447,7 @@ KEYWORD(__auto_type                 , KEYALL)
 
 // GNU Extensions (outside impl-reserved namespace)
 KEYWORD(typeof                      , KEYGNU)
+KEYWORD(jy_typeof                   , KEYCXX)
 
 // MS Extensions
 KEYWORD(__FUNCDNAME__               , KEYMS)

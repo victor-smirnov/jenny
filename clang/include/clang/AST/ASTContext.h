@@ -200,6 +200,7 @@ class ASTContext : public RefCountedBase<ASTContext> {
   mutable llvm::ContextualFoldingSet<FunctionProtoType, ASTContext&>
     FunctionProtoTypes;
   mutable llvm::FoldingSet<DependentTypeOfExprType> DependentTypeOfExprTypes;
+  mutable llvm::FoldingSet<DependentJennyTypeOfExprType> DependentJennyTypeOfExprTypes;
   mutable llvm::FoldingSet<DependentDecltypeType> DependentDecltypeTypes;
   mutable llvm::FoldingSet<TemplateTypeParmType> TemplateTypeParmTypes;
   mutable llvm::FoldingSet<ObjCTypeParamType> ObjCTypeParamTypes;
@@ -1494,6 +1495,9 @@ public:
   /// GCC extension.
   QualType getTypeOfExprType(Expr *e) const;
   QualType getTypeOfType(QualType t) const;
+
+  /// Jenny extension
+  QualType getJennyTypeOfExprType(Expr *e) const;
 
   /// C++11 decltype.
   QualType getDecltypeType(Expr *e, QualType UnderlyingType) const;

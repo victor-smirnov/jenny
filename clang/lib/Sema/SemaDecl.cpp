@@ -5514,6 +5514,7 @@ static bool RebuildDeclaratorInCurrentInstantiation(Sema &S, Declarator &D,
   }
 
   case DeclSpec::TST_decltype:
+  case DeclSpec::TST_jennyTypeofExpr:
   case DeclSpec::TST_typeofExpr: {
     Expr *E = DS.getRepAsExpr();
     ExprResult Result = S.RebuildExprInCurrentInstantiation(E);

@@ -83,6 +83,7 @@ def AdjustedType : TypeNode<Type>, NeverCanonical;
 def DecayedType : TypeNode<AdjustedType>, NeverCanonical;
 def TypeOfExprType : TypeNode<Type>, NeverCanonicalUnlessDependent;
 def TypeOfType : TypeNode<Type>, NeverCanonicalUnlessDependent;
+def JennyTypeOfExprType : TypeNode<Type>, NeverCanonicalUnlessDependent;
 def DecltypeType : TypeNode<Type>, NeverCanonicalUnlessDependent;
 def UnaryTransformType : TypeNode<Type>, NeverCanonicalUnlessDependent;
 def TagType : TypeNode<Type, 1>;

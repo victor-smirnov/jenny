@@ -379,6 +379,7 @@ bool Declarator::isDeclarationOfFunction() const {
       return false;
 
     case TST_decltype:
+    case TST_jennyTypeofExpr:
     case TST_typeofExpr:
       if (Expr *E = DS.getRepAsExpr())
         return E->getType()->isFunctionType();
@@ -560,6 +561,7 @@ const char *DeclSpec::getSpecifierName(DeclSpec::TST T,
   case DeclSpec::TST_typename:    return "type-name";
   case DeclSpec::TST_typeofType:
   case DeclSpec::TST_typeofExpr:  return "typeof";
+  case DeclSpec::TST_jennyTypeofExpr:  return "jy_typeof";
   case DeclSpec::TST_auto:        return "auto";
   case DeclSpec::TST_auto_type:   return "__auto_type";
   case DeclSpec::TST_decltype:    return "(decltype)";

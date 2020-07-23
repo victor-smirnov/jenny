@@ -4488,6 +4488,52 @@ public:
   static bool classof(const Type *T) { return T->getTypeClass() == TypeOf; }
 };
 
+/// Represents a `jy_typeof` expression (a Jenny extension).
+class JennyTypeOfExprType : public Type {
+  Expr *TOExpr;
+  QualType resolvedType;
+
+protected:
+  friend class ASTContext; // ASTContext creates these.
+
+  JennyTypeOfExprType(Expr *E, QualType resolvedType, QualType can = QualType());
+
+public:
+  Expr *getUnderlyingExpr() const { return TOExpr; }
+
+  QualType getResolvedType() const {return resolvedType;}
+
+  /// Remove a single level of sugar.
+  QualType desugar() const;
+
+  /// Returns whether this type directly provides sugar.
+  bool isSugared() const;
+
+  static bool classof(const Type *T) { return T->getTypeClass() == JennyTypeOfExpr; }
+};
+
+
+/// Internal representation of canonical, dependent
+/// `jy_typeof(expr)` types.
+///
+/// This class is used internally by the ASTContext to manage
+/// canonical, dependent types, only. Clients will only see instances
+/// of this class via JennyTypeOfExprType nodes.
+class DependentJennyTypeOfExprType
+  : public JennyTypeOfExprType, public llvm::FoldingSetNode {
+  const ASTContext &Context;
+
+public:
+  DependentJennyTypeOfExprType(const ASTContext &Context, Expr *E);
+
+  void Profile(llvm::FoldingSetNodeID &ID) {
+    Profile(ID, Context, getUnderlyingExpr());
+  }
+
+  static void Profile(llvm::FoldingSetNodeID &ID, const ASTContext &Context,
+                      Expr *E);
+};
+
 /// Represents the type `decltype(expr)` (C++11).
 class DecltypeType : public Type {
   Expr *E;

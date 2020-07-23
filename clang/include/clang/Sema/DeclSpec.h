@@ -300,6 +300,7 @@ public:
   static const TST TST_typename = clang::TST_typename;
   static const TST TST_typeofType = clang::TST_typeofType;
   static const TST TST_typeofExpr = clang::TST_typeofExpr;
+  static const TST TST_jennyTypeofExpr = clang::TST_jennyTypeofExpr;
   static const TST TST_decltype = clang::TST_decltype;
   static const TST TST_decltype_auto = clang::TST_decltype_auto;
   static const TST TST_underlyingType = clang::TST_underlyingType;
@@ -416,7 +417,7 @@ private:
             T == TST_underlyingType || T == TST_atomic);
   }
   static bool isExprRep(TST T) {
-    return (T == TST_typeofExpr || T == TST_decltype || T == TST_extint);
+    return (T == TST_typeofExpr || T == TST_decltype || T == TST_extint || T == TST_jennyTypeofExpr);
   }
   static bool isTemplateIdRep(TST T) {
     return (T == TST_auto || T == TST_decltype_auto);

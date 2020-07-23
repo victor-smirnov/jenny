@@ -21,6 +21,7 @@ namespace clang {
   class ASTContext;
   class CodeCompleteConsumer;
   class Sema;
+  class CompilerInstance;
 
   /// Parse the entire file specified, notifying the ASTConsumer as
   /// the file is parsed.

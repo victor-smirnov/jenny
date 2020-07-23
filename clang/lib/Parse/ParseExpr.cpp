@@ -1535,6 +1535,7 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
   case tok::kw_void:
   case tok::kw_typename:
   case tok::kw_typeof:
+  case tok::kw_jy_typeof:
   case tok::kw___vector:
 #define GENERIC_IMAGE_TYPE(ImgType, Id) case tok::kw_##ImgType##_t:
 #include "clang/Basic/OpenCLImageTypes.def"
@@ -2259,7 +2260,7 @@ Parser::ParseExprAfterUnaryExprOrTypeTrait(const Token &OpTok,
                                            ParsedType &CastTy,
                                            SourceRange &CastRange) {
 
-  assert(OpTok.isOneOf(tok::kw_typeof, tok::kw_sizeof, tok::kw___alignof,
+  assert(OpTok.isOneOf(tok::kw_typeof, tok::kw_jy_typeof, tok::kw_sizeof, tok::kw___alignof,
                        tok::kw_alignof, tok::kw__Alignof, tok::kw_vec_step,
                        tok::kw___builtin_omp_required_simd_align) &&
          "Not a typeof/sizeof/alignof/vec_step expression!");
@@ -2290,7 +2291,7 @@ Parser::ParseExprAfterUnaryExprOrTypeTrait(const Token &OpTok,
     }
 
     isCastExpr = false;
-    if (OpTok.is(tok::kw_typeof) && !getLangOpts().CPlusPlus) {
+    if ((OpTok.is(tok::kw_typeof) || OpTok.is(tok::kw_jy_typeof)) && !getLangOpts().CPlusPlus) {
       Diag(Tok, diag::err_expected_after) << OpTok.getIdentifierInfo()
                                           << tok::l_paren;
       return ExprError();
@@ -2316,7 +2317,7 @@ Parser::ParseExprAfterUnaryExprOrTypeTrait(const Token &OpTok,
       return ExprEmpty();
     }
 
-    if (getLangOpts().CPlusPlus || OpTok.isNot(tok::kw_typeof)) {
+    if (getLangOpts().CPlusPlus || (OpTok.isNot(tok::kw_typeof) && OpTok.isNot(tok::kw_jy_typeof))) {
       // GNU typeof in C requires the expression to be parenthesized. Not so for
       // sizeof/alignof or in C++. Therefore, the parenthesized expression is
       // the start of a unary-expression, but doesn't include any postfix

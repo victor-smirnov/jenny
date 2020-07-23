@@ -3878,6 +3878,11 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       ParseTypeofSpecifier(DS);
       continue;
 
+    // Jenny typeof support.
+    case tok::kw_jy_typeof:
+      ParseJennyTypeofSpecifier(DS);
+      continue;
+
     case tok::annot_decltype:
       ParseDecltypeSpecifier(DS);
       continue;
@@ -4867,6 +4872,9 @@ bool Parser::isTypeSpecifierQualifier() {
     // GNU typeof support.
   case tok::kw_typeof:
 
+    // Jenny typeof support.
+  case tok::kw_jy_typeof:
+
     // type-specifiers
   case tok::kw_short:
   case tok::kw_long:
@@ -5098,6 +5106,9 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
 
     // GNU typeof support.
   case tok::kw_typeof:
+
+    // Jenny typeof support.
+  case tok::kw_jy_typeof:
 
     // GNU attributes.
   case tok::kw___attribute:
@@ -7124,6 +7135,74 @@ void Parser::ParseTypeofSpecifier(DeclSpec &DS) {
   unsigned DiagID;
   // Check for duplicate type specifiers (e.g. "int typeof(int)").
   if (DS.SetTypeSpecType(DeclSpec::TST_typeofExpr, StartLoc, PrevSpec,
+                         DiagID, Operand.get(),
+                         Actions.getASTContext().getPrintingPolicy()))
+    Diag(StartLoc, DiagID) << PrevSpec;
+}
+
+
+/// [Jenny]     jy_typeof-specifier:
+///             jy_typeof ( expressions )
+/// [Jenny/C++] jy_typeof unary-expression
+///
+void Parser::ParseJennyTypeofSpecifier(DeclSpec &DS) {
+  assert(Tok.is(tok::kw_jy_typeof) && "Not a jy_typeof specifier");
+  Token OpTok = Tok;
+  SourceLocation StartLoc = ConsumeToken();
+
+  const bool hasParens = Tok.is(tok::l_paren);
+
+  EnterExpressionEvaluationContext Unevaluated(
+      Actions, Sema::ExpressionEvaluationContext::Unevaluated,
+      Sema::ReuseLambdaContextDecl);
+
+  bool isCastExpr;
+  ParsedType CastTy;
+  SourceRange CastRange;
+  ExprResult Operand = Actions.CorrectDelayedTyposInExpr(
+      ParseExprAfterUnaryExprOrTypeTrait(OpTok, isCastExpr, CastTy, CastRange));
+  if (hasParens)
+    DS.setTypeofParensRange(CastRange);
+
+  if (CastRange.getEnd().isInvalid())
+    // FIXME: Not accurate, the range gets one token more than it should.
+    DS.SetRangeEnd(Tok.getLocation());
+  else
+    DS.SetRangeEnd(CastRange.getEnd());
+
+  if (isCastExpr) {
+    if (!CastTy) {
+      DS.SetTypeSpecError();
+      return;
+    }
+
+    const char *PrevSpec = nullptr;
+    unsigned DiagID;
+    // Check for duplicate type specifiers (e.g. "int jy_typeof(int)").
+    if (DS.SetTypeSpecType(DeclSpec::TST_jennyTypeofExpr, StartLoc, PrevSpec,
+                           DiagID, CastTy,
+                           Actions.getASTContext().getPrintingPolicy()))
+      Diag(StartLoc, DiagID) << PrevSpec;
+    return;
+  }
+
+  // If we get here, the operand to the typeof was an expression.
+  if (Operand.isInvalid()) {
+    DS.SetTypeSpecError();
+    return;
+  }
+
+  // We might need to transform the operand if it is potentially evaluated.
+  Operand = Actions.HandleExprEvaluationContextForTypeof(Operand.get());
+  if (Operand.isInvalid()) {
+    DS.SetTypeSpecError();
+    return;
+  }
+
+  const char *PrevSpec = nullptr;
+  unsigned DiagID;
+  // Check for duplicate type specifiers (e.g. "int jy_typeof(int)").
+  if (DS.SetTypeSpecType(DeclSpec::TST_jennyTypeofExpr, StartLoc, PrevSpec,
                          DiagID, Operand.get(),
                          Actions.getASTContext().getPrintingPolicy()))
     Diag(StartLoc, DiagID) << PrevSpec;

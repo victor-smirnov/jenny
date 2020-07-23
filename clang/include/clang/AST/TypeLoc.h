@@ -1936,6 +1936,76 @@ public:
   void initializeLocal(ASTContext &Context, SourceLocation Loc);
 };
 
+
+
+
+template <class Derived, class TypeClass, class LocalData = TypeofLocInfo>
+class JennyTypeofLikeTypeLoc
+  : public ConcreteTypeLoc<UnqualTypeLoc, Derived, TypeClass, LocalData> {
+public:
+  SourceLocation getTypeofLoc() const {
+    return this->getLocalData()->TypeofLoc;
+  }
+
+  void setTypeofLoc(SourceLocation Loc) {
+    this->getLocalData()->TypeofLoc = Loc;
+  }
+
+  SourceLocation getLParenLoc() const {
+    return this->getLocalData()->LParenLoc;
+  }
+
+  void setLParenLoc(SourceLocation Loc) {
+    this->getLocalData()->LParenLoc = Loc;
+  }
+
+  SourceLocation getRParenLoc() const {
+    return this->getLocalData()->RParenLoc;
+  }
+
+  void setRParenLoc(SourceLocation Loc) {
+    this->getLocalData()->RParenLoc = Loc;
+  }
+
+  SourceRange getParensRange() const {
+    return SourceRange(getLParenLoc(), getRParenLoc());
+  }
+
+  void setParensRange(SourceRange range) {
+      setLParenLoc(range.getBegin());
+      setRParenLoc(range.getEnd());
+  }
+
+  SourceRange getLocalSourceRange() const {
+    return SourceRange(getTypeofLoc(), getRParenLoc());
+  }
+
+  void initializeLocal(ASTContext &Context, SourceLocation Loc) {
+    setTypeofLoc(Loc);
+    setLParenLoc(Loc);
+    setRParenLoc(Loc);
+  }
+};
+
+struct JennyTypeOfExprTypeLocInfo : public TypeofLocInfo {
+};
+
+class JennyTypeOfExprTypeLoc : public JennyTypeofLikeTypeLoc<JennyTypeOfExprTypeLoc,
+                                                   JennyTypeOfExprType,
+                                                   JennyTypeOfExprTypeLocInfo> {
+public:
+  Expr* getUnderlyingExpr() const {
+    return getTypePtr()->getUnderlyingExpr();
+  }
+
+  // Reimplemented to account for GNU/C++ extension
+  //     typeof unary-expression
+  // where there are no parentheses.
+  SourceRange getLocalSourceRange() const;
+};
+
+
+
 // FIXME: location of the 'decltype' and parens.
 class DecltypeTypeLoc : public InheritingConcreteTypeLoc<TypeSpecTypeLoc,
                                                          DecltypeTypeLoc,

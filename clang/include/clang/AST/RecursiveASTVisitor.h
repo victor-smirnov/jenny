@@ -977,6 +977,9 @@ DEF_TRAVERSE_TYPE(TypeOfExprType,
 
 DEF_TRAVERSE_TYPE(TypeOfType, { TRY_TO(TraverseType(T->getUnderlyingType())); })
 
+DEF_TRAVERSE_TYPE(JennyTypeOfExprType,
+                  { TRY_TO(TraverseStmt(T->getUnderlyingExpr())); })
+
 DEF_TRAVERSE_TYPE(DecltypeType,
                   { TRY_TO(TraverseStmt(T->getUnderlyingExpr())); })
 
@@ -1249,6 +1252,9 @@ DEF_TRAVERSE_TYPELOC(TypeOfExprType,
 DEF_TRAVERSE_TYPELOC(TypeOfType, {
   TRY_TO(TraverseTypeLoc(TL.getUnderlyingTInfo()->getTypeLoc()));
 })
+
+DEF_TRAVERSE_TYPELOC(JennyTypeOfExprType,
+                     { TRY_TO(TraverseStmt(TL.getUnderlyingExpr())); })
 
 // FIXME: location of underlying expr
 DEF_TRAVERSE_TYPELOC(DecltypeType, {

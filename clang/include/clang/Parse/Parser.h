@@ -2795,6 +2795,8 @@ private:
                             SourceLocation ScopeLoc, ParsedAttr::Syntax Syntax);
 
   void ParseTypeofSpecifier(DeclSpec &DS);
+  void ParseJennyTypeofSpecifier(DeclSpec &DS);
+
   SourceLocation ParseDecltypeSpecifier(DeclSpec &DS);
   void AnnotateExistingDecltypeSpecifier(const DeclSpec &DS,
                                          SourceLocation StartLoc,

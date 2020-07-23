@@ -44,6 +44,9 @@
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
+
+#include "llvm/ExecutionEngine/Orc/LLJIT.h"
+
 #include <cstdio>
 
 #ifdef CLANG_HAVE_RLIMITS
@@ -197,6 +200,8 @@ int cc1_main(ArrayRef<const char *> Argv, const char *Argv0, void *MainAddr) {
   llvm::InitializeAllTargetMCs();
   llvm::InitializeAllAsmPrinters();
   llvm::InitializeAllAsmParsers();
+
+  cantFail(llvm::orc::LLLazyJITBuilder().create());
 
   // Buffer diagnostics from argument parsing so that we can output them using a
   // well formed diagnostic object.

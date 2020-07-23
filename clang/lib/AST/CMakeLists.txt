@@ -79,6 +79,7 @@ add_clang_library(clangAST
   Interp/State.cpp
   ItaniumCXXABI.cpp
   ItaniumMangle.cpp
+  JennyType.cpp
   JSONNodeDumper.cpp
   Mangle.cpp
   MicrosoftCXXABI.cpp

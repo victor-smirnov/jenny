@@ -610,6 +610,7 @@ DeduceTemplateArguments(Sema &S,
 /// might be more qualified when instantiated.
 static bool IsPossiblyOpaquelyQualifiedType(QualType T) {
   switch (T->getTypeClass()) {
+  case Type::JennyTypeOfExpr:
   case Type::TypeOfExpr:
   case Type::TypeOf:
   case Type::DependentName:
@@ -2231,6 +2232,7 @@ DeduceTemplateArgumentsByTypeMatch(Sema &S,
       return Sema::TDK_NonDeducedMismatch;
     }
 
+    case Type::JennyTypeOfExpr:
     case Type::TypeOfExpr:
     case Type::TypeOf:
     case Type::DependentName:
@@ -5986,6 +5988,13 @@ MarkUsedTemplateParameters(ASTContext &Ctx, QualType T,
     if (!OnlyDeduced)
       MarkUsedTemplateParameters(Ctx,
                                  cast<TypeOfExprType>(T)->getUnderlyingExpr(),
+                                 OnlyDeduced, Depth, Used);
+    break;
+
+  case Type::JennyTypeOfExpr:
+    if (!OnlyDeduced)
+      MarkUsedTemplateParameters(Ctx,
+                                 cast<JennyTypeOfExprType>(T)->getUnderlyingExpr(),
                                  OnlyDeduced, Depth, Used);
     break;
 

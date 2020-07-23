@@ -736,7 +736,12 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
                                   cast<TypeOfType>(T2)->getUnderlyingType()))
       return false;
     break;
-
+  case Type::JennyTypeOfExpr:
+    if (!IsStructurallyEquivalent(
+            Context, cast<JennyTypeOfExprType>(T1)->getUnderlyingExpr(),
+            cast<JennyTypeOfExprType>(T2)->getUnderlyingExpr()))
+      return false;
+    break;
   case Type::UnaryTransform:
     if (!IsStructurallyEquivalent(
             Context, cast<UnaryTransformType>(T1)->getUnderlyingType(),

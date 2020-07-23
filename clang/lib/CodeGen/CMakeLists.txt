@@ -97,6 +97,10 @@ add_clang_library(clangCodeGen
   TargetInfo.cpp
   VarBypassDetector.cpp
 
+  JennyJIT.cpp
+  JennyProcessor.cpp
+  JennyReflect.cpp
+
   DEPENDS
   ${codegen_deps}
 
@@ -104,8 +108,11 @@ add_clang_library(clangCodeGen
   clangAnalysis
   clangAST
   clangASTMatchers
-  clangBasic
   clangFrontend
+  clangBasic
   clangLex
   clangSerialization
+  clangSema
   )
+
+#clangFrontend

@@ -28,6 +28,7 @@
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Frontend/Utils.h"
 #include "clang/Frontend/VerifyDiagnosticConsumer.h"
+#include "clang/Jenny/JennyProcessor.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/PreprocessorOptions.h"
@@ -36,6 +37,7 @@
 #include "clang/Serialization/ASTReader.h"
 #include "clang/Serialization/GlobalModuleIndex.h"
 #include "clang/Serialization/InMemoryModuleCache.h"
+
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/BuryPointer.h"
 #include "llvm/Support/CrashRecoveryContext.h"
@@ -624,9 +626,12 @@ CompilerInstance::createCodeCompletionConsumer(Preprocessor &PP,
 }
 
 void CompilerInstance::createSema(TranslationUnitKind TUKind,
-                                  CodeCompleteConsumer *CompletionConsumer) {
+                                  CodeCompleteConsumer *CompletionConsumer)
+{
+  assert(Consumer && "ASTConsumer must be specified");
   TheSema.reset(new Sema(getPreprocessor(), getASTContext(), getASTConsumer(),
-                         TUKind, CompletionConsumer));
+                           TUKind, CompletionConsumer));
+
   // Attach the external sema source if there is any.
   if (ExternalSemaSrc) {
     TheSema->addExternalSource(ExternalSemaSrc.get());

@@ -2093,6 +2093,11 @@ void CodeGenFunction::EmitVariablyModifiedType(QualType type) {
       EmitIgnoredExpr(cast<TypeOfExprType>(ty)->getUnderlyingExpr());
       return;
 
+    case Type::JennyTypeOfExpr:
+      // Stop walking: emit jy_typeof expression.
+      EmitIgnoredExpr(cast<JennyTypeOfExprType>(ty)->getUnderlyingExpr());
+      return;
+
     case Type::Atomic:
       type = cast<AtomicType>(ty)->getValueType();
       break;

@@ -845,6 +845,7 @@ bool Sema::containsUnexpandedParameterPacks(Declarator &D) {
     break;
   }
 
+  case TST_jennyTypeofExpr:
   case TST_typeofExpr:
   case TST_decltype:
   case TST_extint:

@@ -4363,6 +4363,9 @@ static void captureVariablyModifiedType(ASTContext &Context, QualType T,
     case Type::TypeOfExpr:
       T = cast<TypeOfExprType>(Ty)->getUnderlyingExpr()->getType();
       break;
+    case Type::JennyTypeOfExpr:
+      T = cast<JennyTypeOfExprType>(Ty)->getUnderlyingExpr()->getType();
+      break;
     case Type::Atomic:
       T = cast<AtomicType>(Ty)->getValueType();
       break;

@@ -47,4 +47,5 @@ add_clang_library(clang-cpp
                   clang-shlib.cpp
                   ${_OBJECTS}
                   LINK_LIBS
-                  ${_DEPS})
+                  ${_DEPS}
+                  )

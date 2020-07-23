@@ -2877,6 +2877,15 @@ void MicrosoftCXXNameMangler::mangleType(const TypeOfExprType *T, Qualifiers,
     << Range;
 }
 
+void MicrosoftCXXNameMangler::mangleType(const JennyTypeOfExprType *T, Qualifiers,
+                                         SourceRange Range) {
+  DiagnosticsEngine &Diags = Context.getDiags();
+  unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
+    "cannot mangle this jy_typeof(expression) yet");
+  Diags.Report(Range.getBegin(), DiagID)
+    << Range;
+}
+
 void MicrosoftCXXNameMangler::mangleType(const DecltypeType *T, Qualifiers,
                                          SourceRange Range) {
   DiagnosticsEngine &Diags = Context.getDiags();

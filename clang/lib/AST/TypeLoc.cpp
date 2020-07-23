@@ -313,6 +313,7 @@ SourceRange TypeOfExprTypeLoc::getLocalSourceRange() const {
 }
 
 
+
 TypeSpecifierType BuiltinTypeLoc::getWrittenTypeSpec() const {
   if (needsExtraLocalData())
     return static_cast<TypeSpecifierType>(getWrittenBuiltinSpecs().Type);
