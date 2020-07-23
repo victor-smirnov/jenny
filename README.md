@@ -1,3 +1,70 @@
+# Jenny Platform
+
+Jenny is an _experimental_ metaprogramming Platform basen on Clang and
+[Memoria Framework](https://bitbucket.org/vsmirnov/memoria/wiki/Home) for
+data-intensive applications.
+
+In a few words, Memoria is a database engine development framework providing
+high-performance mutimodel persistent (functional) data representation
+for transactional and analytical applications. Currently, it's heavily
+relying on template metaprogramming to assemble complex data containers
+out of reusable primitives. But to unleash its full potential, Memoria
+needs more capable metaprogramming than C++ is currently providing.
+
+Jenny Platform is mostly focused on *tooling*, it extends Clang and
+C++20 in the following ways:
+
+1. Reflection/Metaprogramming: making compiler internals accessible to
+metaprograms at the type level and at the AST/syntax level. The whole idea
+is pretty similar to proposals for
+[Reflection TS](http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/p1240r1.pdf).
+
+1. Embedded domain specific languages for data structures authoring
+and querying. [SDN](https://bitbucket.org/vsmirnov/memoria/wiki/String%20Data%20Notation)
+and its type system is integrated natively with the language as a
+core data represenation (SDN is something like JSON for JavaScript
+but with types). Other examples of DSLs are SQL and JMESpath.
+
+1. Full JIT-enabled lazy C++ interpreter available at compile time. Metaprograms
+can be compiled separately, can do IO, access databases, spawn threads
+and do heavy computations like theorem proving with no significant
+performance penalties relative to AOT-compiled code.
+
+1. Memoria-based code model. Parsed Clang's AST files can be stored in
+Memoria's containers togather with additional data and metadata,
+enabling immediately accessible (zero serialization) embedded databases
+for run-time reflection metadata and arbitrary code annotations.
+Memoria's containers can be linked with executable files.
+Such code representain enables efficient JITting of C++ at run-time,
+because there is no need to parse huuuuge files anymore.
+
+1. Metaprogramming-aware build system (Jenny Built Tool, JBT) and
+packaging tool based on the C++ interpreter. Metaprograms are
+aware of the project structure _and_ compilation process. JBT is
+built on top of Memoria-provided high-performance transactional
+versioned (like Git) database enabling every resource (including
+intermediate state) to be accessible by the clients(IDEs,
+metaprograms). Compilation in Jenny is project-based, not TU-based.
+
+1. JBT exposes everything (code model, building process' state)
+via elaborate RESTful API for external clients to integrate with.
+IDE developers can focus on feature, usability and UX, leaving
+everything else to JBT that can be run either locally (stdin/stdout)
+or remotely (HTTPS). Interested third parties can provide Kubernetes
+integration for JBT (to scale-out compilation of very large projects)
+and cloud-native storage options for Memoria.
+
+1. Memoria has sophisticated cross-platform runtime library providing
+advanced data types, custom memory allocators, fibers (forked
+from Boost) and high-performance asynchronous IO for decent storage
+and networking. Core and essential parts of this runtime will be
+ported into Jenny and supported at the level of the programming language
+(via C++ extensions).
+
+When Jenny is mature enough, Memoria will be rewritten in its
+dialect of C++ leveraging the ultimate metaprogramming capabilities
+the Platform is intended to provide.
+
 # The LLVM Compiler Infrastructure
 
 This directory and its sub-directories contain source code for LLVM,
