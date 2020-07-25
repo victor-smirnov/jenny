@@ -1438,6 +1438,7 @@ private:
   void PreSpecificationConstruct(const parser::SpecificationConstruct &);
   void CreateGeneric(const parser::GenericSpec &);
   void FinishSpecificationPart(const std::list<parser::DeclarationConstruct> &);
+  void AnalyzeStmtFunctionStmt(const parser::StmtFunctionStmt &);
   void CheckImports();
   void CheckImport(const SourceName &, const SourceName &);
   void HandleCall(Symbol::Flag, const parser::Call &);
@@ -2310,6 +2311,7 @@ void ModuleVisitor::Post(const parser::UseStmt &x) {
     }
     for (const auto &[name, symbol] : *useModuleScope_) {
       if (symbol->attrs().test(Attr::PUBLIC) &&
+          !symbol->attrs().test(Attr::INTRINSIC) &&
           !symbol->detailsIf<MiscDetails>()) {
         if (useNames.count(name) == 0) {
           auto *localSymbol{FindInScope(currScope(), name)};
@@ -4451,6 +4453,8 @@ std::optional<MessageFixedText> DeclarationVisitor::CheckSaveAttr(
   } else if (symbol.has<ProcEntityDetails>() &&
       !symbol.attrs().test(Attr::POINTER)) {
     return "Procedure '%s' with SAVE attribute must also have POINTER attribute"_err_en_US;
+  } else if (IsAutomatic(symbol)) {
+    return "SAVE attribute may not be applied to automatic data object '%s'"_err_en_US;
   } else {
     return std::nullopt;
   }
@@ -6010,7 +6014,8 @@ bool ResolveNamesVisitor::Pre(const parser::SpecificationPart &x) {
   Walk(std::get<1>(x.t));
   Walk(std::get<2>(x.t));
   Walk(std::get<3>(x.t));
-  const std::list<parser::DeclarationConstruct> &decls{std::get<4>(x.t)};
+  Walk(std::get<4>(x.t));
+  const std::list<parser::DeclarationConstruct> &decls{std::get<5>(x.t)};
   for (const auto &decl : decls) {
     if (const auto *spec{
             std::get_if<parser::SpecificationConstruct>(&decl.u)}) {
@@ -6097,29 +6102,44 @@ void ResolveNamesVisitor::FinishSpecificationPart(
     }
   }
   currScope().InstantiateDerivedTypes(context());
-  // Analyze the bodies of statement functions now that the symbol in this
-  // specification part have been fully declared and implicitly typed.
   for (const auto &decl : decls) {
     if (const auto *statement{std::get_if<
             parser::Statement<common::Indirection<parser::StmtFunctionStmt>>>(
             &decl.u)}) {
-      const parser::StmtFunctionStmt &stmtFunc{statement->statement.value()};
-      if (Symbol * symbol{std::get<parser::Name>(stmtFunc.t).symbol}) {
-        if (auto *details{symbol->detailsIf<SubprogramDetails>()}) {
-          if (auto expr{AnalyzeExpr(context(),
-                  std::get<parser::Scalar<parser::Expr>>(stmtFunc.t))}) {
-            details->set_stmtFunction(std::move(*expr));
-          } else {
-            context().SetError(*symbol);
-          }
-        }
-      }
+      AnalyzeStmtFunctionStmt(statement->statement.value());
     }
   }
   // TODO: what about instantiations in BLOCK?
   CheckSaveStmts();
   CheckCommonBlocks();
   CheckEquivalenceSets();
+}
+
+// Analyze the bodies of statement functions now that the symbols in this
+// specification part have been fully declared and implicitly typed.
+void ResolveNamesVisitor::AnalyzeStmtFunctionStmt(
+    const parser::StmtFunctionStmt &stmtFunc) {
+  Symbol *symbol{std::get<parser::Name>(stmtFunc.t).symbol};
+  if (!symbol || !symbol->has<SubprogramDetails>()) {
+    return;
+  }
+  auto &details{symbol->get<SubprogramDetails>()};
+  auto expr{AnalyzeExpr(
+      context(), std::get<parser::Scalar<parser::Expr>>(stmtFunc.t))};
+  if (!expr) {
+    context().SetError(*symbol);
+    return;
+  }
+  if (auto type{evaluate::DynamicType::From(*symbol)}) {
+    auto converted{ConvertToType(*type, std::move(*expr))};
+    if (!converted) {
+      context().SetError(*symbol);
+      return;
+    }
+    details.set_stmtFunction(std::move(*converted));
+  } else {
+    details.set_stmtFunction(std::move(*expr));
+  }
 }
 
 void ResolveNamesVisitor::CheckImports() {

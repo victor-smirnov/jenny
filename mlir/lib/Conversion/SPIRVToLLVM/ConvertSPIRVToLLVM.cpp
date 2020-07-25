@@ -83,11 +83,12 @@ static IntegerAttr minusOneIntegerAttribute(Type type, Builder builder) {
 /// Creates `llvm.mlir.constant` with all bits set for the given type.
 static Value createConstantAllBitsSet(Location loc, Type srcType, Type dstType,
                                       PatternRewriter &rewriter) {
-  if (srcType.isa<VectorType>())
+  if (srcType.isa<VectorType>()) {
     return rewriter.create<LLVM::ConstantOp>(
         loc, dstType,
         SplatElementsAttr::get(srcType.cast<ShapedType>(),
                                minusOneIntegerAttribute(srcType, rewriter)));
+  }
   return rewriter.create<LLVM::ConstantOp>(
       loc, dstType, minusOneIntegerAttribute(srcType, rewriter));
 }
@@ -176,6 +177,33 @@ static Type convertStructTypePacked(spirv::StructType type,
                                      /*isPacked=*/true);
 }
 
+/// Creates LLVM dialect constant with the given value.
+static Value createI32ConstantOf(Location loc, PatternRewriter &rewriter,
+                                 LLVMTypeConverter &converter, unsigned value) {
+  return rewriter.create<LLVM::ConstantOp>(
+      loc, LLVM::LLVMType::getInt32Ty(converter.getDialect()),
+      rewriter.getIntegerAttr(rewriter.getI32Type(), value));
+}
+
+/// Utility for `spv.Load` and `spv.Store` conversion.
+static LogicalResult replaceWithLoadOrStore(Operation *op,
+                                            ConversionPatternRewriter &rewriter,
+                                            LLVMTypeConverter &typeConverter,
+                                            unsigned alignment) {
+  if (auto loadOp = dyn_cast<spirv::LoadOp>(op)) {
+    auto dstType = typeConverter.convertType(loadOp.getType());
+    if (!dstType)
+      return failure();
+    rewriter.replaceOpWithNewOp<LLVM::LoadOp>(loadOp, dstType, loadOp.ptr(),
+                                              alignment);
+    return success();
+  }
+  auto storeOp = cast<spirv::StoreOp>(op);
+  rewriter.replaceOpWithNewOp<LLVM::StoreOp>(storeOp, storeOp.value(),
+                                             storeOp.ptr(), alignment);
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // Type conversion
 //===----------------------------------------------------------------------===//
@@ -239,7 +267,7 @@ public:
   matchAndRewrite(spirv::BitFieldInsertOp op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto srcType = op.getType();
-    auto dstType = this->typeConverter.convertType(srcType);
+    auto dstType = typeConverter.convertType(srcType);
     if (!dstType)
       return failure();
     Location loc = op.getLoc();
@@ -328,7 +356,7 @@ public:
   matchAndRewrite(spirv::BitFieldSExtractOp op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto srcType = op.getType();
-    auto dstType = this->typeConverter.convertType(srcType);
+    auto dstType = typeConverter.convertType(srcType);
     if (!dstType)
       return failure();
     Location loc = op.getLoc();
@@ -381,7 +409,7 @@ public:
   matchAndRewrite(spirv::BitFieldUExtractOp op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
     auto srcType = op.getType();
-    auto dstType = this->typeConverter.convertType(srcType);
+    auto dstType = typeConverter.convertType(srcType);
     if (!dstType)
       return failure();
     Location loc = op.getLoc();
@@ -403,6 +431,39 @@ public:
     Value shiftedBase =
         rewriter.create<LLVM::LShrOp>(loc, dstType, op.base(), offset);
     rewriter.replaceOpWithNewOp<LLVM::AndOp>(op, dstType, shiftedBase, mask);
+    return success();
+  }
+};
+
+class BranchConversionPattern : public SPIRVToLLVMConversion<spirv::BranchOp> {
+public:
+  using SPIRVToLLVMConversion<spirv::BranchOp>::SPIRVToLLVMConversion;
+
+  LogicalResult
+  matchAndRewrite(spirv::BranchOp branchOp, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<LLVM::BrOp>(branchOp, operands,
+                                            branchOp.getTarget());
+    return success();
+  }
+};
+
+class BranchConditionalConversionPattern
+    : public SPIRVToLLVMConversion<spirv::BranchConditionalOp> {
+public:
+  using SPIRVToLLVMConversion<
+      spirv::BranchConditionalOp>::SPIRVToLLVMConversion;
+
+  LogicalResult
+  matchAndRewrite(spirv::BranchConditionalOp op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    // There is no support of branch weights in LLVM dialect at the moment.
+    if (auto weights = op.branch_weights())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<LLVM::CondBrOp>(
+        op, op.condition(), op.getTrueBlock(), op.getTrueBlockArguments(),
+        op.getFalseBlock(), op.getFalseBlockArguments());
     return success();
   }
 };
@@ -473,7 +534,7 @@ public:
     }
 
     // Function returns a single result.
-    auto dstType = this->typeConverter.convertType(callOp.getType(0));
+    auto dstType = typeConverter.convertType(callOp.getType(0));
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(callOp, dstType, operands,
                                               callOp.getAttrs());
     return success();
@@ -520,6 +581,31 @@ public:
         operation, dstType,
         rewriter.getI64IntegerAttr(static_cast<int64_t>(predicate)),
         operation.operand1(), operation.operand2());
+    return success();
+  }
+};
+
+/// Converts `spv.Load` and `spv.Store` to LLVM dialect.
+template <typename SPIRVop>
+class LoadStorePattern : public SPIRVToLLVMConversion<SPIRVop> {
+public:
+  using SPIRVToLLVMConversion<SPIRVop>::SPIRVToLLVMConversion;
+
+  LogicalResult
+  matchAndRewrite(SPIRVop op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op.memory_access().hasValue() &&
+        op.memory_access().getValue() != spirv::MemoryAccess::None) {
+      auto memoryAccess = op.memory_access().getValue();
+      if (memoryAccess == spirv::MemoryAccess::Aligned) {
+        unsigned alignment = op.alignment().getValue().getZExtValue();
+        replaceWithLoadOrStore(op, rewriter, this->typeConverter, alignment);
+        return success();
+      }
+      // There is no support of other memory access attributes.
+      return failure();
+    }
+    replaceWithLoadOrStore(op, rewriter, this->typeConverter, 0);
     return success();
   }
 };
@@ -579,6 +665,84 @@ public:
   }
 };
 
+class MergePattern : public SPIRVToLLVMConversion<spirv::MergeOp> {
+public:
+  using SPIRVToLLVMConversion<spirv::MergeOp>::SPIRVToLLVMConversion;
+
+  LogicalResult
+  matchAndRewrite(spirv::MergeOp op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+/// Converts `spv.selection` with `spv.BranchConditional` in its header block.
+/// All blocks within selection should be reachable for conversion to succeed.
+class SelectionPattern : public SPIRVToLLVMConversion<spirv::SelectionOp> {
+public:
+  using SPIRVToLLVMConversion<spirv::SelectionOp>::SPIRVToLLVMConversion;
+
+  LogicalResult
+  matchAndRewrite(spirv::SelectionOp op, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    // There is no support for `Flatten` or `DontFlatten` selection control at
+    // the moment. This are just compiler hints and can be performed during the
+    // optimization passes.
+    if (op.selection_control() != spirv::SelectionControl::None)
+      return failure();
+
+    // `spv.selection` should have at least two blocks: one selection header
+    // block and one merge block. If no blocks are present, or control flow
+    // branches straight to merge block (two blocks are present), the op is
+    // redundant and it is erased.
+    if (op.body().getBlocks().size() <= 2) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    Location loc = op.getLoc();
+
+    // Split the current block after `spv.selection`. The remaing ops will be
+    // used in `continueBlock`.
+    auto *currentBlock = rewriter.getInsertionBlock();
+    rewriter.setInsertionPointAfter(op);
+    auto position = rewriter.getInsertionPoint();
+    auto *continueBlock = rewriter.splitBlock(currentBlock, position);
+
+    // Extract conditional branch information from the header block. By SPIR-V
+    // dialect spec, it should contain `spv.BranchConditional` or `spv.Switch`
+    // op. Note that `spv.Switch op` is not supported at the moment in the
+    // SPIR-V dialect. Remove this block when finished.
+    auto *headerBlock = op.getHeaderBlock();
+    assert(headerBlock->getOperations().size() == 1);
+    auto condBrOp = dyn_cast<spirv::BranchConditionalOp>(
+        headerBlock->getOperations().front());
+    if (!condBrOp)
+      return failure();
+    rewriter.eraseBlock(headerBlock);
+
+    // Branch from merge block to continue block.
+    auto *mergeBlock = op.getMergeBlock();
+    Operation *terminator = mergeBlock->getTerminator();
+    ValueRange terminatorOperands = terminator->getOperands();
+    rewriter.setInsertionPointToEnd(mergeBlock);
+    rewriter.create<LLVM::BrOp>(loc, terminatorOperands, continueBlock);
+
+    // Link current block to `true` and `false` blocks within the selection.
+    Block *trueBlock = condBrOp.getTrueBlock();
+    Block *falseBlock = condBrOp.getFalseBlock();
+    rewriter.setInsertionPointToEnd(currentBlock);
+    rewriter.create<LLVM::CondBrOp>(loc, condBrOp.condition(), trueBlock,
+                                    condBrOp.trueTargetOperands(), falseBlock,
+                                    condBrOp.falseTargetOperands());
+
+    rewriter.inlineRegionBefore(op.body(), continueBlock);
+    rewriter.replaceOp(op, continueBlock->getArguments());
+    return success();
+  }
+};
+
 /// Converts SPIR-V shift ops to LLVM shift ops. Since LLVM dialect
 /// puts a restriction on `Shift` and `Base` to have the same bit width,
 /// `Shift` is zero or sign extended to match this specification. Cases when
@@ -621,6 +785,37 @@ public:
   }
 };
 
+class VariablePattern : public SPIRVToLLVMConversion<spirv::VariableOp> {
+public:
+  using SPIRVToLLVMConversion<spirv::VariableOp>::SPIRVToLLVMConversion;
+
+  LogicalResult
+  matchAndRewrite(spirv::VariableOp varOp, ArrayRef<Value> operands,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto srcType = varOp.getType();
+    // Initialization is supported for scalars and vectors only.
+    auto pointerTo = srcType.cast<spirv::PointerType>().getPointeeType();
+    auto init = varOp.initializer();
+    if (init && !pointerTo.isIntOrFloat() && !pointerTo.isa<VectorType>())
+      return failure();
+
+    auto dstType = typeConverter.convertType(srcType);
+    if (!dstType)
+      return failure();
+
+    Location loc = varOp.getLoc();
+    Value size = createI32ConstantOf(loc, rewriter, typeConverter, 1);
+    if (!init) {
+      rewriter.replaceOpWithNewOp<LLVM::AllocaOp>(varOp, dstType, size);
+      return success();
+    }
+    Value allocated = rewriter.create<LLVM::AllocaOp>(loc, dstType, size);
+    rewriter.create<LLVM::StoreOp>(loc, init, allocated);
+    rewriter.replaceOp(varOp, allocated);
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // FuncOp conversion
 //===----------------------------------------------------------------------===//
@@ -638,7 +833,7 @@ public:
     auto funcType = funcOp.getType();
     TypeConverter::SignatureConversion signatureConverter(
         funcType.getNumInputs());
-    auto llvmType = this->typeConverter.convertFunctionSignature(
+    auto llvmType = typeConverter.convertFunctionSignature(
         funcOp.getType(), /*isVariadic=*/false, signatureConverter);
     if (!llvmType)
       return failure();
@@ -675,7 +870,10 @@ public:
 
     rewriter.inlineRegionBefore(funcOp.getBody(), newFuncOp.getBody(),
                                 newFuncOp.end());
-    rewriter.applySignatureConversion(&newFuncOp.getBody(), signatureConverter);
+    if (failed(rewriter.convertRegionTypes(&newFuncOp.getBody(), typeConverter,
+                                           &signatureConverter))) {
+      return failure();
+    }
     rewriter.eraseOp(funcOp);
     return success();
   }
@@ -804,6 +1002,10 @@ void mlir::populateSPIRVToLLVMConversionPatterns(
       // Constant op
       ConstantScalarAndVectorPattern,
 
+      // Control Flow ops
+      BranchConversionPattern, BranchConditionalConversionPattern,
+      SelectionPattern, MergePattern,
+
       // Function Call op
       FunctionCallPattern,
 
@@ -813,6 +1015,10 @@ void mlir::populateSPIRVToLLVMConversionPatterns(
       IComparePattern<spirv::LogicalEqualOp, LLVM::ICmpPredicate::eq>,
       IComparePattern<spirv::LogicalNotEqualOp, LLVM::ICmpPredicate::ne>,
       NotPattern<spirv::LogicalNotOp>,
+
+      // Memory ops
+      LoadStorePattern<spirv::LoadOp>, LoadStorePattern<spirv::StoreOp>,
+      VariablePattern,
 
       // Miscellaneous ops
       DirectConversionPattern<spirv::SelectOp, LLVM::SelectOp>,
