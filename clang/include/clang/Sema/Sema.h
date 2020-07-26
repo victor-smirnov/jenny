@@ -126,12 +126,14 @@ namespace clang {
   class EnumConstantDecl;
   class Expr;
   class ExtVectorType;
+  class CompleteTemplateArgumentList;
   class FormatAttr;
   class FriendDecl;
   class FunctionDecl;
   class FunctionProtoType;
   class FunctionTemplateDecl;
   class ImplicitConversionSequence;
+  class InjectionContext;
   typedef MutableArrayRef<ImplicitConversionSequence> ConversionSequenceList;
   class InitListExpr;
   class InitializationKind;
@@ -807,6 +809,53 @@ public:
     OpaqueParser = P;
   }
 
+  InjectionContext *CurrentInjectionContext = nullptr;
+
+  /// When injecting class fragments, definitions of member functions are
+  /// not injected immediately. They are deferred, just as they are during
+  /// parsing. These injections are processed when the outermost class is
+  /// completed.
+  SmallVector<InjectionContext *, 4> PendingClassMemberInjections;
+
+  struct PendingInjectionEffect {
+    CXXInjectorDecl *MD;
+    InjectionEffect Effect;
+  };
+
+  SmallVector<PendingInjectionEffect, 4> PendingNamespaceInjections;
+
+  llvm::DenseMap<CXXFragmentExpr *, CompleteTemplateArgumentList>
+    FragmentDependentInstantiationArgs;
+
+  using FragInstantiationArgTy = SmallVector<CompleteTemplateArgumentList, 1>;
+  llvm::DenseMap<CXXFragmentExpr *, FragInstantiationArgTy>
+    FragmentInstantiationArgs;
+
+private:
+  /// True if we're currently injecting code.
+  bool InjectingCode = false;
+public:
+  bool isInjectingCode() {
+    return InjectingCode;
+  }
+
+  class CodeInjectionTracker {
+    Sema &S;
+    bool PreviousValue;
+  public:
+    CodeInjectionTracker(Sema &S)
+      : S(S), PreviousValue(S.InjectingCode) {
+      S.InjectingCode = true;
+    }
+
+    ~CodeInjectionTracker() {
+      S.InjectingCode = PreviousValue;
+    }
+  };
+
+  /// Are we currently semantically analyzing a CXXRequiredDeclaratorDecl?
+  bool AnalyzingRequiredDeclarator = false;
+
   class DelayedDiagnostics;
 
   class DelayedDiagnosticsState {
@@ -988,7 +1037,7 @@ public:
   /// It would be best to refactor this.
   SmallVector<Decl*,2> WeakTopLevelDecl;
 
-  IdentifierResolver IdResolver;
+  IdentifierResolver *IdResolver;
 
   /// Translation Unit Scope - useful to Objective-C actions that need
   /// to lookup file scope declarations in the "ordinary" C decl namespace.
@@ -1023,6 +1072,15 @@ public:
 
   /// The MSVC "_GUID" struct, which is defined in MSVC header files.
   RecordDecl *MSVCGuidDecl;
+
+  /// \brief The 'std::experimental' namespace.
+  NamespaceDecl *ExperimentalNamespace = nullptr;
+
+  /// \brief The 'std::experimental::meta' namespace.
+  NamespaceDecl *ExperimentalMetaNamespace = nullptr;
+
+  /// \brief The 'std::experimental::meta::meta_info' type.
+  CXXRecordDecl *MetaInfoDecl = nullptr;
 
   /// Caches identifiers/selectors for NSFoundation APIs.
   std::unique_ptr<NSAPI> NSAPIObj;
@@ -2433,7 +2491,7 @@ public:
                                           SourceLocation Loc,
                                           QualType T);
   ParmVarDecl *CheckParameter(DeclContext *DC, SourceLocation StartLoc,
-                              SourceLocation NameLoc, IdentifierInfo *Name,
+                              const DeclarationNameInfo &Name,
                               QualType T, TypeSourceInfo *TSInfo,
                               StorageClass SC);
   void ActOnParamDefaultArgument(Decl *param,
@@ -2728,7 +2786,7 @@ public:
     TUK_Friend       // Friend declaration:  'friend struct foo;'
   };
 
-  Decl *ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
+  Decl *ActOnTag(Scope *S, unsigned TagSpec, Expr *Metafunction, TagUseKind TUK,
                  SourceLocation KWLoc, CXXScopeSpec &SS, IdentifierInfo *Name,
                  SourceLocation NameLoc, const ParsedAttributesView &Attr,
                  AccessSpecifier AS, SourceLocation ModulePrivateLoc,
@@ -2850,6 +2908,13 @@ public:
                    ArrayRef<Decl *> Fields, SourceLocation LBrac,
                    SourceLocation RBrac, const ParsedAttributesView &AttrList);
 
+  /// \brief Calls D->startDefinition().
+  void StartDefinition(TagDecl *D);
+
+  /// \brief Calls D->CompletedDefinition().
+  void CompleteDefinition(RecordDecl *D);
+  void CompleteDefinition(CXXRecordDecl *D, CXXFinalOverriderMap *Map);
+
   /// ActOnTagStartDefinition - Invoked when we have entered the
   /// scope of a tag's definition (e.g., for an enumeration, class,
   /// struct, or union).
@@ -2878,8 +2943,7 @@ public:
 
   /// ActOnTagFinishDefinition - Invoked once we have finished parsing
   /// the definition of a tag (enumeration, class, struct, or union).
-  void ActOnTagFinishDefinition(Scope *S, Decl *TagDecl,
-                                SourceRange BraceRange);
+  void ActOnTagFinishDefinition(Scope *S, Decl *&TagD, SourceRange BraceRange);
 
   void ActOnTagFinishSkippedDefinition(SkippedDefinitionContext Context);
 
@@ -2898,8 +2962,7 @@ public:
 
   EnumConstantDecl *CheckEnumConstant(EnumDecl *Enum,
                                       EnumConstantDecl *LastEnumConst,
-                                      SourceLocation IdLoc,
-                                      IdentifierInfo *Id,
+                                      const DeclarationNameInfo &NameInfo,
                                       Expr *val);
   bool CheckEnumUnderlyingType(TypeSourceInfo *TI);
   bool CheckEnumRedeclaration(SourceLocation EnumLoc, bool IsScoped,
@@ -2912,7 +2975,7 @@ public:
                                       SourceLocation IILoc);
 
   Decl *ActOnEnumConstant(Scope *S, Decl *EnumDecl, Decl *LastEnumConstant,
-                          SourceLocation IdLoc, IdentifierInfo *Id,
+                          const DeclarationNameInfo &NameInfo,
                           const ParsedAttributesView &Attrs,
                           SourceLocation EqualLoc, Expr *Val);
   void ActOnEnumBody(SourceLocation EnumLoc, SourceRange BraceRange,
@@ -3537,6 +3600,15 @@ public:
                                            LookupResult &MemberLookup,
                                            OverloadCandidateSet *CandidateSet,
                                            Expr *Range, ExprResult *CallExpr);
+
+  ForRangeStatus BuildConstexprExpansionCall(SourceLocation Loc,
+					     SourceLocation RangeLoc,
+					     const DeclarationNameInfo
+					     &NameInfo,
+					     OverloadCandidateSet
+					     *CandidateSet,
+					     MultiExprArg Args,
+					     ExprResult *CallExpr);
 
   ExprResult BuildOverloadedCallExpr(Scope *S, Expr *Fn,
                                      UnresolvedLookupExpr *ULE,
@@ -4433,6 +4505,27 @@ public:
                                   BuildForRangeKind Kind);
   StmtResult FinishCXXForRangeStmt(Stmt *ForRange, Stmt *Body);
 
+  StmtResult ActOnCXXExpansionStmt(Scope *S, SourceLocation ForLoc,
+                                   SourceLocation AnnotationLoc, Stmt *LoopVar,
+                                   SourceLocation ColonLoc, Expr *RangeVar,
+                                   SourceLocation RParenLoc,
+                                   BuildForRangeKind Kind, bool IsConstexpr);
+  StmtResult BuildCXXExpansionStmt(SourceLocation ForLoc,
+                                   SourceLocation EllipsisLoc, Stmt *LoopVar,
+                                   SourceLocation ColonLoc, Stmt *RangeVar,
+                                   SourceLocation RParenLoc,
+                                   BuildForRangeKind Kind, bool IsConstexpr);
+  /// Build a CXXExpansionStmt over a pack.
+  StmtResult BuildCXXExpansionStmt(SourceLocation ForLoc,
+                                   SourceLocation EllipsisLoc, Stmt *LoopVar,
+                                   SourceLocation ColonLoc, Expr *RangeExpr,
+                                   SourceLocation RParenLoc,
+                                   BuildForRangeKind Kind, bool IsConstexpr);
+
+  StmtResult ActOnCXXExpansionStmtError(Stmt *S);
+
+  StmtResult FinishCXXExpansionStmt(Stmt *Expansion, Stmt *Body);
+
   StmtResult ActOnGotoStmt(SourceLocation GotoLoc,
                            SourceLocation LabelLoc,
                            LabelDecl *TheDecl);
@@ -4790,6 +4883,15 @@ public:
       CorrectionCandidateCallback *CCC = nullptr,
       bool IsInlineAsmIdentifier = false, Token *KeywordReplacement = nullptr);
 
+  ExprResult ActOnIdExpression(
+      Scope *S, CXXScopeSpec &SS, SourceLocation TemplateKWLoc,
+      DeclarationNameInfo NameInfo,
+      const TemplateArgumentListInfo *TemplateArgs,
+      UnqualifiedIdKind IdKind, TemplateIdAnnotation *TemplateId,
+      bool HasTrailingLParen, bool IsAddressOfOperand,
+      CorrectionCandidateCallback *CCC = nullptr,
+      bool IsInlineAsmIdentifier = false, Token *KeywordReplacement = nullptr);
+
   void DecomposeUnqualifiedId(const UnqualifiedId &Id,
                               TemplateArgumentListInfo &Buffer,
                               DeclarationNameInfo &NameInfo,
@@ -4871,6 +4973,9 @@ public:
                                        SourceLocation TemplateKWLoc,
                                 const DeclarationNameInfo &NameInfo,
                                 const TemplateArgumentListInfo *TemplateArgs);
+
+  ExprValueKind getValueKindForDeclReference(QualType &type, ValueDecl *VD,
+                                             SourceLocation Loc);
 
   ExprResult BuildDeclarationNameExpr(const CXXScopeSpec &SS,
                                       LookupResult &R,
@@ -5305,6 +5410,11 @@ public:
 
   //===---------------------------- C++ Features --------------------------===//
 
+  void CheckNamespaceDeclaration(IdentifierInfo *II, SourceLocation StartLoc,
+                                 SourceLocation Loc, bool &IsInline,
+                                 bool &IsInvalid, bool &IsStd, bool &AddToKnown,
+                                 NamespaceDecl *&PrevNS);
+
   // Act on C++ namespaces
   Decl *ActOnStartNamespaceDef(Scope *S, SourceLocation InlineLoc,
                                SourceLocation NamespaceLoc,
@@ -5376,6 +5486,11 @@ public:
 
   void PushUsingDirective(Scope *S, UsingDirectiveDecl *UDir);
 
+  /// Resolve SS and Id as a namespace name or nullptr if the pair does not
+  /// denote a namespace.
+  Decl *ActOnNamespaceName(Scope *CurScope, CXXScopeSpec &SS,
+                           IdentifierInfo *Id, SourceLocation IdLoc);
+
   Decl *ActOnNamespaceAliasDef(Scope *CurScope,
                                SourceLocation NamespaceLoc,
                                SourceLocation AliasLoc,
@@ -5430,6 +5545,15 @@ public:
                               SourceLocation UsingLoc, UnqualifiedId &Name,
                               const ParsedAttributesView &AttrList,
                               TypeResult Type, Decl *DeclFromDeclSpec);
+  Decl *ActOnCXXRequiredTypeDecl(AccessSpecifier AS,
+                                 SourceLocation RequiresLoc,
+                                 SourceLocation TypenameLoc,
+                                 IdentifierInfo *Id, bool Typename);
+  Decl *ActOnCXXRequiredDeclaratorDecl(Scope *CurScope,
+                                       SourceLocation RequiresLoc,
+                                       Declarator &D);
+  bool TypeCheckRequiredAutoReturn(SourceLocation Loc,
+                                   QualType TypeWithAuto, QualType Replacement);
 
   /// BuildCXXConstructExpr - Creates a complete call to a constructor,
   /// including handling of its default argument expressions.
@@ -5886,6 +6010,10 @@ public:
     /// along with the qualifiers placed on '*this'.
     CXXThisScopeRAII(Sema &S, Decl *ContextDecl, Qualifiers CXXThisTypeQuals,
                      bool Enabled = true);
+    /// Introduce a new scope where 'this' may be allowed,
+    /// using a dependent type. If 'this' is not allowed, temporarily
+    /// clears the current this type.
+    CXXThisScopeRAII(Sema &S, bool AllowThis);
 
     ~CXXThisScopeRAII();
   };
@@ -6231,6 +6359,10 @@ public:
   bool ActOnCXXNestedNameSpecifierDecltype(CXXScopeSpec &SS,
                                            const DeclSpec &DS,
                                            SourceLocation ColonColonLoc);
+
+  bool ActOnCXXNestedNameSpecifierReifTypename(CXXScopeSpec &SS,
+                                               SourceLocation TypenameLoc, ParsedType T,
+                                               SourceLocation ColonColonLoc);
 
   bool IsInvalidUnlessNestedName(Scope *S, CXXScopeSpec &SS,
                                  NestedNameSpecInfo &IdInfo,
@@ -6709,10 +6841,24 @@ public:
                                     Expr *InitList,
                                     SourceLocation EllipsisLoc);
 
+  MemInitResult ActOnMemInitializer(Decl *ConstructorD,
+                                    Scope *S,
+                                    CXXScopeSpec &SS,
+                                    IdentifierInfo *MemberOrBase,
+                                    QualType BaseTy,
+                                    ParsedType TemplateTypeTy,
+                                    const DeclSpec &DS,
+                                    SourceLocation IdLoc,
+                                    SourceLocation LParenLoc,
+                                    ArrayRef<Expr *> Args,
+                                    SourceLocation RParenLoc,
+                                    SourceLocation EllipsisLoc);
+
   MemInitResult BuildMemInitializer(Decl *ConstructorD,
                                     Scope *S,
                                     CXXScopeSpec &SS,
                                     IdentifierInfo *MemberOrBase,
+                                    QualType ReifierType,
                                     ParsedType TemplateTypeTy,
                                     const DeclSpec &DS,
                                     SourceLocation IdLoc,
@@ -6835,6 +6981,8 @@ public:
   /// Add [[gsl::Pointer]] attributes for std:: types.
   void inferGslPointerAttribute(TypedefNameDecl *TD);
 
+  void suggestLifetimeAttribute(CXXRecordDecl *Record);
+
   void CheckCompletedCXXClass(Scope *S, CXXRecordDecl *Record);
 
   /// Check that the C++ class annoated with "trivial_abi" satisfies all the
@@ -6846,7 +6994,7 @@ public:
                                          SourceLocation RBrac,
                                          const ParsedAttributesView &AttrList);
   void ActOnFinishCXXMemberDecls();
-  void ActOnFinishCXXNonNestedClass();
+  void ActOnFinishCXXNonNestedClass(Decl *D);
 
   void ActOnReenterCXXMethodParameter(Scope *S, ParmVarDecl *Param);
   unsigned ActOnReenterTemplateScope(Decl *Template,
@@ -6877,6 +7025,15 @@ public:
                                   TypeSourceInfo *TSInfo);
   Decl *ActOnFriendTypeDecl(Scope *S, const DeclSpec &DS,
                             MultiTemplateParamsArg TemplateParams);
+
+  bool GetFriendFunctionDC(LookupResult &Previous,
+                           Scope *S, CXXScopeSpec &SS,
+                           const DeclarationNameInfo &NameInfo,
+                           SourceLocation StartLoc,
+                           SourceLocation Loc,
+                           bool IsFunctionDefinition,
+                           bool IsTemplateId,
+                           DeclContext *&DC, Scope *&DCScope);
   NamedDecl *ActOnFriendFunctionDecl(Scope *S, Declarator &D,
                                      MultiTemplateParamsArg TemplateParams);
 
@@ -6915,7 +7072,8 @@ public:
                                        SourceRange SpecifierRange,
                                        bool Virtual, AccessSpecifier Access,
                                        TypeSourceInfo *TInfo,
-                                       SourceLocation EllipsisLoc);
+                                       SourceLocation EllipsisLoc,
+                                       bool VariadicReifier = false);
 
   BaseResult ActOnBaseSpecifier(Decl *classdecl,
                                 SourceRange SpecifierRange,
@@ -6923,12 +7081,29 @@ public:
                                 bool Virtual, AccessSpecifier Access,
                                 ParsedType basetype,
                                 SourceLocation BaseLoc,
-                                SourceLocation EllipsisLoc);
+                                SourceLocation EllipsisLoc,
+                                bool VariadicReifier = false);
 
   bool AttachBaseSpecifiers(CXXRecordDecl *Class,
                             MutableArrayRef<CXXBaseSpecifier *> Bases);
   void ActOnBaseSpecifiers(Decl *ClassDecl,
                            MutableArrayRef<CXXBaseSpecifier *> Bases);
+
+  /// Find the base class to decompose in a built-in decomposition of a class
+  /// type. This base class search is, unfortunately, not quite like any other
+  /// that we perform anywhere else in C++.
+  DeclAccessPair FindDecomposableBaseClass(SourceLocation Loc,
+                                           const CXXRecordDecl *RD,
+                                           CXXCastPath &BasePath);
+  ExprResult ActOnCXXSelectMemberExpr(CXXRecordDecl *OrigRD,
+                                      VarDecl *Base, Expr *Index,
+                                      SourceLocation KWLoc = SourceLocation(),
+                                      SourceLocation BaseLoc = SourceLocation(),
+                                      SourceLocation IdxLoc = SourceLocation());
+  ExprResult ActOnCXXSelectPackExpr(Expr *Base, Expr *Index,
+                                    SourceLocation KWLoc = SourceLocation(),
+                                    SourceLocation BaseLoc = SourceLocation(),
+                                    SourceLocation IdxLoc = SourceLocation());
 
   bool IsDerivedFrom(SourceLocation Loc, QualType Derived, QualType Base);
   bool IsDerivedFrom(SourceLocation Loc, QualType Derived, QualType Base,
@@ -7277,11 +7452,12 @@ public:
       bool SuppressDiagnostic = false);
 
   DeclResult CheckClassTemplate(
-      Scope *S, unsigned TagSpec, TagUseKind TUK, SourceLocation KWLoc,
-      CXXScopeSpec &SS, IdentifierInfo *Name, SourceLocation NameLoc,
-      const ParsedAttributesView &Attr, TemplateParameterList *TemplateParams,
-      AccessSpecifier AS, SourceLocation ModulePrivateLoc,
-      SourceLocation FriendLoc, unsigned NumOuterTemplateParamLists,
+      Scope *S, unsigned TagSpec, Expr *Metafunction, TagUseKind TUK,
+      SourceLocation KWLoc, CXXScopeSpec &SS, IdentifierInfo *Name,
+      SourceLocation NameLoc, const ParsedAttributesView &Attr,
+      TemplateParameterList *TemplateParams, AccessSpecifier AS,
+      SourceLocation ModulePrivateLoc, SourceLocation FriendLoc,
+      unsigned NumOuterTemplateParamLists,
       TemplateParameterList **OuterTemplateParamLists,
       SkipBodyInfo *SkipBody = nullptr);
 
@@ -7295,6 +7471,8 @@ public:
   TemplateArgumentLoc getIdentityTemplateArgumentLoc(NamedDecl *Param,
                                                      SourceLocation Location);
 
+  TemplateArgumentLoc translateTemplateArgument(
+                                             const ParsedTemplateArgument &Arg);
   void translateTemplateArguments(const ASTTemplateArgsPtr &In,
                                   TemplateArgumentListInfo &Out);
 
@@ -8324,6 +8502,9 @@ public:
       /// template which was deferred until it was needed.
       ExceptionSpecInstantiation,
 
+      /// We are instantiating the body of a range-based loop over a tuple.
+      ForLoopInstantiation,
+
       /// We are instantiating a requirement of a requires expression.
       RequirementInstantiation,
 
@@ -8387,6 +8568,13 @@ public:
     /// performing the instantiation, for substitutions of prior template
     /// arguments.
     NamedDecl *Template;
+
+    /// The dependent for loop body in which we are performing
+    /// substitutions.
+    ///
+    // TODO: Make this a union with Entity since we are instantiating either
+    // a declaration or a statement, never both.
+    Stmt *Loop;
 
     /// The list of template arguments we are substituting, if they
     /// are not part of the entity.
@@ -8656,6 +8844,12 @@ public:
     /// atomic constraint during constraint normalization.
     InstantiatingTemplate(Sema &SemaRef, SourceLocation PointOfInstantiation,
                           ParameterMappingSubstitution, NamedDecl *Template,
+                          SourceRange InstantiationRange);
+
+    /// \brief Note that we are substituting into the body of a for-tuple
+    /// statement.
+    InstantiatingTemplate(Sema &SemaRef, SourceLocation PointOfInstantiation,
+                          Stmt *S, ArrayRef<TemplateArgument> TemplateArgs,
                           SourceRange InstantiationRange);
 
     /// \brief Note that we are substituting template arguments into a part of
@@ -9005,6 +9199,8 @@ public:
                   const MultiLevelTemplateArgumentList &TemplateArgs,
                   SmallVectorImpl<Expr *> &Outputs);
 
+  using DeclMappingList = SmallVector<std::pair<Decl *, Decl *>, 8>;
+
   StmtResult SubstStmt(Stmt *S,
                        const MultiLevelTemplateArgumentList &TemplateArgs);
 
@@ -9100,6 +9296,9 @@ public:
   DeclarationNameInfo
   SubstDeclarationNameInfo(const DeclarationNameInfo &NameInfo,
                            const MultiLevelTemplateArgumentList &TemplateArgs);
+  IdentifierInfo *
+  SubstIdentifierInfo(IdentifierInfo *II,
+                      const MultiLevelTemplateArgumentList &TemplateArgs);
   TemplateName
   SubstTemplateName(NestedNameSpecifierLoc QualifierLoc, TemplateName Name,
                     SourceLocation Loc,
@@ -9866,6 +10065,406 @@ public:
   /// Check that the expression co_await promise.final_suspend() shall not be
   /// potentially-throwing.
   bool checkFinalSuspendNoThrow(const Stmt *FinalSuspend);
+
+  //===--------------------------------------------------------------------===//
+  // Metaprogramming
+  //
+
+private:
+  bool ReflectionScope = false;
+
+  struct ReflectionCallbackImpl : public ReflectionCallback {
+    Sema &SemaRef;
+
+    ReflectionCallbackImpl(Sema &SemaRef) : SemaRef(SemaRef) { }
+
+    virtual bool EvalTypeTrait(TypeTrait Kind,
+                               ArrayRef<TypeSourceInfo *> Args) override;
+  };
+
+  ReflectionCallbackImpl ReflectionCallbackObj;
+
+  bool ParsingOverloads = false;
+  bool ImmediateInvocation = false;
+public:
+  EnumConstantDecl *LastEnumConstDecl = nullptr;
+
+  ReflectionCallback *GetReflectionCallbackObj() {
+    return &ReflectionCallbackObj;
+  }
+
+  bool isReflecting() const {
+    return ReflectionScope;
+  }
+
+  bool isParsingOverloads() const {
+    return ParsingOverloads;
+  }
+
+  class OverloadParseRAII {
+    Sema &S;
+    bool PreviouslyParsingOverloads;
+  public:
+    OverloadParseRAII(Sema &S)
+      : S(S), PreviouslyParsingOverloads(S.ParsingOverloads) {
+      S.ParsingOverloads = true;
+    }
+    ~OverloadParseRAII() {
+      S.ParsingOverloads = PreviouslyParsingOverloads;
+    }
+  };
+
+  ParsedReflectionOperand ActOnReflectedType(TypeResult T);
+  ParsedReflectionOperand ActOnReflectedTemplate(ParsedTemplateArgument T);
+  ParsedReflectionOperand ActOnReflectedNamespace(CXXScopeSpec &SS,
+                                                  SourceLocation &Loc,
+                                                  Decl *D);
+  ParsedReflectionOperand ActOnReflectedNamespace(SourceLocation Loc);
+  ParsedReflectionOperand ActOnReflectedExpression(Expr *E);
+
+  ExprResult ActOnCXXReflectExpr(SourceLocation KWLoc,
+                                 ParsedReflectionOperand Ref,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc);
+
+  ExprResult BuildCXXReflectExpr(SourceLocation KWLoc, InvalidReflection *IR,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc);
+  ExprResult BuildCXXReflectExpr(SourceLocation KWLoc, QualType T,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc);
+  ExprResult BuildCXXReflectExpr(SourceLocation KWLoc, TemplateName N,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc);
+  ExprResult BuildCXXReflectExpr(SourceLocation KWLoc, NamespaceName N,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc);
+  ExprResult BuildCXXReflectExpr(SourceLocation KWLoc, Expr *E,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc);
+  ExprResult BuildCXXReflectExpr(SourceLocation KWLoc, Decl *D,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc);
+  ExprResult BuildCXXReflectExpr(SourceLocation KWLoc, CXXBaseSpecifier *B,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc);
+  ExprResult BuildInvalidCXXReflectExpr(SourceLocation KWLoc,
+                                        SourceLocation LParenLoc,
+                                        SourceLocation RParenLoc);
+
+  ExprResult BuildCXXReflectExpr(APValue Reflection, SourceLocation Loc);
+
+  ExprResult ActOnCXXInvalidReflectionExpr(Expr *MessageExpr,
+                                           SourceLocation BuiltinLoc,
+                                           SourceLocation RParenLoc);
+
+  ExprResult BuildCXXInvalidReflectionExpr(Expr *MessageExpr,
+                                           SourceLocation BuiltinLoc,
+                                           SourceLocation RParenLoc);
+
+  ExprResult ActOnCXXReflectionReadQuery(SourceLocation KWLoc,
+                                         SmallVectorImpl<Expr *> &Args,
+                                         SourceLocation LParenLoc,
+                                         SourceLocation RparenLoc);
+
+  ExprResult ActOnCXXReflectionWriteQuery(SourceLocation KWLoc,
+                                          SmallVectorImpl<Expr *> &Args,
+                                          SourceLocation LParenLoc,
+                                          SourceLocation RparenLoc);
+
+  ExprResult ActOnCXXReflectPrintLiteral(SourceLocation KWLoc,
+                                         SmallVectorImpl<Expr *> &Args,
+                                         SourceLocation LParenLoc,
+                                         SourceLocation RparenLoc);
+  ExprResult ActOnCXXReflectPrintReflection(SourceLocation KWLoc,
+                                            Expr *Reflection,
+                                            SourceLocation LParenLoc,
+                                            SourceLocation RparenLoc);
+  ExprResult ActOnCXXReflectDumpReflection(SourceLocation KWLoc,
+                                           Expr *Reflection,
+                                           SourceLocation LParenLoc,
+                                           SourceLocation RparenLoc);
+  ExprResult ActOnCXXCompilerErrorExpr(Expr *MessageExpr,
+                                       SourceLocation BuiltinLoc,
+                                       SourceLocation RParenLoc);
+  ExprResult BuildCXXCompilerErrorExpr(Expr *MessageExpr,
+                                       SourceLocation BuiltinLoc,
+                                       SourceLocation RParenLoc);
+
+  ExprResult ActOnCXXIdExprExpr(SourceLocation KwLoc,
+                                Expr *Refl,
+                                SourceLocation LParenLoc,
+                                SourceLocation RParenLoc,
+                                SourceLocation EllipsisLoc = SourceLocation());
+
+  ExprResult ActOnCXXMemberIdExprExpr(
+      Expr *Base, Expr *Refl, bool IsArrow, SourceLocation OpLoc,
+      SourceLocation TemplateKWLoc,
+      SourceLocation LParenLoc,  SourceLocation RParenLoc,
+      const TemplateArgumentListInfo *TemplateArgs);
+
+  ExprResult ActOnCXXMemberIdExprExpr(
+      Expr *Base, Expr *Refl, bool IsArrow, SourceLocation OpLoc,
+      SourceLocation TemplateKWLoc,
+      SourceLocation LParenLoc,  SourceLocation RParenLoc,
+      SourceLocation LAngleLoc, ASTTemplateArgsPtr TemplateArgsPtr,
+      SourceLocation RAngleLoc);
+
+  bool
+  ActOnVariadicReifier(SmallVectorImpl<Expr *> &Expressions,
+                       SourceLocation KWLoc,
+                       IdentifierInfo *KW,
+                       Expr *Range,
+                       SourceLocation LParenLoc,
+                       SourceLocation EllipsisLoc,
+                       SourceLocation RParenLoc);
+  bool
+  ActOnVariadicReifier(SmallVectorImpl<QualType> &Types,
+                       SourceLocation KWLoc,
+                       Expr *Range,
+                       SourceLocation LParenLoc,
+                       SourceLocation EllipsisLoc,
+                       SourceLocation RParenLoc);
+
+  /// A facility used to determine the begin and end of a constexpr range
+  /// or array.
+  struct ExpansionContextBuilder {
+    ExpansionContextBuilder(Sema &S, Scope *CS, Expr *Range)
+      : SemaRef(S), CurScope(CS), Range(Range) { }
+
+    /// Construct calls to std::begin(Range) and std::end(Range)
+    /// Returns true on error.
+    bool BuildCalls();
+
+    Expr *getRangeBeginCall() const { return RangeBegin; }
+    Expr *getRangeEndCall() const { return RangeEnd; }
+
+    Expr *getRange() const { return Range; }
+
+    RangeKind getKind() const { return Kind; }
+  private:
+    bool BuildArrayCalls();
+    bool BuildRangeCalls();
+
+  private:
+    Sema &SemaRef;
+
+    /// The scope in which analysis will be performed.
+    Scope *CurScope;
+
+    /// Calls to std::begin(range) and std::end(range), respectively.
+    Expr *RangeBegin = nullptr;
+    Expr *RangeEnd = nullptr;
+
+    /// The Range that we are constructing an expansion context from.
+    Expr *Range;
+
+    RangeKind Kind;
+  };
+
+  /// Traverse a C++ Constexpr Range
+  struct RangeTraverser {
+    RangeTraverser(Sema &SemaRef, RangeKind Kind, Expr *RangeBegin,
+                   Expr *RangeEnd)
+      : SemaRef(SemaRef), Current(RangeBegin), RangeEnd(RangeEnd),
+      Kind(Kind), I() { }
+
+    /// Current == RangeEnd
+    explicit operator bool();
+
+    /// Dereference and evaluate the current value as a constant expression.
+    Expr *operator*();
+
+    /// Call std::next(Current, 1) if this is a constexpr range,
+    /// Increment the array subscript if it is an array.
+    RangeTraverser &operator++();
+
+    /// Get the range kind.
+    RangeKind getKind() const { return Kind; }
+
+  private:
+    Sema &SemaRef;
+
+    /// The current element in the traversal
+    Expr *Current;
+
+    /// One-past-the-end iterator (std::end) of the range we are traversing.
+    Expr *RangeEnd = nullptr;
+
+    /// The kind of product type we are traversing.
+    RangeKind Kind;
+
+    /// An integer Index that keeps track of the current element.
+    std::size_t I;
+  };
+
+  ExprResult ActOnCXXValueOfExpr(SourceLocation KwLoc,
+                                 Expr *Refl,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc,
+                                 SourceLocation EllipsisLoc = SourceLocation());
+
+  ExprResult ActOnCXXDependentVariadicReifierExpr(Expr *Range,
+                                                  SourceLocation KWLoc,
+                                                  IdentifierInfo *KW,
+                                                  SourceLocation LParenLoc,
+                                                  SourceLocation EllipsisLoc,
+                                                  SourceLocation RParenLoc);
+
+  bool ActOnCXXIdentifierSplice(
+      ArrayRef<Expr *> Parts, IdentifierInfo *&Result);
+  bool BuildCXXIdentifierSplice(
+      ArrayRef<Expr *> Parts, IdentifierInfo *&Result);
+
+  ExprResult ActOnCXXDependentSpliceIdExpression(
+      CXXScopeSpec &SS, SourceLocation TemplateKWLoc,
+      DeclarationNameInfo NameInfo,
+      const TemplateArgumentListInfo *TemplateArgs,
+      bool HasTrailingLParen, bool IsAddressOfOperand);
+  ExprResult BuildCXXDependentSpliceIdExpression(
+      CXXScopeSpec &SS, SourceLocation TemplateKWLoc,
+      DeclarationNameInfo NameInfo,
+      const TemplateArgumentListInfo *TemplateArgs,
+      bool HasTrailingLParen, bool IsAddressOfOperand);
+
+
+  bool ActOnCXXDependentSpliceIdExpression();
+
+  QualType BuildReflectedType(SourceLocation TypenameLoc, Expr *E);
+  TypeResult ActOnReflectedTypeSpecifier(SourceLocation TypenameLoc, Expr *E);
+
+  ParsedTemplateArgument ActOnReflectedTemplateArgument(SourceLocation KWLoc,
+                                                        Expr *E);
+
+  ExprResult ActOnMemberAccessExpr(Expr *Base,
+                                   SourceLocation OpLoc,
+                                   tok::TokenKind OpKind,
+                                   Expr *IdExpr);
+  ExprResult BuildMemberReferenceExpr(Expr *Base, QualType BaseType,
+                                      SourceLocation OpLoc, bool IsArrow,
+                                      Expr *IdExpr);
+
+  ExprResult ActOnCXXConcatenateExpr(SmallVectorImpl<Expr *>& Parts,
+                                     SourceLocation KWLoc,
+                                     SourceLocation LParenLoc,
+                                     SourceLocation RParenLoc);
+
+  ExprResult BuildCXXConcatenateExpr(SmallVectorImpl<Expr *>& Parts,
+                                     SourceLocation KWLoc);
+
+private:
+  /// A vector of parse scopes used by tree transform to perform
+  /// delayed lookup.
+  SmallVector<Scope *, 4> *CurrentTTParseScopeStack = nullptr;
+
+public:
+  /// A class for managing fake parse scopes during tree transform
+  /// evaluation in an RAII fashion.
+  class FakeParseScope {
+    Sema &SemaRef;
+
+    DiagnosticsEngine &getDiagnostics();
+
+    void PushNewScope(unsigned ScopeFlags) {
+      if (SemaRef.CurrentTTParseScopeStack == nullptr)
+        return;
+
+      Scope *LastScope = SemaRef.getMostRecentTTParseScope();
+      Scope *NewScope = new Scope(LastScope, ScopeFlags, getDiagnostics());
+      SemaRef.CurrentTTParseScopeStack->push_back(NewScope);
+    }
+
+    void PopOldScope() {
+      if (SemaRef.CurrentTTParseScopeStack == nullptr)
+        return;
+
+      delete SemaRef.CurrentTTParseScopeStack->pop_back_val();
+    }
+
+  public:
+    FakeParseScope(Sema &SemaRef, unsigned ScopeFlags)
+      : SemaRef(SemaRef) {
+      PushNewScope(ScopeFlags);
+    }
+
+    ~FakeParseScope() {
+      PopOldScope();
+    }
+  };
+
+  /// Returns a read only view of the current fake parse scopes
+  /// for use by tree transform.
+  const SmallVector<Scope *, 4> getTTParseScopes() const {
+    if (CurrentTTParseScopeStack == nullptr)
+      return { };
+
+    return *CurrentTTParseScopeStack;
+  }
+
+  /// Returns the most recent fake parse scope or nullptr if there
+  /// isn't one for use by tree transform.
+  Scope *getMostRecentTTParseScope() const {
+    if (CurrentTTParseScopeStack == nullptr)
+      return nullptr;
+
+    if (CurrentTTParseScopeStack->empty())
+      return nullptr;
+
+    return CurrentTTParseScopeStack->back();
+  }
+
+  class FakeParseScopeStack {
+    Sema &SemaRef;
+    SmallVector<Scope *, 4> *PreviousParseScopeStack;
+
+  public:
+    FakeParseScopeStack(Sema &SemaRef) : SemaRef(SemaRef) {
+      PreviousParseScopeStack = SemaRef.CurrentTTParseScopeStack;
+      SemaRef.CurrentTTParseScopeStack = new SmallVector<Scope *, 4>();
+    }
+
+    ~FakeParseScopeStack() {
+      delete SemaRef.CurrentTTParseScopeStack;
+      SemaRef.CurrentTTParseScopeStack = PreviousParseScopeStack;
+    }
+  };
+
+  /// RAII object used to temporarily disable semantic diagnostics
+  /// for sematics valid only in reflections.
+  class CXXReflectionScopeRAII {
+    Sema &S;
+    bool PreviouslyInReflection;
+
+  public:
+    CXXReflectionScopeRAII(Sema &S)
+        : S(S), PreviouslyInReflection(S.ReflectionScope) {
+      S.ReflectionScope = true;
+    }
+
+    ~CXXReflectionScopeRAII() {
+      S.ReflectionScope = PreviouslyInReflection;
+    }
+  };
+
+  bool EvaluatingMetaDeclFromParser = false;
+
+  Decl *ActOnCXXMetaprogramDecl(SourceLocation ConstexprLoc);
+  Decl *ActOnCXXInjectionDecl(SourceLocation ConstexprLoc);
+  void ActOnStartCXXMetaprogramDecl(Decl *D, DeclContext *&OriginalDC);
+  void ActOnStartCXXInjectionDecl(Decl *D, DeclContext *&OriginalDC);
+  void ActOnFinishCXXMetaprogramDecl(
+      Decl *D, Stmt *Body, DeclContext *OriginalDC, bool FromParser = false);
+  void ActOnFinishCXXInjectionDecl(
+      Decl *D, Stmt *InjectionStmt, DeclContext *OriginalDC,
+      bool FromParser = false);
+  void ActOnCXXMetaprogramDeclError(Decl *D, DeclContext *OriginalDC);
+  void ActOnCXXInjectionDeclError(Decl *D, DeclContext *OriginalDC);
+
+  bool ActOnCXXInjectedParameter(SourceLocation ArrowLoc, Expr *Reflection,
+                            SmallVectorImpl<DeclaratorChunk::ParamInfo> &Parms);
+
+  void EvaluateCXXMetaDecl(CXXMetaprogramDecl *D, FunctionDecl *FD);
+  void EvaluateCXXMetaDecl(CXXInjectionDecl *D, FunctionDecl *FD);
 
   //===--------------------------------------------------------------------===//
   // OpenCL extensions.
@@ -11464,7 +12063,9 @@ public:
           HasKnownValue(IsConstexpr && Condition.get() &&
                         !Condition.get()->isValueDependent()),
           KnownValue(HasKnownValue &&
-                     !!Condition.get()->EvaluateKnownConstInt(S.Context)) {}
+                     !!Condition.get()->EvaluateKnownConstInt(
+                          Expr::EvalContext(
+                              S.Context, S.GetReflectionCallbackObj()))) {}
     explicit ConditionResult(bool Invalid)
         : ConditionVar(nullptr), Condition(nullptr), Invalid(Invalid),
           HasKnownValue(false), KnownValue(false) {}
@@ -11496,6 +12097,98 @@ public:
   ConditionResult ActOnConditionVariable(Decl *ConditionVar,
                                          SourceLocation StmtLoc,
                                          ConditionKind CK);
+private:
+  bool FragmentScope = false;
+  SmallVector<CXXFragmentCaptureExpr *, 10> DetachedCaptures;
+
+  void attachCaptures(CXXFragmentExpr *E);
+public:
+  /// RAII object used to enable the unquote operator for fragments.
+  class CXXFragmentScopeRAII {
+    Sema &S;
+    bool PreviouslyInFragment;
+
+  public:
+    CXXFragmentScopeRAII(Sema &S)
+        : S(S), PreviouslyInFragment(S.FragmentScope) {
+      S.FragmentScope = true;
+    }
+
+    ~CXXFragmentScopeRAII() {
+      S.FragmentScope = PreviouslyInFragment;
+      assert(S.DetachedCaptures.empty() && "captures left unattached");
+    }
+  };
+
+  Decl *ActOnStartCXXStmtFragment(
+      Scope *S, SourceLocation Loc, bool HasThisPtr);
+  void ActOnCXXStmtFragmentError(Scope *S);
+  Decl *ActOnFinishCXXStmtFragment(Scope *S, Decl *StmtFragment, Stmt *Body);
+  CXXFragmentDecl *ActOnStartCXXFragment(Scope *S, SourceLocation Loc);
+  CXXFragmentDecl *ActOnFinishCXXFragment(
+      Scope *S, Decl *Fragment, Decl *Content);
+  ExprResult ActOnCXXFragmentCaptureExpr(
+      SourceLocation BeginLoc, unsigned Offset, SourceLocation EndLoc);
+  ExprResult BuildCXXFragmentCaptureExpr(
+      SourceLocation BeginLoc, const Expr *FragmentExpr, unsigned Offset,
+      SourceLocation EndLoc);
+  ExprResult ActOnCXXFragmentExpr(
+      SourceLocation Loc, Decl *Fragment, SmallVectorImpl<Expr *> &Captures);
+  ExprResult BuildCXXFragmentExpr(
+      SourceLocation Loc, Decl *Fragment, SmallVectorImpl<Expr *> &Captures);
+
+  void ActOnCXXLegacyFragmentCapture(SmallVectorImpl<Expr *> &Captures);
+  CXXFragmentDecl *ActOnStartCXXLegacyFragment(
+      Scope *S, SourceLocation Loc, SmallVectorImpl<Expr *> &Captures);
+  ExprResult ActOnCXXLegacyFragmentExpr(
+      SourceLocation Loc, Decl *Fragment, SmallVectorImpl<Expr *> &Captures);
+  ExprResult BuildCXXLegacyFragmentExpr(
+      SourceLocation Loc, Decl *Fragment, SmallVectorImpl<Expr *> &Captures);
+
+  bool ActOnCXXSpecifiedNamespaceInjectionContext(SourceLocation BeginLoc,
+                                                  Decl *NamespaceDecl,
+                                        CXXInjectionContextSpecifier &Specifier,
+                                                  SourceLocation EndLoc);
+  bool ActOnCXXParentNamespaceInjectionContext(SourceLocation KWLoc,
+                                       CXXInjectionContextSpecifier &Specifier);
+
+  StmtResult ActOnCXXInjectionStmt(SourceLocation Loc,
+          const CXXInjectionContextSpecifier &ContextSpecifier, Expr *Operand);
+  StmtResult BuildCXXInjectionStmt(SourceLocation Loc,
+          const CXXInjectionContextSpecifier &ContextSpecifier, Expr *Operand);
+
+  StmtResult ActOnCXXBaseInjectionStmt(
+      SourceLocation KWLoc, SourceLocation LParenLoc,
+      SmallVectorImpl<CXXBaseSpecifier *> &BaseSpecifiers,
+      SourceLocation RParenLoc);
+  StmtResult BuildCXXBaseInjectionStmt(
+      SourceLocation KWLoc, SourceLocation LParenLoc,
+      SmallVectorImpl<CXXBaseSpecifier *> &BaseSpecifiers,
+      SourceLocation RParenLoc);
+
+  bool ApplyInjection(CXXInjectorDecl *MD, InjectionEffect &IE);
+  bool ApplyEffects(CXXInjectorDecl *MD,
+                    SmallVectorImpl<InjectionEffect> &Effects);
+  bool HasPendingInjections(DeclContext *D);
+  bool ShouldInjectPendingDefinitionsOf(CXXRecordDecl *D);
+  void InjectPendingFieldDefinitions();
+  void InjectPendingMethodDefinitions();
+  void InjectPendingFriendFunctionDefinitions();
+  void InjectPendingFieldDefinitions(InjectionContext *Ctx);
+  void InjectPendingMethodDefinitions(InjectionContext *Ctx);
+  void InjectPendingFriendFunctionDefinitions(InjectionContext *Ctx);
+  bool InjectPendingNamespaceInjections();
+
+  CXXRecordDecl *ActOnStartMetaclass(CXXRecordDecl *Class, Expr *Metafunction,
+                                     TagUseKind TUK = TUK_Definition);
+  void ActOnStartMetaclassDefinition(CXXRecordDecl *Proto);
+  CXXRecordDecl *ActOnFinishMetaclass(CXXRecordDecl *Proto, Scope *S,
+                                      SourceRange BraceRange);
+
+  DeclGroupPtrTy ActOnCXXTypeTransformerDecl(SourceLocation UsingLoc, bool IsClass,
+                                             SourceLocation IdLoc,
+                                             IdentifierInfo *Id,
+                                             Expr *Generator, Expr *Reflection);
 
   DeclResult ActOnCXXConditionDeclaration(Scope *S, Declarator &D);
 
@@ -11575,7 +12268,7 @@ public:
   /// the correct width, and that the field type is valid.
   /// Returns false on success.
   /// Can optionally return whether the bit-field is of width 0
-  ExprResult VerifyBitField(SourceLocation FieldLoc, IdentifierInfo *FieldName,
+  ExprResult VerifyBitField(SourceLocation FieldLoc, DeclarationName FieldName,
                             QualType FieldTy, bool IsMsStruct,
                             Expr *BitWidth, bool *ZeroWidth = nullptr);
 
@@ -12370,6 +13063,28 @@ private:
   /// directives, like -Wpragma-pack.
   sema::SemaPPCallbacks *SemaPPCallbackHandler;
 
+public:
+  /// Tracks the nesting level of loop expansions. A loop expansion is
+  /// is initially dependent when parsed an instantiated. It is non-dependent
+  /// after that.
+  ///
+  /// This affects ODR usage. In particular, expressions in the body of
+  /// these statements aren't really expressions until they're instantiated.
+  struct LoopExpansionContext
+  {
+    LoopExpansionContext(FunctionDecl *F)
+      : Fn(F)
+    { }
+
+    FunctionDecl *Fn;
+    SmallVector<Stmt *, 4> Loops;
+  };
+
+  /// Maintains a stack of expansion contexts.
+  SmallVector<LoopExpansionContext, 4> LoopExpansionStack;
+
+  void PushLoopExpansion(Stmt *S);
+  void PopLoopExpansion();
 protected:
   friend class Parser;
   friend class InitializationSequence;

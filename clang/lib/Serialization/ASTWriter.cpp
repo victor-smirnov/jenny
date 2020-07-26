@@ -330,6 +330,10 @@ void TypeLocWriter::VisitUnresolvedUsingTypeLoc(UnresolvedUsingTypeLoc TL) {
   Record.AddSourceLocation(TL.getNameLoc());
 }
 
+void TypeLocWriter::VisitCXXRequiredTypeTypeLoc(CXXRequiredTypeTypeLoc TL) {
+  Record.AddSourceLocation(TL.getNameLoc());
+}
+
 void TypeLocWriter::VisitTypedefTypeLoc(TypedefTypeLoc TL) {
   Record.AddSourceLocation(TL.getNameLoc());
 }
@@ -357,6 +361,10 @@ void TypeLocWriter::VisitTypeOfTypeLoc(TypeOfTypeLoc TL) {
 }
 
 void TypeLocWriter::VisitDecltypeTypeLoc(DecltypeTypeLoc TL) {
+  Record.AddSourceLocation(TL.getNameLoc());
+}
+
+void TypeLocWriter::VisitReflectedTypeLoc(ReflectedTypeLoc TL) {
   Record.AddSourceLocation(TL.getNameLoc());
 }
 
@@ -463,6 +471,11 @@ void TypeLocWriter::VisitDependentTemplateSpecializationTypeLoc(
 }
 
 void TypeLocWriter::VisitPackExpansionTypeLoc(PackExpansionTypeLoc TL) {
+  Record.AddSourceLocation(TL.getEllipsisLoc());
+}
+
+void TypeLocWriter::VisitCXXDependentVariadicReifierTypeLoc
+(CXXDependentVariadicReifierTypeLoc TL) {
   Record.AddSourceLocation(TL.getEllipsisLoc());
 }
 
@@ -4649,8 +4662,8 @@ ASTFileSignature ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
     // Sort the identifiers to visit based on their name.
     llvm::sort(IIs, llvm::deref<std::less<>>());
     for (const IdentifierInfo *II : IIs) {
-      for (IdentifierResolver::iterator D = SemaRef.IdResolver.begin(II),
-                                     DEnd = SemaRef.IdResolver.end();
+      for (IdentifierResolver::iterator D = SemaRef.IdResolver->begin(II),
+                                     DEnd = SemaRef.IdResolver->end();
            D != DEnd; ++D) {
         GetDeclRef(*D);
       }
@@ -4787,7 +4800,7 @@ ASTFileSignature ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
   WriteSelectors(SemaRef);
   WriteReferencedSelectorsPool(SemaRef);
   WriteLateParsedTemplates(SemaRef);
-  WriteIdentifierTable(PP, SemaRef.IdResolver, isModule);
+  WriteIdentifierTable(PP, *SemaRef.IdResolver, isModule);
   WriteFPPragmaOptions(SemaRef.CurFPFeatureOverrides());
   WriteOpenCLExtensions(SemaRef);
   WriteOpenCLExtensionTypes(SemaRef);
@@ -5175,6 +5188,8 @@ void ASTRecordWriter::AddAPValue(const APValue &Value) {
   case APValue::Union:
   case APValue::MemberPointer:
   case APValue::AddrLabelDiff:
+  case APValue::Reflection:
+  case APValue::Fragment:
     // TODO : Handle all these APValue::ValueKind.
     return;
   }
@@ -5253,6 +5268,7 @@ void ASTRecordWriter::AddCXXTemporary(const CXXTemporary *Temp) {
 void ASTRecordWriter::AddTemplateArgumentLocInfo(
     TemplateArgument::ArgKind Kind, const TemplateArgumentLocInfo &Arg) {
   switch (Kind) {
+  case TemplateArgument::Reflected:
   case TemplateArgument::Expression:
     AddStmt(Arg.getAsExpr());
     break;

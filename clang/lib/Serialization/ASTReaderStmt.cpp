@@ -479,6 +479,76 @@ void ASTStmtReader::VisitCoyieldExpr(CoyieldExpr *E) {
   E->OpaqueValue = cast_or_null<OpaqueValueExpr>(Record.readSubStmt());
 }
 
+void ASTStmtReader::VisitCXXReflectExpr(CXXReflectExpr *S) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXInvalidReflectionExpr(CXXInvalidReflectionExpr *S) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXReflectionReadQueryExpr(
+                                                CXXReflectionReadQueryExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXReflectionWriteQueryExpr(
+                                               CXXReflectionWriteQueryExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXReflectPrintLiteralExpr(
+                                                CXXReflectPrintLiteralExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXReflectPrintReflectionExpr(
+                                             CXXReflectPrintReflectionExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXReflectDumpReflectionExpr(
+                                              CXXReflectDumpReflectionExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXCompilerErrorExpr(CXXCompilerErrorExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXIdExprExpr(CXXIdExprExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXMemberIdExprExpr(CXXMemberIdExprExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXDependentVariadicReifierExpr(
+  CXXDependentVariadicReifierExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXDependentSpliceIdExpr(CXXDependentSpliceIdExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXValueOfExpr(CXXValueOfExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXConcatenateExpr(CXXConcatenateExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtReader::VisitCXXFragmentExpr(CXXFragmentExpr *E) {
+  llvm_unreachable("not implemented");
+}
+
+void ASTStmtReader::VisitCXXFragmentCaptureExpr(CXXFragmentCaptureExpr *E) {
+  llvm_unreachable("not implemented");
+}
+
 void ASTStmtReader::VisitDependentCoawaitExpr(DependentCoawaitExpr *E) {
   VisitExpr(E);
   E->KeywordLoc = readSourceLocation();
@@ -986,6 +1056,19 @@ void ASTStmtReader::VisitOMPIteratorExpr(OMPIteratorExpr *E) {
     HD.CounterUpdate = Record.readSubExpr();
     E->setHelper(I, HD);
   }
+}
+
+void ASTStmtReader::VisitCXXSelectionExpr(CXXSelectionExpr *E) {
+  // FIXME: Implement me.
+  assert(false);
+}
+
+void ASTStmtReader::VisitCXXSelectMemberExpr(CXXSelectMemberExpr *E) {
+  VisitExpr(E);
+}
+
+void ASTStmtReader::VisitCXXSelectPackExpr(CXXSelectPackExpr *E) {
+  VisitExpr(E);
 }
 
 void ASTStmtReader::VisitCallExpr(CallExpr *E) {
@@ -1650,6 +1733,27 @@ void ASTStmtReader::VisitCXXForRangeStmt(CXXForRangeStmt *S) {
   S->setInc(Record.readSubExpr());
   S->setLoopVarStmt(Record.readSubStmt());
   S->setBody(Record.readSubStmt());
+}
+
+void ASTStmtReader::VisitCXXPackExpansionStmt(CXXPackExpansionStmt *S) {
+  VisitStmt(S);
+  // FIXME: Implement me.
+}
+
+void ASTStmtReader::VisitCXXCompositeExpansionStmt(
+                                                 CXXCompositeExpansionStmt *S) {
+  VisitStmt(S);
+  // FIXME: Implement me.
+}
+
+void ASTStmtReader::VisitCXXInjectionStmt(CXXInjectionStmt *S) {
+  VisitStmt(S);
+  // FIXME: Implement me.
+}
+
+void ASTStmtReader::VisitCXXBaseInjectionStmt(CXXBaseInjectionStmt *S) {
+  VisitStmt(S);
+  // FIXME: Implement me.
 }
 
 void ASTStmtReader::VisitMSDependentExistsStmt(MSDependentExistsStmt *S) {
@@ -3232,6 +3336,22 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
 
     case STMT_CXX_FOR_RANGE:
       S = new (Context) CXXForRangeStmt(Empty);
+      break;
+
+    case STMT_CXX_PACK_EXPANSION:
+      S = new (Context) CXXPackExpansionStmt(Empty);
+      break;
+
+    case STMT_CXX_COMP_EXPANSION:
+      S = new (Context) CXXCompositeExpansionStmt(Empty);
+      break;
+
+    case STMT_CXX_INJECTION:
+      S = new (Context) CXXInjectionStmt(Empty);
+      break;
+
+    case STMT_CXX_BASE_INJECTION:
+      S = CXXBaseInjectionStmt::CreateEmpty(Context);
       break;
 
     case STMT_MS_DEPENDENT_EXISTS:

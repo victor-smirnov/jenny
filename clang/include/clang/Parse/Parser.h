@@ -66,6 +66,7 @@ class Parser : public CodeCompletionHandler {
   friend class ObjCDeclContextSwitch;
   friend class ParenBraceBracketBalancer;
   friend class BalancedDelimiterTracker;
+  friend class CXXFragmentParseRAII;
 
   Preprocessor &PP;
 
@@ -500,6 +501,51 @@ public:
     return true;
   }
 
+  bool AnnotateIdentifierSplice();
+  bool TryAnnotateIdentifierSplice();
+
+  bool isIdentifier() {
+    if (Tok.is(tok::kw_unqualid) && GetLookAheadToken(2).isNot(tok::ellipsis)) {
+      if (AnnotateIdentifierSplice())
+        return false;
+
+      return true;
+    }
+
+    return Tok.isOneOf(tok::identifier, tok::annot_identifier_splice);
+  }
+
+  // FIXME: This should probably be private similar to the other
+  // special token methods. However, this causes problems for
+  // some static functions for parser implementation details.
+  SourceLocation ConsumeIdentifier() {
+    assert(isIdentifier() && "wrong consume method");
+    SourceLocation Loc = Tok.getLocation();
+
+    // FIXME: This is a bit strange, ConsumeToken
+    // sets PrevTokLocation to the beginning of the token
+    // and ConsumeAnnotationToken sets PrevTokLocation to
+    // the end of the token.
+    //
+    // Both return the current location of the token.
+    if (Tok.isAnnotation()) {
+      PrevTokLocation = Tok.getAnnotationEndLoc();
+    } else {
+      PrevTokLocation = Loc;
+    }
+
+    PP.Lex(Tok);
+    return Loc;
+  }
+
+  SourceLocation ConsumeAsIdentifier() {
+    if (isIdentifier())
+      return ConsumeIdentifier();
+
+    assert(Tok.getIdentifierInfo());
+    return ConsumeToken();
+  }
+
   /// ConsumeAnyToken - Dispatch to the right Consume* method based on the
   /// current token type.  This should only be used in cases where the type of
   /// the token really isn't known, e.g. in error recovery.
@@ -515,6 +561,8 @@ public:
     if (Tok.is(tok::code_completion))
       return ConsumeCodeCompletionTok ? ConsumeCodeCompletionToken()
                                       : handleUnexpectedCodeCompletionToken();
+    if (Tok.isOneOf(tok::identifier, tok::annot_identifier_splice))
+      return ConsumeIdentifier();
     if (Tok.isAnnotation())
       return ConsumeAnnotationToken();
     return ConsumeToken();
@@ -546,7 +594,7 @@ private:
   }
   /// isTokenBrace - Return true if the cur token is '{' or '}'.
   bool isTokenBrace() const {
-    return Tok.isOneOf(tok::l_brace, tok::r_brace);
+    return Tok.isOneOf(tok::l_brace, tok::percentl_brace, tok::r_brace);
   }
   /// isTokenStringLiteral - True if this token is a string-literal.
   bool isTokenStringLiteral() const {
@@ -554,8 +602,9 @@ private:
   }
   /// isTokenSpecial - True if this token requires special consumption methods.
   bool isTokenSpecial() const {
-    return isTokenStringLiteral() || isTokenParen() || isTokenBracket() ||
-           isTokenBrace() || Tok.is(tok::code_completion) || Tok.isAnnotation();
+    return isTokenStringLiteral() || /*Tok.isIdentifier ||*/ isTokenParen() ||
+           isTokenBracket() || isTokenBrace() || Tok.is(tok::code_completion) ||
+           Tok.isAnnotation() || Tok.isOneOf(tok::identifier, tok::annot_identifier_splice);
   }
 
   /// Returns true if the current token is '=' or is a type of '='.
@@ -614,7 +663,7 @@ private:
   ///
   SourceLocation ConsumeBrace() {
     assert(isTokenBrace() && "wrong consume method");
-    if (Tok.getKind() == tok::l_brace)
+    if (Tok.getKind() == tok::l_brace || Tok.getKind() == tok::percentl_brace)
       ++BraceCount;
     else if (BraceCount) {
       AngleBrackets.clear(*this);
@@ -841,7 +890,7 @@ public:
   bool TryAnnotateCXXScopeToken(bool EnteringContext = false);
 
   bool MightBeCXXScopeToken() {
-    return Tok.is(tok::identifier) || Tok.is(tok::coloncolon) ||
+    return isIdentifier() || Tok.is(tok::coloncolon) ||
            (Tok.is(tok::annot_template_id) &&
             NextToken().is(tok::coloncolon)) ||
            Tok.is(tok::kw_decltype) || Tok.is(tok::kw___super);
@@ -1735,6 +1784,7 @@ public:
   ExprResult ParseExpression(TypeCastState isTypeCast = NotTypeCast);
   ExprResult ParseConstantExpressionInExprEvalContext(
       TypeCastState isTypeCast = NotTypeCast);
+  ExprResult ParseConditionalExpression(TypeCastState isTypecast = NotTypeCast);
   ExprResult ParseConstantExpression(TypeCastState isTypeCast = NotTypeCast);
   ExprResult ParseCaseExpression(SourceLocation CaseLoc);
   ExprResult ParseConstraintExpression();
@@ -1972,6 +2022,18 @@ private:
   //===--------------------------------------------------------------------===//
   // C++ if/switch/while/for condition expression.
   struct ForRangeInfo;
+
+  //===--------------------------------------------------------------------===//
+  // C++ Code Injection
+
+  Decl *ParseNamespaceDeclForInjectionContext();
+  bool ParseOptionalCXXInjectionContextSpecifier(
+                                       CXXInjectionContextSpecifier &Specifier);
+  StmtResult ParseCXXInjectionStatement();
+  StmtResult ParseCXXBaseInjectionStatement();
+
+  //===--------------------------------------------------------------------===//
+  // C++ if/switch/while condition expression.
   Sema::ConditionResult ParseCXXCondition(StmtResult *InitStmt,
                                           SourceLocation Loc,
                                           Sema::ConditionKind CK,
@@ -2048,6 +2110,10 @@ private:
   StmtResult
   ParseStatement(SourceLocation *TrailingElseLoc = nullptr,
                  ParsedStmtContext StmtCtx = ParsedStmtContext::SubStmt);
+  StmtResult
+  StmtOrDeclAfterAttributesDefault(ParsedStmtContext StmtCtx,
+                                   ParsedAttributesWithRange &Attrs,
+                                   SourceLocation &GNUAttributeLoc);
   StmtResult ParseStatementOrDeclaration(
       StmtVector &Stmts, ParsedStmtContext StmtCtx,
       SourceLocation *TrailingElseLoc = nullptr);
@@ -2350,9 +2416,10 @@ private:
   void ParseEnumSpecifier(SourceLocation TagLoc, DeclSpec &DS,
                           const ParsedTemplateInfo &TemplateInfo,
                           AccessSpecifier AS, DeclSpecContext DSC);
+  bool ParseEnumeratorIdentifier(DeclarationNameInfo &NameInfo);
   void ParseEnumBody(SourceLocation StartLoc, Decl *TagDecl);
   void ParseStructUnionBody(SourceLocation StartLoc, DeclSpec::TST TagType,
-                            RecordDecl *TagDecl);
+                            Decl *TagDecl);
 
   void ParseStructDeclaration(
       ParsingDeclSpec &DS,
@@ -2943,6 +3010,7 @@ private:
                             SourceLocation UsingLoc,
                             SourceLocation &DeclEnd,
                             ParsedAttributes &attrs);
+  Decl *ParseNamespaceName(CXXScopeSpec &SS, SourceLocation &IdentLoc);
 
   struct UsingDeclarator {
     SourceLocation TypenameLoc;
@@ -2973,8 +3041,20 @@ private:
                             SourceLocation AliasLoc, IdentifierInfo *Alias,
                             SourceLocation &DeclEnd);
 
+  Decl *ParseCXXRequiredTypenameDecl(SourceLocation RequiresLoc,
+                                     DeclaratorContext Ctx, AccessSpecifier AS);
+  Decl *ParseCXXRequiredDeclaratorDecl(SourceLocation RequiresLoc,
+                                       DeclaratorContext Ctx,
+                                       AccessSpecifier AS);
+  Decl *ParseCXXRequiredDecl(DeclaratorContext Ctx,
+                             AccessSpecifier AS = AS_none);
+
+private:
+  bool ParsingTypenameRequires = false;
+
   //===--------------------------------------------------------------------===//
   // C++ 9: classes [class] and C structs/unions.
+public:
   bool isValidAfterTypeSpecifier(bool CouldBeBitfield);
   void ParseClassSpecifier(tok::TokenKind TagTokKind, SourceLocation TagLoc,
                            DeclSpec &DS, const ParsedTemplateInfo &TemplateInfo,
@@ -2989,7 +3069,7 @@ private:
                                    SourceLocation AttrFixitLoc,
                                    ParsedAttributesWithRange &Attrs,
                                    unsigned TagType,
-                                   Decl *TagDecl);
+                                   Decl *&TagDecl);
   ExprResult ParseCXXMemberInitializer(Decl *D, bool IsFunction,
                                        SourceLocation &EqualLoc);
   bool
@@ -3008,6 +3088,16 @@ private:
       DeclSpec::TST TagType, Decl *Tag);
   void ParseConstructorInitializer(Decl *ConstructorDecl);
   MemInitResult ParseMemInitializer(Decl *ConstructorDecl);
+  bool
+  ParseReifMemInitializer(Decl *ConstructorDecl,
+                          llvm::SmallVectorImpl<QualType> &Typenames,
+                          llvm::SmallVectorImpl<CXXCtorInitializer *> &MemInits);
+  bool ParseMemInitExprList(Decl *ConstructorDecl,
+                            CXXScopeSpec &SS, IdentifierInfo *II,
+                            DeclSpec const &DS, TypeResult const &TemplateTypeTy,
+                            SourceLocation IdLoc, SourceLocation &LParen,
+                            ExprVector &ArgExprs,
+                            SourceLocation &RParen, SourceLocation &Ellipsis);
   void HandleMemberFunctionDeclDelays(Declarator& DeclaratorInfo,
                                       Decl *ThisDecl);
 
@@ -3015,8 +3105,9 @@ private:
   // C++ 10: Derived classes [class.derived]
   TypeResult ParseBaseTypeSpecifier(SourceLocation &BaseLoc,
                                     SourceLocation &EndLocation);
+  SmallVector<CXXBaseSpecifier *, 8> ParseCXXBaseSpecifierList(Decl *ClassDecl);
   void ParseBaseClause(Decl *ClassDecl);
-  BaseResult ParseBaseSpecifier(Decl *ClassDecl);
+  SmallVector<BaseResult, 4> ParseBaseSpecifier(Decl *ClassDecl);
   AccessSpecifier getAccessSpecifierIfPresent() const;
 
   bool ParseUnqualifiedIdTemplateId(CXXScopeSpec &SS,
@@ -3031,6 +3122,90 @@ private:
   bool ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
                                   ParsedType ObjectType,
                                   UnqualifiedId &Result);
+
+  //===--------------------------------------------------------------------===//
+  // Metaprogramming
+
+  // C++ 14.3: Template arguments [temp.arg]
+  typedef SmallVector<ParsedTemplateArgument, 16> TemplateArgList;
+
+  ParsedReflectionOperand ParseCXXReflectOperand();
+  ExprResult ParseCXXReflectExpression();
+  ExprResult ParseCXXInvalidReflectionExpression();
+  ExprResult ParseCXXReflectionReadQuery();
+  ExprResult ParseCXXReflectionWriteQuery();
+  ExprResult ParseCXXReflectPrintLiteralExpression();
+  ExprResult ParseCXXReflectPrintReflectionExpression();
+  ExprResult ParseCXXReflectDumpReflectionExpression();
+  ExprResult ParseCXXCompilerErrorExpression();
+
+  bool ParseCXXIdentifierSplice(
+      IdentifierInfo *&Id,
+      SourceLocation &IdBeginLoc);
+  bool ParseCXXIdentifierSplice(
+      IdentifierInfo *&Id,
+      SourceLocation &IdBeginLoc, SourceLocation &IdEndLoc);
+  ExprResult ParseCXXIdExprExpression();
+  ExprResult ParseCXXMemberIdExprExpression(Expr *Base);
+  ExprResult ParseCXXValueOfExpression();
+  TypeResult ParseReflectedTypeSpecifier(SourceLocation TypenameLoc,
+                                         SourceLocation &EndLoc);
+  ParsedTemplateArgument ParseReflectedTemplateArgument();
+  ExprResult ParseCXXConcatenateExpression();
+
+  /// Returns true if reflection is enabled and the
+  /// current expression appears to be a variadic reifier.
+  bool isVariadicReifier() const;
+
+  /// Parse a variadic reifier. Returns true on error.
+  bool ParseVariadicReifier(llvm::SmallVectorImpl<Expr *> &Exprs);
+  bool ParseVariadicReifier(llvm::SmallVectorImpl<QualType> &Types);
+
+  /// Parse the two types of variadic reifiers that may appear in a template
+  /// argument list.
+  bool ParseNonTypeReifier(TemplateArgList &Args, SourceLocation KWLoc);
+  bool ParseTypeReifier(TemplateArgList &Args, SourceLocation KWLoc);
+  bool ParseTemplateReifier(TemplateArgList &Args);
+
+  /// Parse a variadic reifier as a member/base initializer.
+  void ParseReifierMemInitalizer(llvm::SmallVectorImpl<QualType>& Types);
+
+  /// Parse a __select expression
+  ExprResult ParseCXXSelectMemberExpr();
+
+  // C++ Code Fragments
+private:
+  SmallVector<CachedTokens, 2> PendingUnquotes;
+
+public:
+  Decl *ParseCXXNamespaceFragment(Decl *Fragment);
+  Decl *ParseCXXClassFragment(Decl *Fragment);
+  Decl *ParseCXXEnumFragment(Decl *Fragment);
+private:
+  Decl *ParseCXXStmtFragment(SourceLocation IntroLoc, bool HasThisPtr);
+public:
+  Decl *ParseCXXBlockFragment(Decl *Fragment);
+  Decl *ParseCXXMemberBlockFragment(Decl *Fragment);
+  Decl *ParseCXXFragment();
+  ExprResult ParseCXXUnquoteOperator();
+  bool ParseCXXFragmentCaptures(SmallVectorImpl<Expr *> &Captures);
+  ExprResult ParseCXXFragmentExpression();
+
+  Decl *ParseCXXLegacyFragment(SmallVectorImpl<Expr *> &Captures);
+  ExprResult ParseCXXLegacyFragmentExpression();
+
+  Decl *MaybeParseCXXInjectorDeclaration();
+  Decl *ParseCXXMetaprogramDeclaration();
+private:
+  Decl *ParseCXXInjectionDeclaration(bool IncludeTerminator);
+public:
+  Decl *ParseCXXInjectionDeclaration();
+  Decl *ParseCXXTerminatedInjectionDeclaration();
+
+  bool ParseCXXInjectedParameter(
+                        SmallVectorImpl<DeclaratorChunk::ParamInfo> &ParamInfo);
+
+  DeclGroupPtrTy ParseCXXTypeTransformerDeclaration(SourceLocation UsingLoc);
 
   //===--------------------------------------------------------------------===//
   // OpenMP: Directives and clauses.
@@ -3229,11 +3404,19 @@ public:
   bool ParseOpenMPVarList(OpenMPDirectiveKind DKind, OpenMPClauseKind Kind,
                           SmallVectorImpl<Expr *> &Vars,
                           OpenMPVarListDataTy &Data);
-  bool ParseUnqualifiedId(CXXScopeSpec &SS, ParsedType ObjectType,
-                          bool ObjectHadErrors, bool EnteringContext,
-                          bool AllowDestructorName, bool AllowConstructorName,
-                          bool AllowDeductionGuide,
-                          SourceLocation *TemplateKWLoc, UnqualifiedId &Result);
+private:
+  bool ParseUnqualifiedId(
+      CXXScopeSpec &SS, ParsedType ObjectType, bool ObjectHadErrors,
+      bool EnteringContext, bool AllowDestructorName, bool AllowConstructorName,
+      bool AllowDeductionGuide, bool TemplateSpecified,
+      SourceLocation *TemplateKWLoc, IdentifierInfo *Id, SourceLocation IdLoc,
+      UnqualifiedId &Result);
+public:
+  bool ParseUnqualifiedId(
+      CXXScopeSpec &SS, ParsedType ObjectType, bool ObjectHadErrors,
+      bool EnteringContext, bool AllowDestructorName, bool AllowConstructorName,
+      bool AllowDeductionGuide, SourceLocation *TemplateKWLoc,
+      UnqualifiedId &Result);
 
   /// Parses the mapper modifier in map, to, and from clauses.
   bool parseMapperModifier(OpenMPVarListDataTy &Data);
@@ -3280,8 +3463,6 @@ private:
                                  bool IdentifierHasName);
   void DiagnoseMisplacedEllipsisInDeclarator(SourceLocation EllipsisLoc,
                                              Declarator &D);
-  // C++ 14.3: Template arguments [temp.arg]
-  typedef SmallVector<ParsedTemplateArgument, 16> TemplateArgList;
 
   bool ParseGreaterThanInTemplateList(SourceLocation LAngleLoc,
                                       SourceLocation &RAngleLoc,

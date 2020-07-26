@@ -464,6 +464,8 @@ public:
 
   bool isInStdNamespace() const;
 
+  bool isInFragment() const;
+
   ASTContext &getASTContext() const LLVM_READONLY;
 
   /// Helper to get the language options from the ASTContext.
@@ -1877,6 +1879,15 @@ public:
     }
   }
 
+  bool isMethod() const {
+      return Decl::firstCXXMethod <= getDeclKind() &&
+             getDeclKind() <= Decl::lastCXXMethod;
+  }
+
+  bool isFunction() const {
+    return isFunctionOrMethod() && !isMethod();
+  }
+
   /// Test whether the context supports looking up names.
   bool isLookupContext() const {
     return !isFunctionOrMethod() && getDeclKind() != Decl::LinkageSpec &&
@@ -1898,6 +1909,18 @@ public:
   }
 
   bool isNamespace() const { return getDeclKind() == Decl::Namespace; }
+
+  bool isEnum() const { return getDeclKind() == Decl::Enum; }
+
+  bool isFragment() const { return getDeclKind() == Decl::CXXFragment; }
+
+  bool isStatementFragment() const;
+
+  bool isMemberStatementFragment() const;
+
+  /// Determines whether this context is itself a fragment, or a
+  /// subcontext inside of a fragment.
+  bool isFragmentContext() const;
 
   bool isStdNamespace() const;
 

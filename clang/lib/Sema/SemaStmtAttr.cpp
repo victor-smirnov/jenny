@@ -178,7 +178,10 @@ class CallExprFinder : public ConstEvaluatedExprVisitor<CallExprFinder> {
 public:
   typedef ConstEvaluatedExprVisitor<CallExprFinder> Inherited;
 
-  CallExprFinder(Sema &S, const Stmt *St) : Inherited(S.Context) { Visit(St); }
+  CallExprFinder(Sema &S, const Stmt* St)
+      : Inherited({S.Context, S.GetReflectionCallbackObj()}) {
+    Visit(St);
+  }
 
   bool foundCallExpr() { return FoundCallExpr; }
 
@@ -336,15 +339,17 @@ static Attr *handleOpenCLUnrollHint(Sema &S, Stmt *St, const ParsedAttr &A,
 
   if (NumArgs == 1) {
     Expr *E = A.getArgAsExpr(0);
-    Optional<llvm::APSInt> ArgVal;
+    llvm::APSInt ArgVal;
 
-    if (!(ArgVal = E->getIntegerConstantExpr(S.Context))) {
+    Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
+
+    if (!E->isIntegerConstantExpr(ArgVal, EvalCtx)) {
       S.Diag(A.getLoc(), diag::err_attribute_argument_type)
           << A << AANT_ArgumentIntegerConstant << E->getSourceRange();
       return nullptr;
     }
 
-    int Val = ArgVal->getSExtValue();
+    int Val = ArgVal.getSExtValue();
 
     if (Val <= 0) {
       S.Diag(A.getRange().getBegin(),

@@ -196,8 +196,7 @@ CXXRecordDecl *Sema::getCurrentInstantiationOf(NestedNameSpecifier *NNS) {
 /// that is currently being defined. Or, if we have a type that names
 /// a class template specialization that is not a complete type, we
 /// will attempt to instantiate that class template.
-bool Sema::RequireCompleteDeclContext(CXXScopeSpec &SS,
-                                      DeclContext *DC) {
+bool Sema::RequireCompleteDeclContext(CXXScopeSpec &SS, DeclContext *DC) {
   assert(DC && "given null context");
 
   TagDecl *tag = dyn_cast<TagDecl>(DC);
@@ -865,6 +864,28 @@ bool Sema::ActOnCXXNestedNameSpecifierDecltype(CXXScopeSpec &SS,
   DecltypeTypeLoc DecltypeTL = TLB.push<DecltypeTypeLoc>(T);
   DecltypeTL.setNameLoc(DS.getTypeSpecTypeLoc());
   SS.Extend(Context, SourceLocation(), TLB.getTypeLocInContext(Context, T),
+            ColonColonLoc);
+  return false;
+}
+
+bool Sema::ActOnCXXNestedNameSpecifierReifTypename(CXXScopeSpec &SS,
+                                                   SourceLocation TypenameLoc, ParsedType T,
+                                                   SourceLocation ColonColonLoc) {
+  TypeSourceInfo *TSInfo;
+  QualType Ty = GetTypeFromParser(T, &TSInfo);
+  if (!TSInfo)
+    TSInfo = Context.getTrivialTypeSourceInfo(Ty);
+
+  if (!Ty->isDependentType() && !Ty->getAs<TagType>()) {
+    Diag(TypenameLoc, diag::err_expected_class_or_namespace)
+        << Ty << getLangOpts().CPlusPlus;
+    return true;
+  }
+
+  TypeLocBuilder TLB;
+  ReflectedTypeLoc ReflectedTL = TLB.push<ReflectedTypeLoc>(Ty);
+  ReflectedTL.setNameLoc(TypenameLoc);
+  SS.Extend(Context, SourceLocation(), TSInfo->getTypeLoc(),
             ColonColonLoc);
   return false;
 }

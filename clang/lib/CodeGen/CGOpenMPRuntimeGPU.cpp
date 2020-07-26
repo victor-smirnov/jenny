@@ -5122,7 +5122,8 @@ void CGOpenMPRuntimeGPU::clear() {
       const bool UseSharedMemory = Size <= SharedMemorySize;
       auto *Field =
           FieldDecl::Create(C, UseSharedMemory ? SharedStaticRD : StaticRD,
-                            SourceLocation(), SourceLocation(), nullptr, SubTy,
+                            SourceLocation(), SourceLocation(),
+                            DeclarationName(), SubTy,
                             C.getTrivialTypeSourceInfo(SubTy, SourceLocation()),
                             /*BW=*/nullptr, /*Mutable=*/false,
                             /*InitStyle=*/ICIS_NoInit);
@@ -5147,7 +5148,8 @@ void CGOpenMPRuntimeGPU::clear() {
       QualType SubTy = C.getConstantArrayType(
           C.CharTy, ArySize, nullptr, ArrayType::Normal, /*IndexTypeQuals=*/0);
       auto *Field = FieldDecl::Create(
-          C, SharedStaticRD, SourceLocation(), SourceLocation(), nullptr, SubTy,
+          C, SharedStaticRD, SourceLocation(), SourceLocation(),
+          DeclarationName(), SubTy,
           C.getTrivialTypeSourceInfo(SubTy, SourceLocation()),
           /*BW=*/nullptr, /*Mutable=*/false,
           /*InitStyle=*/ICIS_NoInit);
@@ -5209,7 +5211,8 @@ void CGOpenMPRuntimeGPU::clear() {
     for (const RecordDecl *TeamReductionRec : TeamsReductions) {
       QualType RecTy = C.getRecordType(TeamReductionRec);
       auto *Field = FieldDecl::Create(
-          C, StaticRD, SourceLocation(), SourceLocation(), nullptr, RecTy,
+          C, StaticRD, SourceLocation(), SourceLocation(),
+          DeclarationName(), RecTy,
           C.getTrivialTypeSourceInfo(RecTy, SourceLocation()),
           /*BW=*/nullptr, /*Mutable=*/false,
           /*InitStyle=*/ICIS_NoInit);

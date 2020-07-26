@@ -672,6 +672,8 @@ CXXRecordDecl *CXXMemberCallExpr::getRecordDecl() const {
   return ThisArg->getType()->getAsCXXRecordDecl();
 }
 
+
+
 //===----------------------------------------------------------------------===//
 //  Named casts
 //===----------------------------------------------------------------------===//
@@ -1655,6 +1657,7 @@ TypeTraitExpr *TypeTraitExpr::CreateDeserialized(const ASTContext &C,
   return new (Mem) TypeTraitExpr(EmptyShell());
 }
 
+
 CUDAKernelCallExpr::CUDAKernelCallExpr(Expr *Fn, CallExpr *Config,
                                        ArrayRef<Expr *> Args, QualType Ty,
                                        ExprValueKind VK, SourceLocation RP,
@@ -1693,4 +1696,353 @@ CUDAKernelCallExpr *CUDAKernelCallExpr::CreateEmpty(const ASTContext &Ctx,
   void *Mem = Ctx.Allocate(sizeof(CUDAKernelCallExpr) + SizeOfTrailingObjects,
                            alignof(CUDAKernelCallExpr));
   return new (Mem) CUDAKernelCallExpr(NumArgs, HasFPFeatures, Empty);
+}
+
+
+CXXReflectExpr::CXXReflectExpr(QualType T)
+  : Expr(CXXReflectExprClass, T, VK_RValue, OK_Ordinary), Ref() {
+  setDependence(computeDependence(this));
+}
+
+CXXReflectExpr::CXXReflectExpr(QualType T, InvalidReflection *Arg)
+  : Expr(CXXReflectExprClass, T, VK_RValue, OK_Ordinary), Ref(Arg) {
+  setDependence(computeDependence(this));
+}
+
+CXXReflectExpr::CXXReflectExpr(QualType T, QualType Arg)
+  : Expr(CXXReflectExprClass, T, VK_RValue, OK_Ordinary), Ref(Arg) {
+  setDependence(computeDependence(this));
+}
+
+CXXReflectExpr::CXXReflectExpr(QualType T, TemplateName Arg)
+  : Expr(CXXReflectExprClass, T, VK_RValue, OK_Ordinary), Ref(Arg) {
+  setDependence(computeDependence(this));
+}
+
+CXXReflectExpr::CXXReflectExpr(QualType T, NamespaceName Arg)
+  : Expr(CXXReflectExprClass, T, VK_RValue, OK_Ordinary), Ref(Arg) {
+  setDependence(computeDependence(this));
+}
+
+CXXReflectExpr::CXXReflectExpr(QualType T, Expr *Arg)
+  : Expr(CXXReflectExprClass, T, VK_RValue, OK_Ordinary), Ref(Arg) {
+  setDependence(computeDependence(this));
+}
+
+CXXReflectExpr::CXXReflectExpr(QualType T, Decl *Arg)
+  : Expr(CXXReflectExprClass, T, VK_RValue, OK_Ordinary), Ref(Arg) {
+  setDependence(computeDependence(this));
+}
+
+CXXReflectExpr::CXXReflectExpr(QualType T, CXXBaseSpecifier *Arg)
+  : Expr(CXXReflectExprClass, T, VK_RValue, OK_Ordinary), Ref(Arg) {
+  setDependence(computeDependence(this));
+}
+
+CXXReflectExpr *CXXReflectExpr::Create(ASTContext &C, QualType T,
+                                       SourceLocation KW, InvalidReflection *Arg,
+                                       SourceLocation LP, SourceLocation RP) {
+  CXXReflectExpr *E = new (C) CXXReflectExpr (T, Arg);
+  E->setKeywordLoc(KW);
+  E->setLParenLoc(LP);
+  E->setRParenLoc(RP);
+  return E;
+}
+
+CXXReflectExpr *CXXReflectExpr::Create(ASTContext &C, QualType T,
+                                       SourceLocation KW, QualType Arg,
+                                       SourceLocation LP, SourceLocation RP) {
+  CXXReflectExpr *E = new (C) CXXReflectExpr (T, Arg);
+  E->setKeywordLoc(KW);
+  E->setLParenLoc(LP);
+  E->setRParenLoc(RP);
+  return E;
+}
+
+CXXReflectExpr *CXXReflectExpr::Create(ASTContext &C, QualType T,
+                                       SourceLocation KW, TemplateName Arg,
+                                       SourceLocation LP, SourceLocation RP) {
+  CXXReflectExpr *E = new (C) CXXReflectExpr (T, Arg);
+  E->setKeywordLoc(KW);
+  E->setLParenLoc(LP);
+  E->setRParenLoc(RP);
+  return E;
+}
+
+CXXReflectExpr *CXXReflectExpr::Create(ASTContext &C, QualType T,
+                                       SourceLocation KW, NamespaceName Arg,
+                                       SourceLocation LP, SourceLocation RP) {
+  CXXReflectExpr *E = new (C) CXXReflectExpr (T, Arg);
+  E->setKeywordLoc(KW);
+  E->setLParenLoc(LP);
+  E->setRParenLoc(RP);
+  return E;
+}
+
+CXXReflectExpr *CXXReflectExpr::Create(ASTContext &C, QualType T,
+                                       SourceLocation KW, Expr *Arg,
+                                       SourceLocation LP, SourceLocation RP) {
+  CXXReflectExpr *E = new (C) CXXReflectExpr (T, Arg);
+  E->setKeywordLoc(KW);
+  E->setLParenLoc(LP);
+  E->setRParenLoc(RP);
+  return E;
+}
+
+CXXReflectExpr *CXXReflectExpr::Create(ASTContext &C, QualType T,
+                                       SourceLocation KW, Decl *Arg,
+                                       SourceLocation LP, SourceLocation RP) {
+  CXXReflectExpr *E = new (C) CXXReflectExpr (T, Arg);
+  E->setKeywordLoc(KW);
+  E->setLParenLoc(LP);
+  E->setRParenLoc(RP);
+  return E;
+}
+
+CXXReflectExpr *CXXReflectExpr::Create(ASTContext &C, QualType T,
+                                       SourceLocation KW, CXXBaseSpecifier *Arg,
+                                       SourceLocation LP, SourceLocation RP) {
+  CXXReflectExpr *E = new (C) CXXReflectExpr (T, Arg);
+  E->setKeywordLoc(KW);
+  E->setLParenLoc(LP);
+  E->setRParenLoc(RP);
+  return E;
+}
+
+CXXReflectExpr *CXXReflectExpr::CreateInvalid(ASTContext &C, QualType T,
+                                         SourceLocation KW,
+                                         SourceLocation LP, SourceLocation RP) {
+  CXXReflectExpr *E = new (C) CXXReflectExpr (T);
+  E->setKeywordLoc(KW);
+  E->setLParenLoc(LP);
+  E->setRParenLoc(RP);
+  return E;
+}
+
+CXXInvalidReflectionExpr *
+CXXInvalidReflectionExpr::Create(const ASTContext &C,
+                                 QualType Type, Expr *Message,
+                                 SourceLocation BuiltinLoc,
+                                 SourceLocation RParenLoc) {
+  return new (C) CXXInvalidReflectionExpr(Type, Message, BuiltinLoc, RParenLoc);
+}
+
+CXXInvalidReflectionExpr *
+CXXInvalidReflectionExpr::CreateEmpty(const ASTContext &C,
+                                      EmptyShell Empty) {
+  return new (C) CXXInvalidReflectionExpr(Empty);
+}
+
+CXXReflectionReadQueryExpr::CXXReflectionReadQueryExpr(ASTContext &C, QualType T,
+                                                       ReflectionQuery Q,
+                                                       ArrayRef<Expr *> Args,
+                                                       SourceLocation KW,
+                                                       SourceLocation LP,
+                                                       SourceLocation RP)
+  : Expr(CXXReflectionReadQueryExprClass, T, VK_RValue, OK_Ordinary),
+    Query(Q), NumArgs(Args.size()), Args(new (C) Expr *[NumArgs]),
+    KeywordLoc(KW), LParenLoc(LP), RParenLoc(RP) {
+  std::copy(Args.begin(), Args.end(), this->Args);
+  setDependence(computeDependence(this));
+}
+
+CXXReflectionWriteQueryExpr::CXXReflectionWriteQueryExpr(ASTContext &C,
+                                                         QualType T,
+                                                         ReflectionQuery Q,
+                                                         ArrayRef<Expr *> Args,
+                                                         SourceLocation KW,
+                                                         SourceLocation LP,
+                                                         SourceLocation RP)
+  : Expr(CXXReflectionWriteQueryExprClass, T, VK_RValue, OK_Ordinary),
+    Query(Q), NumArgs(Args.size()), Args(new (C) Expr *[NumArgs]),
+    KeywordLoc(KW), LParenLoc(LP), RParenLoc(RP) {
+  std::copy(Args.begin(), Args.end(), this->Args);
+  setDependence(computeDependence(this));
+}
+
+CXXReflectPrintLiteralExpr::CXXReflectPrintLiteralExpr(
+    ASTContext &C, QualType T, ArrayRef<Expr *> Args,
+    SourceLocation KeywordLoc,
+    SourceLocation LParenLoc, SourceLocation RParenLoc)
+  : Expr(CXXReflectPrintLiteralExprClass, T, VK_RValue, OK_Ordinary),
+    NumArgs(Args.size()), Args(new (C) Expr *[NumArgs]),
+    KeywordLoc(KeywordLoc), LParenLoc(LParenLoc), RParenLoc(RParenLoc) {
+  std::copy(Args.begin(), Args.end(), this->Args);
+  setDependence(computeDependence(this));
+}
+
+CXXCompilerErrorExpr *CXXCompilerErrorExpr::Create(const ASTContext &C,
+                                                   QualType Type,
+                                                   Expr *Message,
+                                                   SourceLocation BuiltinLoc,
+                                                   SourceLocation RParenLoc) {
+  assert(Type->isVoidType() && "Invalid type for CXXCompilerErrorExpr");
+  return new (C) CXXCompilerErrorExpr(Type, Message, BuiltinLoc, RParenLoc);
+}
+
+CXXCompilerErrorExpr *CXXCompilerErrorExpr::CreateEmpty(const ASTContext &C,
+                                                        EmptyShell Empty) {
+  return new (C) CXXCompilerErrorExpr(Empty);
+}
+
+CXXIdExprExpr *CXXIdExprExpr::Create(
+    const ASTContext &C, Expr *Reflection, SourceLocation KeywordLoc,
+    SourceLocation LParenLoc, SourceLocation RParenLoc) {
+  return new (C) CXXIdExprExpr(
+      C.DependentTy, Reflection, KeywordLoc, LParenLoc, RParenLoc);
+}
+
+CXXIdExprExpr *CXXIdExprExpr::CreateEmpty(const ASTContext &C) {
+  return new (C) CXXIdExprExpr(EmptyShell());
+}
+
+CXXMemberIdExprExpr::CXXMemberIdExprExpr(
+    QualType T, Expr *Base, Expr *Reflection, bool IsArrow,
+    SourceLocation OpLoc, SourceLocation TemplateKWLoc,
+    SourceLocation LParenLoc, SourceLocation RParenLoc,
+    const TemplateArgumentListInfo *Args)
+    : Expr(CXXMemberIdExprExprClass, T, VK_RValue, OK_Ordinary),
+      Base(Base), Reflection(Reflection), IsArrow(IsArrow),
+      HasTemplateKWAndArgsInfo(Args != nullptr || TemplateKWLoc.isValid()),
+      OpLoc(OpLoc), LParenLoc(LParenLoc), RParenLoc(RParenLoc) {
+  if (Args) {
+    auto Deps = TemplateArgumentDependence::None;
+    getTrailingObjects<ASTTemplateKWAndArgsInfo>()->initializeFrom(
+        TemplateKWLoc, *Args, getTrailingObjects<TemplateArgumentLoc>(), Deps);
+  } else if (TemplateKWLoc.isValid()) {
+    getTrailingObjects<ASTTemplateKWAndArgsInfo>()->initializeFrom(
+        TemplateKWLoc);
+  }
+
+  setDependence(computeDependence(this));
+}
+
+CXXMemberIdExprExpr *CXXMemberIdExprExpr::Create(
+    const ASTContext &C, Expr *Base, Expr *Reflection,
+    bool IsArrow, SourceLocation OpLoc, SourceLocation TemplateKWLoc,
+    SourceLocation LParenLoc, SourceLocation RParenLoc,
+    const TemplateArgumentListInfo *Args) {
+  bool HasTemplateKWAndArgsInfo = Args || TemplateKWLoc.isValid();
+  std::size_t Size =
+      totalSizeToAlloc<ASTTemplateKWAndArgsInfo, TemplateArgumentLoc>(
+          HasTemplateKWAndArgsInfo, Args ? Args->size() : 0);
+  void *Mem = C.Allocate(Size);
+  return new (Mem) CXXMemberIdExprExpr(
+      C.DependentTy, Base, Reflection, IsArrow, OpLoc, TemplateKWLoc,
+      LParenLoc, RParenLoc, Args);
+}
+
+CXXMemberIdExprExpr *CXXMemberIdExprExpr::CreateEmpty(const ASTContext &C) {
+  return new (C) CXXMemberIdExprExpr(EmptyShell());
+}
+
+// Assume that the name is an ordinary lvalue for now.
+CXXDependentSpliceIdExpr::CXXDependentSpliceIdExpr(
+    DeclarationNameInfo DNI, QualType T, const CXXScopeSpec &SS,
+    NestedNameSpecifierLoc QualifierLoc, SourceLocation TemplateKWLoc,
+    bool TrailingLParen, bool AddressOfOperand,
+    const TemplateArgumentListInfo *TemplateArgs)
+  : Expr(CXXDependentSpliceIdExprClass, T, VK_LValue, OK_Ordinary),
+    NameInfo(DNI),
+    // FIXME: This allocation is an explicit memory leak to get around
+    // APValues not being trivially destructible.
+    SS(new CXXScopeSpec(SS)), QualifierLoc(QualifierLoc),
+    TrailingLParen(TrailingLParen), AddressOfOperand(AddressOfOperand),
+    HasTemplateKWAndArgsInfo(TemplateArgs != nullptr
+                             || TemplateKWLoc.isValid()) {
+  // If we have explicit template arguments, check for dependent
+  // template arguments and whether they contain any unexpanded pack
+  // expansions.
+  if (TemplateArgs) {
+    getTrailingASTTemplateKWAndArgsInfo()->initializeFrom(
+        TemplateKWLoc, *TemplateArgs, getTrailingTemplateArgumentLoc());
+  } else if (TemplateKWLoc.isValid()) {
+    getTrailingASTTemplateKWAndArgsInfo()->initializeFrom(TemplateKWLoc);
+  }
+
+  setDependence(computeDependence(this));
+}
+
+CXXDependentSpliceIdExpr *CXXDependentSpliceIdExpr::Create(
+    const ASTContext &C, DeclarationNameInfo DNI,
+    const CXXScopeSpec &SS, NestedNameSpecifierLoc QualifierLoc,
+    SourceLocation TemplateKWLoc, bool TrailingLParen, bool AddressOfOperand,
+    const TemplateArgumentListInfo *TemplateArgs) {
+  bool HasTemplateKWAndArgsInfo = TemplateArgs || TemplateKWLoc.isValid();
+  std::size_t Size =
+    totalSizeToAlloc<ASTTemplateKWAndArgsInfo, TemplateArgumentLoc>(
+        HasTemplateKWAndArgsInfo, TemplateArgs ? TemplateArgs->size() : 0);
+
+  void *Mem = C.Allocate(Size, alignof(CXXDependentSpliceIdExpr));
+  return new (Mem) CXXDependentSpliceIdExpr(
+      DNI, C.DependentTy, SS, QualifierLoc, TemplateKWLoc, TrailingLParen,
+      AddressOfOperand, TemplateArgs);
+}
+
+CXXDependentSpliceIdExpr *CXXDependentSpliceIdExpr::CreateEmpty(const ASTContext &C,
+                                                    EmptyShell Empty) {
+  return new (C) CXXDependentSpliceIdExpr(Empty);
+}
+
+CXXConcatenateExpr::CXXConcatenateExpr(ASTContext &Ctx,
+                                       QualType T, SourceLocation L,
+                                       ArrayRef<Expr *> Parts)
+  : Expr(CXXConcatenateExprClass, T, VK_RValue, OK_Ordinary),
+    Loc(L), NumOperands(Parts.size()), Operands(new (Ctx) Stmt*[NumOperands]) {
+  std::copy(Parts.begin(), Parts.end(), Operands);
+  setDependence(computeDependence(this));
+}
+
+CXXFragmentExpr::CXXFragmentExpr(
+    QualType T, SourceLocation IntroLoc, CXXFragmentDecl *Frag,
+    ArrayRef<Expr *> Caps, bool IsLegacy)
+  : Expr(CXXFragmentExprClass, T, VK_RValue, OK_Ordinary),
+    NumCaptures(Caps.size()), Fragment(Frag) {
+  FragmentExprBits.IsLegacy = IsLegacy;
+  FragmentExprBits.IntroLoc = IntroLoc;
+}
+
+CXXFragmentExpr *CXXFragmentExpr::Create(
+    const ASTContext &C, SourceLocation IntroLoc,
+    CXXFragmentDecl *Fragment, ArrayRef<Expr *> Captures, bool IsLegacy) {
+  // Allocate buffered CXXFragmentExpr with space for trailing captures.
+  void *Buffer = C.Allocate(totalSizeToAlloc<Expr *>(Captures.size()));
+  auto *E = new (Buffer) CXXFragmentExpr(
+      C.MetaInfoTy, IntroLoc, Fragment, Captures, IsLegacy);
+
+  // Add captures and compute dependence.
+  std::copy(Captures.begin(), Captures.end(), E->getTrailingObjects<Expr *>());
+  E->setDependence(computeDependence(E));
+
+  return E;
+}
+
+CXXFragmentExpr *CXXFragmentExpr::CreateEmpty(
+    const ASTContext &C, EmptyShell Empty) {
+  return new (C) CXXFragmentExpr(Empty);
+}
+
+CXXFragmentCaptureExpr::CXXFragmentCaptureExpr(
+    QualType T, const Expr *FragmentExpr, unsigned Offset,
+    SourceLocation BeginLoc, SourceLocation EndLoc)
+  : Expr(CXXFragmentCaptureExprClass, T, VK_RValue, OK_Ordinary),
+    FragmentExpr(FragmentExpr), Offset(Offset),
+    BeginLoc(BeginLoc), EndLoc(EndLoc) {
+  setDependence(computeDependence(this));
+}
+
+CXXFragmentCaptureExpr *CXXFragmentCaptureExpr::Create(
+    const ASTContext &C, const Expr *FragmentExpr, unsigned Offset,
+    SourceLocation BeginLoc, SourceLocation EndLoc) {
+  QualType T = C.DependentTy;
+  if (FragmentExpr)
+    T = cast<CXXFragmentExpr>(FragmentExpr)->getCapture(Offset)->getType();
+
+  return new (C) CXXFragmentCaptureExpr(
+      T, FragmentExpr, Offset, BeginLoc, EndLoc);
+}
+
+CXXFragmentCaptureExpr *CXXFragmentCaptureExpr::CreateEmpty(
+    const ASTContext &C, EmptyShell Empty) {
+  return new (C) CXXFragmentCaptureExpr(Empty);
 }

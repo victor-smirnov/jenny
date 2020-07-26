@@ -14,6 +14,7 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/Expr.h"
+#include "clang/Analysis/Analyses/LifetimeTypeCategory.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Lookup.h"
@@ -151,6 +152,27 @@ void Sema::inferGslPointerAttribute(TypedefNameDecl *TD) {
   inferGslPointerAttribute(TD, RD);
 }
 
+void Sema::suggestLifetimeAttribute(CXXRecordDecl *Record) {
+  if (Record->getDescribedClassTemplate())
+    return;
+  if (Record->hasAttr<OwnerAttr>() || Record->hasAttr<PointerAttr>())
+    return;
+
+  if (SourceMgr.isInSystemHeader(Record->getBeginLoc()))
+    return;
+
+  lifetime::TypeClassification TC =
+      lifetime::classifyTypeCategory(Context.getRecordType(Record));
+
+  if (TC == lifetime::TypeCategory::Owner) {
+    Diag(Record->getBeginLoc(), diag::warn_lifetime_category)
+        << Record->getQualifiedNameAsString() << "[[gsl::Owner]]";
+  } else if (TC == lifetime::TypeCategory::Pointer) {
+    Diag(Record->getBeginLoc(), diag::warn_lifetime_category)
+        << Record->getQualifiedNameAsString() << "[[gsl::Pointer]]";
+  }
+}
+
 void Sema::inferGslOwnerPointerAttribute(CXXRecordDecl *Record) {
   static llvm::StringSet<> StdOwners{
       "any",
@@ -178,8 +200,10 @@ void Sema::inferGslOwnerPointerAttribute(CXXRecordDecl *Record) {
   };
   static llvm::StringSet<> StdPointers{
       "basic_string_view",
+      "initializer_list",
       "reference_wrapper",
       "regex_iterator",
+      "span",
   };
 
   if (!Record->getIdentifier())
@@ -300,18 +324,21 @@ void Sema::ActOnPragmaPack(SourceLocation PragmaLoc, PragmaMsStackAction Action,
   // If specified then alignment must be a "small" power of two.
   unsigned AlignmentVal = 0;
   if (Alignment) {
-    Optional<llvm::APSInt> Val;
+    llvm::APSInt Val;
 
     // pack(0) is like pack(), which just works out since that is what
     // we use 0 for in PackAttr.
-    if (Alignment->isTypeDependent() || Alignment->isValueDependent() ||
-        !(Val = Alignment->getIntegerConstantExpr(Context)) ||
-        !(*Val == 0 || Val->isPowerOf2()) || Val->getZExtValue() > 16) {
+    Expr::EvalContext EvalCtx(Context, GetReflectionCallbackObj());
+    if (Alignment->isTypeDependent() ||
+        Alignment->isValueDependent() ||
+        !Alignment->isIntegerConstantExpr(Val, EvalCtx) ||
+        !(Val == 0 || Val.isPowerOf2()) ||
+        Val.getZExtValue() > 16) {
       Diag(PragmaLoc, diag::warn_pragma_pack_invalid_alignment);
       return; // Ignore
     }
 
-    AlignmentVal = (unsigned)Val->getZExtValue();
+    AlignmentVal = (unsigned)Val.getZExtValue();
   }
   if (Action == Sema::PSK_Show) {
     // Show the current alignment, making sure to show the right value

@@ -480,7 +480,15 @@ let Class = PropertyTypeCase<TemplateArgument, "Expression"> in {
     let Read = [{ node.getAsExpr() }];
   }
   def : Creator<[{
-    return TemplateArgument(expression);
+    return TemplateArgument(expression, TemplateArgument::Expression);
+  }]>;
+}
+let Class = PropertyTypeCase<TemplateArgument, "Reflected"> in {
+  def : Property<"expression", ExprRef> {
+    let Read = [{ node.getAsExpr() }];
+  }
+  def : Creator<[{
+    return TemplateArgument(expression, TemplateArgument::Reflected);
   }]>;
 }
 let Class = PropertyTypeCase<TemplateArgument, "Pack"> in {

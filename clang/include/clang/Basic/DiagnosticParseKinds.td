@@ -597,6 +597,9 @@ def ext_constexpr_if : ExtWarn<
 def warn_cxx14_compat_constexpr_if : Warning<
   "constexpr if is incompatible with C++ standards before C++17">,
   DefaultIgnore, InGroup<CXXPre17Compat>;
+// TODO: this should be in a meta group.
+def ext_expansion_stmt : ExtWarn<
+  "Expansion statements are a Reflection extension">, InGroup<CXX17>;
 def ext_init_statement : ExtWarn<
   "'%select{if|switch}0' initialization statements are a C++17 extension">,
   InGroup<CXX17>;
@@ -956,6 +959,9 @@ def warn_cxx17_compat_lambda_template_parameter_list: Warning<
   "C++ standards before C++20">, InGroup<CXXPre20Compat>, DefaultIgnore;
 def err_lambda_template_parameter_list_empty : Error<
   "lambda template parameter list cannot be empty">;
+
+// C++ code fragments
+def err_expected_fragment : Error<"expected fragment">;
 
 // Availability attribute
 def err_expected_version : Error<
@@ -1431,6 +1437,15 @@ def ext_concept_legacy_bool_keyword : ExtWarn<
   InGroup<DiagGroup<"concepts-ts-compat">>;
 def err_placeholder_expected_auto_or_decltype_auto : Error<
   "expected 'auto' or 'decltype(auto)' after concept name">;
+}
+
+let CategoryName = "Reflection Issue" in {
+def err_invalid_reifier_context_parse : Error<
+  "cannot use %select{valueof|idexpr|unqualid|typename}0 as "
+   "reifier in this context: %select{expression|typename}1 expected.">;
+
+def err_reify_typename_preceded : Error<
+  "the typename reifier cannot be preceded by a nested name specifier">;
 }
 
 def warn_max_tokens : Warning<

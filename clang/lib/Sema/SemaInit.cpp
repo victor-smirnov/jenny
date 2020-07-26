@@ -425,8 +425,10 @@ class InitListChecker {
     if (!VerifyOnly) {
       SemaRef.Diag(NewInitRange.getBegin(), DiagID)
           << NewInitRange << FullyOverwritten << OldInit->getType();
+      Expr::EvalContext EvalCtx(SemaRef.getASTContext(),
+                                SemaRef.GetReflectionCallbackObj());
       SemaRef.Diag(OldInit->getBeginLoc(), diag::note_previous_initializer)
-          << (OldInit->HasSideEffects(SemaRef.Context) && FullyOverwritten)
+          << (OldInit->HasSideEffects(EvalCtx) && FullyOverwritten)
           << OldInit->getSourceRange();
     }
   }
@@ -2813,18 +2815,20 @@ InitListChecker::CheckDesignatedInitializer(const InitializedEntity &Entity,
   }
 
   Expr *IndexExpr = nullptr;
+  Expr::EvalContext EvalCtx(
+      SemaRef.Context, SemaRef.GetReflectionCallbackObj());
   llvm::APSInt DesignatedStartIndex, DesignatedEndIndex;
   if (D->isArrayDesignator()) {
     IndexExpr = DIE->getArrayIndex(*D);
-    DesignatedStartIndex = IndexExpr->EvaluateKnownConstInt(SemaRef.Context);
+    DesignatedStartIndex = IndexExpr->EvaluateKnownConstInt(EvalCtx);
     DesignatedEndIndex = DesignatedStartIndex;
   } else {
     assert(D->isArrayRangeDesignator() && "Need array-range designator");
 
     DesignatedStartIndex =
-      DIE->getArrayRangeStart(*D)->EvaluateKnownConstInt(SemaRef.Context);
+      DIE->getArrayRangeStart(*D)->EvaluateKnownConstInt(EvalCtx);
     DesignatedEndIndex =
-      DIE->getArrayRangeEnd(*D)->EvaluateKnownConstInt(SemaRef.Context);
+      DIE->getArrayRangeEnd(*D)->EvaluateKnownConstInt(EvalCtx);
     IndexExpr = DIE->getArrayRangeEnd(*D);
 
     // Codegen can't handle evaluating array range designators that have side
@@ -2833,7 +2837,7 @@ InitListChecker::CheckDesignatedInitializer(const InitializedEntity &Entity,
     // elements with something that has a side effect, so codegen can emit an
     // "error unsupported" error instead of miscompiling the app.
     if (DesignatedStartIndex.getZExtValue()!=DesignatedEndIndex.getZExtValue()&&
-        DIE->getInit()->HasSideEffects(SemaRef.Context) && !VerifyOnly)
+        DIE->getInit()->HasSideEffects(EvalCtx) && !VerifyOnly)
       FullyStructuredList->sawArrayRangeDesignator();
   }
 
@@ -5494,8 +5498,9 @@ static bool TryOCLSamplerInitialization(Sema &S,
                                         InitializationSequence &Sequence,
                                         QualType DestType,
                                         Expr *Initializer) {
+  Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
   if (!S.getLangOpts().OpenCL || !DestType->isSamplerT() ||
-      (!Initializer->isIntegerConstantExpr(S.Context) &&
+      (!Initializer->isIntegerConstantExpr(EvalCtx) &&
       !Initializer->getType()->isSamplerT()))
     return false;
 
@@ -5504,8 +5509,9 @@ static bool TryOCLSamplerInitialization(Sema &S,
 }
 
 static bool IsZeroInitializer(Expr *Initializer, Sema &S) {
-  return Initializer->isIntegerConstantExpr(S.getASTContext()) &&
-    (Initializer->EvaluateKnownConstInt(S.getASTContext()) == 0);
+  Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
+  return Initializer->isIntegerConstantExpr(EvalCtx) &&
+    (Initializer->EvaluateKnownConstInt(EvalCtx) == 0);
 }
 
 static bool TryOCLZeroOpaqueTypeInitialization(Sema &S,
@@ -5640,7 +5646,8 @@ void InitializationSequence::InitializeFrom(Sema &S,
   QualType DestType = Entity.getType();
 
   if (DestType->isDependentType() ||
-      Expr::hasAnyTypeDependentArguments(Args)) {
+      Expr::hasAnyTypeDependentArguments(Args) ||
+      Expr::hasDependentVariadicReifierArguments(Args)) {
     SequenceKind = DependentSequence;
     return;
   }
@@ -5659,8 +5666,15 @@ void InitializationSequence::InitializeFrom(Sema &S,
           S.CheckConversionToObjCLiteral(DestType, Initializer))
         Args[0] = Initializer;
     }
-    if (!isa<InitListExpr>(Initializer))
+    if (!isa<InitListExpr>(Initializer)) {
       SourceType = Initializer->getType();
+
+      if (isa<CXXSelectMemberExpr>(Initializer)
+          && SourceType == Context.DependentTy) {
+        SequenceKind = DependentSequence;
+        return;
+      }
+    }
   }
 
   //     - If the initializer is a (non-parenthesized) braced-init-list, the
@@ -5778,9 +5792,10 @@ void InitializationSequence::InitializeFrom(Sema &S,
         Initializer->getType()->isArrayType()) {
       const ArrayType *SourceAT
         = Context.getAsArrayType(Initializer->getType());
+      Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
       if (!hasCompatibleArrayTypes(S.Context, DestAT, SourceAT))
         SetFailed(FK_ArrayTypeMismatch);
-      else if (Initializer->HasSideEffects(S.Context))
+      else if (Initializer->HasSideEffects(EvalCtx))
         SetFailed(FK_NonConstantArrayInit);
       else {
         AddArrayInitStep(DestType, /*IsGNUExtension*/true);
@@ -6798,13 +6813,19 @@ static bool shouldTrackImplicitObjectArg(const CXXMethodDecl *Callee) {
 }
 
 static bool shouldTrackFirstArgument(const FunctionDecl *FD) {
-  if (!FD->getIdentifier() || FD->getNumParams() != 1)
+  if (!FD->getIdentifier() || !FD->isInStdNamespace() ||
+      FD->getNumParams() != 1)
     return false;
-  const auto *RD = FD->getParamDecl(0)->getType()->getPointeeCXXRecordDecl();
-  if (!FD->isInStdNamespace() || !RD || !RD->isInStdNamespace())
-    return false;
-  if (!isRecordWithAttr<PointerAttr>(QualType(RD->getTypeForDecl(), 0)) &&
-      !isRecordWithAttr<OwnerAttr>(QualType(RD->getTypeForDecl(), 0)))
+  if (isRecordWithAttr<PointerAttr>(FD->getReturnType()) &&
+      (FD->getName() == "ref" || FD->getName() == "cref"))
+    return true;
+  QualType ParmType = FD->getParamDecl(0)->getType();
+  if (const auto *RD = ParmType->getPointeeCXXRecordDecl()) {
+    if (!isRecordWithAttr<PointerAttr>(QualType(RD->getTypeForDecl(), 0)) &&
+        !isRecordWithAttr<OwnerAttr>(QualType(RD->getTypeForDecl(), 0)))
+      return false;
+  } else if (!ParmType->isReferenceType() ||
+             !ParmType->getPointeeType()->isArrayType())
     return false;
   if (FD->getReturnType()->isPointerType() ||
       isRecordWithAttr<PointerAttr>(FD->getReturnType())) {
@@ -7398,12 +7419,15 @@ void Sema::checkInitializerLifetime(const InitializedEntity &Entity,
         //   int &p = *localUniquePtr;
         //   someContainer.add(std::move(localUniquePtr));
         //   return p;
-        IsLocalGslOwner = isRecordWithAttr<OwnerAttr>(L->getType());
-        if (pathContainsInit(Path) || !IsLocalGslOwner)
+        QualType LocalType = L->getType();
+        IsLocalGslOwner = isRecordWithAttr<OwnerAttr>(LocalType);
+        if (!LocalType->isBuiltinType() && !LocalType->isArrayType() &&
+          (pathContainsInit(Path) || !IsLocalGslOwner))
           return false;
       } else {
-        IsGslPtrInitWithGslTempOwner = MTE && !MTE->getExtendingDecl() &&
-                            isRecordWithAttr<OwnerAttr>(MTE->getType());
+        IsGslPtrInitWithGslTempOwner =
+            MTE && !MTE->getExtendingDecl() &&
+            isRecordWithAttr<OwnerAttr>(MTE->getType());
         // Skipping a chain of initializing gsl::Pointer annotated objects.
         // We are looking only for the final source to find out if it was
         // a local or temporary owner or the address of a local variable/param.
@@ -8588,7 +8612,8 @@ ExprResult InitializationSequence::Perform(Sema &S,
         }
 
         Expr::EvalResult EVResult;
-        Init->EvaluateAsInt(EVResult, S.Context);
+        Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
+        Init->EvaluateAsInt(EVResult, EvalCtx);
         llvm::APSInt Result = EVResult.Val.getInt();
         const uint64_t SamplerValue = Result.getLimitedValue();
         // 32-bit value of sampler's initializer is interpreted as
@@ -9583,7 +9608,8 @@ static void DiagnoseNarrowingInInitList(Sema &S,
   // C++11 [dcl.init.list]p7: Check whether this is a narrowing conversion.
   APValue ConstantValue;
   QualType ConstantType;
-  switch (SCS->getNarrowingKind(S.Context, PostInit, ConstantValue,
+  Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
+  switch (SCS->getNarrowingKind(EvalCtx, PostInit, ConstantValue,
                                 ConstantType)) {
   case NK_Not_Narrowing:
   case NK_Dependent_Narrowing:

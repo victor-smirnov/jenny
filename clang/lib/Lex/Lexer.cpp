@@ -1652,9 +1652,11 @@ bool Lexer::LexIdentifier(Token &Result, const char *CurPtr) {
   // TODO: Could merge these checks into an InfoTable flag to make the
   // comparison cheaper
   if (isASCII(C) && C != '\\' && C != '?' &&
+      C != '!' &&
       (C != '$' || !LangOpts.DollarIdents)) {
 FinishIdentifier:
     const char *IdStart = BufferPtr;
+
     FormTokenWithChars(Result, CurPtr, tok::raw_identifier);
     Result.setRawIdentifierData(IdStart);
 
@@ -1700,10 +1702,10 @@ FinishIdentifier:
 
     return true;
   }
-
-  // Otherwise, $,\,? in identifier found.  Enter slower path.
+  // Otherwise, $,\,?,! in identifier found.  Enter slower path.
 
   C = getCharAndSize(CurPtr, Size);
+
   while (true) {
     if (C == '$') {
       // If we hit a $ and they are not supported in identifiers, we are done.
@@ -3642,6 +3644,9 @@ LexNextToken:
     if (Char == '=') {
       Kind = tok::percentequal;
       CurPtr = ConsumeChar(CurPtr, SizeTmp, Result);
+    } else if (LangOpts.Reflection && Char == '{') {
+      Kind = tok::percentl_brace;
+      CurPtr = ConsumeChar(CurPtr, SizeTmp, Result);
     } else if (LangOpts.Digraphs && Char == '>') {
       Kind = tok::r_brace;                             // '%>' -> '}'
       CurPtr = ConsumeChar(CurPtr, SizeTmp, Result);
@@ -3739,6 +3744,11 @@ LexNextToken:
       CurPtr = ConsumeChar(CurPtr, SizeTmp, Result);
       Kind = tok::l_square;
     } else if (LangOpts.Digraphs && Char == '%') {     // '<%' -> '{'
+      char After = getCharAndSize(CurPtr+SizeTmp, SizeTmp2);
+      if (LangOpts.Reflection && After == '{') {
+        Kind = tok::less;
+        break;
+      }
       CurPtr = ConsumeChar(CurPtr, SizeTmp, Result);
       Kind = tok::l_brace;
     } else if (Char == '#' && /*Not a trigraph*/ SizeTmp == 1 &&

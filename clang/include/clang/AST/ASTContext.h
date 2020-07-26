@@ -201,6 +201,7 @@ class ASTContext : public RefCountedBase<ASTContext> {
     FunctionProtoTypes;
   mutable llvm::FoldingSet<DependentTypeOfExprType> DependentTypeOfExprTypes;
   mutable llvm::FoldingSet<DependentDecltypeType> DependentDecltypeTypes;
+  mutable llvm::FoldingSet<DependentReflectedType> DependentReflectedTypes;
   mutable llvm::FoldingSet<TemplateTypeParmType> TemplateTypeParmTypes;
   mutable llvm::FoldingSet<ObjCTypeParamType> ObjCTypeParamTypes;
   mutable llvm::FoldingSet<SubstTemplateTypeParmType>
@@ -591,6 +592,11 @@ public:
   /// Returns the clang bytecode interpreter context.
   interp::Context &getInterpContext();
 
+  /// Active destructures of structures or parameter packs, used by
+  /// expansion statements. Maps a record decl to its destructured fields.
+  using MemberVector = llvm::SmallVector<Expr *, 8>;
+  llvm::DenseMap<const Expr *, MemberVector *> Destructures;
+
   /// Returns the dynamic AST node parent map context.
   ParentMapContext &getParentMapContext();
 
@@ -969,6 +975,7 @@ public:
   CanQualType FloatComplexTy, DoubleComplexTy, LongDoubleComplexTy;
   CanQualType Float128ComplexTy;
   CanQualType VoidPtrTy, NullPtrTy;
+  CanQualType MetaInfoTy;
   CanQualType DependentTy, OverloadTy, BoundMemberTy, UnknownAnyTy;
   CanQualType BuiltinFnTy;
   CanQualType PseudoObjectTy, ARCUnbridgedCastTy;
@@ -1145,6 +1152,10 @@ public:
   /// Determine whether two function types are the same, ignoring
   /// exception specifications in cases where they're part of the type.
   bool hasSameFunctionTypeIgnoringExceptionSpec(QualType T, QualType U);
+
+  /// Determine whether two function types are the same, ignoring
+  /// the return type.
+  bool hasSameFunctionTypeIgnoringReturn(QualType T, QualType U);
 
   /// Change the exception specification on a function once it is
   /// delay-parsed, instantiated, or computed.
@@ -1430,6 +1441,9 @@ public:
                                     const TemplateArgumentListInfo &Args,
                                     QualType Canon = QualType()) const;
 
+  QualType
+  getCXXRequiredTypeType(const CXXRequiredTypeDecl *D) const;
+
   QualType getParenType(QualType NamedType) const;
 
   QualType getMacroQualifiedType(QualType UnderlyingTy,
@@ -1461,6 +1475,10 @@ public:
 
   QualType getPackExpansionType(QualType Pattern,
                                 Optional<unsigned> NumExpansions);
+
+  QualType getCXXDependentVariadicReifierType(Expr *Range, SourceLocation KWLoc,
+                                              SourceLocation EllipsisLoc,
+                                              SourceLocation RParenLoc);
 
   QualType getObjCInterfaceType(const ObjCInterfaceDecl *Decl,
                                 ObjCInterfaceDecl *PrevDecl = nullptr) const;
@@ -1497,6 +1515,9 @@ public:
 
   /// C++11 decltype.
   QualType getDecltypeType(Expr *e, QualType UnderlyingType) const;
+
+  /// \brief Reflected types.
+  QualType getReflectedType(Expr *e, QualType UnderlyingType) const;
 
   /// Unary type transforms
   QualType getUnaryTransformType(QualType BaseType, QualType UnderlyingType,

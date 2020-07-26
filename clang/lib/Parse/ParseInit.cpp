@@ -165,14 +165,14 @@ ExprResult Parser::ParseInitializerWithPotentialDesignator(
   //   designation ::= identifier ':'
   // Handle it as a field designator.  Otherwise, this must be the start of a
   // normal expression.
-  if (Tok.is(tok::identifier)) {
+  if (isIdentifier()) {
     const IdentifierInfo *FieldName = Tok.getIdentifierInfo();
 
     SmallString<256> NewSyntax;
     llvm::raw_svector_ostream(NewSyntax) << '.' << FieldName->getName()
                                          << " = ";
 
-    SourceLocation NameLoc = ConsumeToken(); // Eat the identifier.
+    SourceLocation NameLoc = ConsumeIdentifier();
 
     assert(Tok.is(tok::colon) && "MayBeDesignationStart not working properly!");
     SourceLocation ColonLoc = ConsumeToken();
@@ -203,14 +203,14 @@ ExprResult Parser::ParseInitializerWithPotentialDesignator(
         cutOffParsing();
         return ExprError();
       }
-      if (Tok.isNot(tok::identifier)) {
+      if (!isIdentifier()) {
         Diag(Tok.getLocation(), diag::err_expected_field_designator);
         return ExprError();
       }
 
       Desig.AddDesignator(Designator::getField(Tok.getIdentifierInfo(), DotLoc,
                                                Tok.getLocation()));
-      ConsumeToken(); // Eat the identifier.
+      ConsumeIdentifier(); // Eat the identifier.
       continue;
     }
 
@@ -248,12 +248,12 @@ ExprResult Parser::ParseInitializerWithPotentialDesignator(
     // much more complicated parsing.
     if  (getLangOpts().ObjC && getLangOpts().CPlusPlus) {
       // Send to 'super'.
-      if (Tok.is(tok::identifier) && Tok.getIdentifierInfo() == Ident_super &&
+      if (isIdentifier() && Tok.getIdentifierInfo() == Ident_super &&
           NextToken().isNot(tok::period) &&
           getCurScope()->isInObjcMethodScope()) {
         CheckArrayDesignatorSyntax(*this, StartLoc, Desig);
         return ParseAssignmentExprWithObjCMessageExprStart(
-            StartLoc, ConsumeToken(), nullptr, nullptr);
+            StartLoc, ConsumeIdentifier(), nullptr, nullptr);
       }
 
       // Parse the receiver, which is either a type or an expression.
@@ -279,7 +279,7 @@ ExprResult Parser::ParseInitializerWithPotentialDesignator(
       // adopt the expression for further analysis below.
       // FIXME: potentially-potentially evaluated expression above?
       Idx = ExprResult(static_cast<Expr*>(TypeOrExpr));
-    } else if (getLangOpts().ObjC && Tok.is(tok::identifier)) {
+    } else if (getLangOpts().ObjC && isIdentifier()) {
       IdentifierInfo *II = Tok.getIdentifierInfo();
       SourceLocation IILoc = Tok.getLocation();
       ParsedType ReceiverType;
@@ -292,11 +292,11 @@ ExprResult Parser::ParseInitializerWithPotentialDesignator(
       case Sema::ObjCSuperMessage:
         CheckArrayDesignatorSyntax(*this, StartLoc, Desig);
         return ParseAssignmentExprWithObjCMessageExprStart(
-            StartLoc, ConsumeToken(), nullptr, nullptr);
+            StartLoc, ConsumeIdentifier(), nullptr, nullptr);
 
       case Sema::ObjCClassMessage:
         CheckArrayDesignatorSyntax(*this, StartLoc, Desig);
-        ConsumeToken(); // the identifier
+        ConsumeIdentifier();
         if (!ReceiverType) {
           SkipUntil(tok::r_square, StopAtSemi);
           return ExprError();
@@ -472,11 +472,16 @@ ExprResult Parser::ParseBraceInitializer() {
 
     // Parse: designation[opt] initializer
 
+    bool VariadicReifier = isVariadicReifier();
+    llvm::SmallVector<Expr *, 4> ExpandedExprs;
+
     // If we know that this cannot be a designation, just parse the nested
     // initializer directly.
     ExprResult SubElt;
     if (MayBeDesignationStart())
       SubElt = ParseInitializerWithPotentialDesignator(CodeCompleteDesignation);
+    else if (VariadicReifier)
+      InitExprsOk = !ParseVariadicReifier(ExpandedExprs);
     else
       SubElt = ParseInitializer();
 
@@ -488,6 +493,11 @@ ExprResult Parser::ParseBraceInitializer() {
     // If we couldn't parse the subelement, bail out.
     if (SubElt.isUsable()) {
       InitExprs.push_back(SubElt.get());
+    } else if(VariadicReifier) {
+      InitExprs.append(ExpandedExprs.begin(), ExpandedExprs.end());
+
+      if(!InitExprsOk)
+        SkipUntil(tok::comma, tok::r_brace, StopBeforeMatch);
     } else {
       InitExprsOk = false;
 

@@ -16,12 +16,18 @@
 #include "clang/AST/DeclarationName.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/NestedNameSpecifier.h"
+#include "clang/AST/CXXInjectionContextSpecifier.h"
 #include "clang/AST/Stmt.h"
 #include "llvm/Support/Compiler.h"
 
 namespace clang {
 
 class VarDecl;
+class CXXMethodDecl;
+class CXXRecordDecl;
+class TemplateParameterList;
+class NonTypeTemplateParmDecl;
+class SizeOfPackExpr;
 
 /// CXXCatchStmt - This represents a C++ catch block.
 ///
@@ -219,6 +225,223 @@ public:
 
   const_child_range children() const {
     return const_child_range(&SubExprs[0], &SubExprs[END]);
+  }
+};
+
+/// The base class of all expansion statements.
+///
+/// Tuple and pack expansion statements have the following form:
+///
+/// \verbatim
+///   for... (auto x : expandable) statement
+/// \endverbatim
+///
+/// The "expandable" expression is a parameter pack, an array, a tuple, or
+/// a constexpr range.
+class CXXExpansionStmt : public Stmt {
+protected:
+  /// \brief The subexpressions of an expression include the loop variable,
+  /// the tuple or pack being expanded, and the loop body.
+  enum {
+    LOOP,  ///< The variable bound to each member of the expansion.
+    RANGE, ///< The expression or captured variable being expanded.
+    BODY,  ///< The uninstantiated loop body.
+    END
+  };
+  Stmt *SubExprs[END];
+
+  /// The template parameter stores the induction variable used to form
+  /// the dependent structure of the loop body.
+  TemplateParameterList *Parms;
+
+  SourceLocation ForLoc;
+  SourceLocation EllipsisLoc;
+  SourceLocation ColonLoc;
+  SourceLocation RParenLoc;
+
+  /// \brief The expansion size of the range. When the range is dependent
+  /// this value is not meaningful.
+  std::size_t Size;
+
+  /// \brief The statements instantiated from the loop body. These are not
+  /// sub-expressions.
+  Stmt **InstantiatedStmts;
+
+  friend class ASTStmtReader;
+public:
+
+  CXXExpansionStmt(StmtClass SC, DeclStmt *LoopVar,
+                   TemplateParameterList *Parms, std::size_t N,
+                   SourceLocation FL, SourceLocation EL,
+                   SourceLocation CL, SourceLocation RPL)
+    : Stmt(SC), ForLoc(FL), ColonLoc(CL), RParenLoc(RPL), Size(N),
+      InstantiatedStmts(nullptr) {
+    SubExprs[LOOP] = LoopVar;
+    SubExprs[RANGE] = SubExprs[BODY] = nullptr;
+  }
+
+  CXXExpansionStmt(StmtClass SC, EmptyShell Empty)
+    : Stmt(SC, Empty) {}
+
+  /// Returns the dependent loop variable declaration.
+  DeclStmt *getLoopVarStmt() const { return cast<DeclStmt>(SubExprs[LOOP]); }
+
+  /// Get the loop variable.
+  const VarDecl *getLoopVariable() const;
+  VarDecl *getLoopVariable();
+
+  /// Returns the template parameter list of the declaration.
+  TemplateParameterList *getTemplateParameters() { return Parms; }
+
+  /// Returns loop induction variable.
+  NonTypeTemplateParmDecl *getInductionVariable();
+
+  /// Returns the parsed body of the loop.
+  const Stmt *getBody() const { return SubExprs[BODY]; }
+  Stmt *getBody() { return SubExprs[BODY]; }
+
+  /// Set the body of the loop.
+  void setBody(Stmt *S) { SubExprs[BODY] = S; }
+
+  /// Returns the number of instantiated statements.
+  std::size_t getSize() const { return Size; }
+  void setSize(std::size_t N) { Size = N; }
+
+  /// Set the sequence of instantiated statements.
+  void setInstantiatedStatements(Stmt **S) {
+    assert(!InstantiatedStmts && "instantiated statements already defined");
+    InstantiatedStmts = S;
+  }
+
+  /// \brief Returns the sequence of instantiated statements.
+  ArrayRef<Stmt *> getInstantiatedStatements() const {
+    return llvm::makeArrayRef(InstantiatedStmts, Size);
+  }
+
+  /// \brief Returns a pointer to the first instantiated statement.
+  Stmt **begin_instantiated_statements() const { return InstantiatedStmts; }
+  /// \brief Returns a pointer past the last instantiated statement.
+  Stmt **end_instantiated_statements() const {
+    return InstantiatedStmts + Size;
+  }
+
+  SourceLocation getForLoc() const { return ForLoc; }
+  SourceLocation getEllipsisLoc() const { return EllipsisLoc; }
+  SourceLocation getColonLoc() const { return ColonLoc; }
+  SourceLocation getRParenLoc() const { return RParenLoc; }
+
+  SourceLocation getBeginLoc() const LLVM_READONLY { return ForLoc; }
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    if (SubExprs[BODY])
+      return SubExprs[BODY]->getEndLoc();
+    return RParenLoc;
+  }
+
+  // Iterators
+  child_range children() { return child_range(&SubExprs[0], &SubExprs[END]); }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == CXXCompositeExpansionStmtClass ||
+      T->getStmtClass() == CXXPackExpansionStmtClass;
+  }
+};
+
+class CXXCompositeExpansionStmt : public CXXExpansionStmt {
+  /// The statement declaring  __begin.
+  Stmt *BeginStmt;
+
+  /// The statement declaring __end.
+  Stmt *EndStmt;
+public:
+  /// Returns the statement containing the range declaration.
+  Stmt *getRangeVarStmt() const { return SubExprs[RANGE]; }
+
+  /// The range variable.
+  const VarDecl *getRangeVariable() const;
+  VarDecl *getRangeVariable();
+
+  /// The original range expression.
+  const Expr *getRangeInit() const { return getRangeVariable()->getInit(); }
+  Expr *getRangeInit() { return getRangeVariable()->getInit(); }
+
+  /// An expansion over an array, range, tuple, or struct.
+  CXXCompositeExpansionStmt(DeclStmt *LoopVar, DeclStmt *RangeVar,
+                            TemplateParameterList *Parms,
+                            std::size_t N, SourceLocation FL,
+                            SourceLocation EL, SourceLocation CL,
+                            SourceLocation RPL)
+    : CXXExpansionStmt(CXXCompositeExpansionStmtClass, LoopVar,
+                       Parms, N, FL, EL, CL, RPL) {
+    SubExprs[RANGE] = RangeVar;
+  }
+
+  CXXCompositeExpansionStmt(EmptyShell Empty)
+    : CXXExpansionStmt(CXXCompositeExpansionStmtClass, Empty) {}
+
+  /// Accesses the declaration statements of __begin and __end respectively.
+  /// These are only relevant for range expansions.
+  Stmt *getBeginStmt() const { return BeginStmt; }
+  void setBeginStmt(Stmt *B) { BeginStmt = B; }
+  Stmt *getEndStmt() const { return EndStmt; }
+  void setEndStmt(Stmt *E) { EndStmt = E; }
+
+  SourceLocation getBeginLoc() const LLVM_READONLY { return ForLoc; }
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    if (SubExprs[BODY])
+      return SubExprs[BODY]->getEndLoc();
+    return RParenLoc;
+  }
+
+  // Iterators
+  child_range children() { return child_range(&SubExprs[0], &SubExprs[END]); }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == CXXCompositeExpansionStmtClass;
+  }
+};
+
+class CXXPackExpansionStmt : public CXXExpansionStmt {
+  // A sizeof... expression. We aren't actually concerned with
+  // the value of this expression: we can use this to determine
+  // whether or not the pack has been expanded yet.
+  SizeOfPackExpr *PackSize = nullptr;
+public:
+  /// An expansion over a parameter pack does not have a range variable,
+  /// but the range itself is still significant, as it contains the pack.
+  CXXPackExpansionStmt(DeclStmt *LoopVar, Expr *RangeExpr,
+                       TemplateParameterList *Parms,
+                       std::size_t N, SourceLocation FL, SourceLocation EL,
+                       SourceLocation CL, SourceLocation RPL)
+    : CXXExpansionStmt(CXXPackExpansionStmtClass, LoopVar, Parms, N,
+                       FL, EL, CL, RPL) {
+      SubExprs[RANGE] = RangeExpr;
+    }
+
+  CXXPackExpansionStmt(EmptyShell Empty)
+    : CXXExpansionStmt(CXXPackExpansionStmtClass, Empty) {}
+
+  // Returns the range expression as a statement.
+  Stmt *getRangeExprStmt() const { return SubExprs[RANGE]; }
+
+  /// Returns the range expression.
+  Expr *getRangeExpr() const;
+
+  /// Returns the size of the pack being expanded over.
+  SizeOfPackExpr *getPackSize() const { return PackSize; }
+  void setPackSize(SizeOfPackExpr *E) { PackSize = E; }
+
+  SourceLocation getBeginLoc() const LLVM_READONLY { return ForLoc; }
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    if (SubExprs[BODY])
+      return SubExprs[BODY]->getEndLoc();
+    return RParenLoc;
+  }
+
+  // Iterators
+  child_range children() { return child_range(&SubExprs[0], &SubExprs[END]); }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == CXXPackExpansionStmtClass;
   }
 };
 
@@ -511,6 +734,127 @@ public:
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CoreturnStmtClass;
   }
+};
+
+/// Represents a C++ injection statement.
+///
+/// An injection statement, when evaluated, queues a source code modification,
+/// usually the injection of a fragment into the metaprogram evaluation
+/// context.
+///
+/// Example:
+///
+///     -> <<class: int a; >>
+///
+class CXXInjectionStmt : public Stmt {
+  SourceLocation IntroLoc;
+
+  /// The context to inject into.
+  CXXInjectionContextSpecifier InjectionContext;
+
+  /// The reflection or fragment being injected.
+  Stmt *Operand;
+public:
+  CXXInjectionStmt(SourceLocation IntroLoc,
+                   CXXInjectionContextSpecifier InjectionContext, Expr *Operand)
+    : Stmt(CXXInjectionStmtClass), IntroLoc(IntroLoc),
+      InjectionContext(InjectionContext), Operand(Operand) {}
+
+  explicit CXXInjectionStmt(EmptyShell Empty)
+      : Stmt(CXXInjectionStmtClass, Empty), IntroLoc(), Operand() {}
+
+  /// Retrieve the destination context information.
+  CXXInjectionContextSpecifier getContextSpecifier() const {
+    return InjectionContext;
+  }
+
+  /// Retrieve the operand of the injection statement.
+  Expr *getOperand() const { return reinterpret_cast<Expr *>(Operand); }
+
+  /// The location of introducer token.
+  SourceLocation getIntroLoc() const { return IntroLoc; }
+
+  SourceLocation getBeginLoc() const LLVM_READONLY {
+    return IntroLoc;
+  }
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    return Operand->getEndLoc();
+  }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == CXXInjectionStmtClass;
+  }
+
+  child_range children() {
+    return child_range(&Operand, &Operand + 1);
+  }
+
+  friend class ASTStmtReader;
+  friend class ASTStmtWriter;
+};
+
+/// Represents a C++ base injection statement.
+///
+/// A base injection statement, when evaluated, queues a source
+/// code modification to add additional base classes.
+///
+/// Example:
+///
+///     __inject_base(public Foo, private Bar)
+///
+class CXXBaseInjectionStmt : public Stmt {
+  SourceLocation IntroLoc;
+  SourceLocation LParenLoc;
+  SourceLocation RParenLoc;
+
+  // The base specifiers being injected.
+  CXXBaseSpecifier **Bases;
+  unsigned NumBaseSpecifiers;
+
+  CXXBaseInjectionStmt(SourceLocation IntroLoc, SourceLocation LParenLoc,
+                       CXXBaseSpecifier **BaseSpecifiers,
+                       unsigned NumBaseSpecifiers, SourceLocation RParenLoc);
+
+  explicit CXXBaseInjectionStmt(EmptyShell Empty);
+
+public:
+  static CXXBaseInjectionStmt *
+  Create(ASTContext &C, SourceLocation IntroLoc, SourceLocation LParenLoc,
+         ArrayRef<CXXBaseSpecifier *> BaseSpecifiers, SourceLocation RParenLoc);
+
+  static CXXBaseInjectionStmt *CreateEmpty(ASTContext &C);
+
+  /// Returns the base specifiers to be injected.
+  ArrayRef<CXXBaseSpecifier *> getBaseSpecifiers() const {
+    return llvm::makeArrayRef(Bases, NumBaseSpecifiers);
+  }
+
+  /// The location of introducer token.
+  SourceLocation getIntroLoc() const { return IntroLoc; }
+
+  /// The location of the left paren.
+  SourceLocation getLParenLoc() const { return LParenLoc; }
+
+  /// The location of the right paren.
+  SourceLocation getRParenLoc() const { return RParenLoc; }
+
+  SourceLocation getBeginLoc() const LLVM_READONLY {
+    return IntroLoc;
+  }
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    return RParenLoc;
+  }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == CXXBaseInjectionStmtClass;
+  }
+
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+
+  friend class ASTStmtReader;
+  friend class ASTStmtWriter;
 };
 
 }  // end namespace clang

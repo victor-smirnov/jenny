@@ -380,6 +380,8 @@ static bool isSimpleAPValue(const APValue &Value) {
   case APValue::Vector:
   case APValue::Array:
   case APValue::Struct:
+  case APValue::Reflection:
+  case APValue::Fragment:
     return false;
   case APValue::Union:
     return isSimpleAPValue(Value.getUnionValue());
@@ -562,6 +564,12 @@ void TextNodeDumper::Visit(const APValue &Value, QualType Ty) {
     return;
   case APValue::AddrLabelDiff:
     OS << "AddrLabelDiff <todo>";
+    return;
+  case APValue::Reflection:
+    OS << "Reflection <todo>";
+    return;
+  case APValue::Fragment:
+    OS << "Fragment <todo>";
     return;
   }
   llvm_unreachable("Unknown APValue kind!");
@@ -873,6 +881,11 @@ void TextNodeDumper::VisitExpressionTemplateArgument(const TemplateArgument &) {
 
 void TextNodeDumper::VisitPackTemplateArgument(const TemplateArgument &) {
   OS << " pack";
+}
+
+void TextNodeDumper::VisitReflectedTemplateArgument(const TemplateArgument &TA) {
+  OS << " reflected ";
+  Visit(TA.getAsExpr());
 }
 
 static void dumpBasePath(raw_ostream &OS, const CastExpr *Node) {
@@ -1448,6 +1461,10 @@ void TextNodeDumper::VisitUnresolvedUsingType(const UnresolvedUsingType *T) {
   dumpDeclRef(T->getDecl());
 }
 
+void TextNodeDumper::VisitCXXRequiredTypeType(const CXXRequiredTypeType *T) {
+  dumpDeclRef(T->getDecl());
+}
+
 void TextNodeDumper::VisitTypedefType(const TypedefType *T) {
   dumpDeclRef(T->getDecl());
 }
@@ -1813,6 +1830,12 @@ void TextNodeDumper::VisitUsingDirectiveDecl(const UsingDirectiveDecl *D) {
 void TextNodeDumper::VisitNamespaceAliasDecl(const NamespaceAliasDecl *D) {
   dumpName(D);
   dumpDeclRef(D->getAliasedNamespace());
+}
+
+void TextNodeDumper::VisitCXXRequiredDeclaratorDecl(
+                                           const CXXRequiredDeclaratorDecl *D) {
+  dumpName(D);
+  dumpType(D->getTypeSourceInfo()->getType());
 }
 
 void TextNodeDumper::VisitTypeAliasDecl(const TypeAliasDecl *D) {

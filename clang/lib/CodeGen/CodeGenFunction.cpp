@@ -1451,7 +1451,8 @@ bool CodeGenFunction::ConstantFoldsToSimpleInteger(const Expr *Cond,
   // FIXME: Rename and handle conversion of other evaluatable things
   // to bool.
   Expr::EvalResult Result;
-  if (!Cond->EvaluateAsInt(Result, getContext()))
+  Expr::EvalContext EvalCtx(getContext(), nullptr);
+  if (!Cond->EvaluateAsInt(Result, EvalCtx))
     return false;  // Not foldable, not integer or not fully evaluatable.
 
   llvm::APSInt Int = Result.Val.getInt();
@@ -2083,6 +2084,7 @@ void CodeGenFunction::EmitVariablyModifiedType(QualType type) {
 
     case Type::Typedef:
     case Type::Decltype:
+    case Type::Reflected:
     case Type::Auto:
     case Type::DeducedTemplateSpecialization:
       // Stop walking: nothing to do.

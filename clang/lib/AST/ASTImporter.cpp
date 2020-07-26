@@ -211,7 +211,7 @@ namespace clang {
 
     // Always use these functions to create a Decl during import. There are
     // certain tasks which must be done after the Decl was created, e.g. we
-    // must immediately register that as an imported Decl.  The parameter `ToD`
+    // must immediatey register that as an imported Decl.  The parameter `ToD`
     // will be set to the newly created Decl or if had been imported before
     // then to the already imported Decl.  Returns a bool value set to true if
     // the `FromD` had been imported before.
@@ -357,6 +357,7 @@ namespace clang {
     ExpectedType VisitFunctionNoProtoType(const FunctionNoProtoType *T);
     ExpectedType VisitFunctionProtoType(const FunctionProtoType *T);
     ExpectedType VisitUnresolvedUsingType(const UnresolvedUsingType *T);
+    ExpectedType VisitCXXRequiredTypeType(const CXXRequiredTypeType *T);
     ExpectedType VisitParenType(const ParenType *T);
     ExpectedType VisitTypedefType(const TypedefType *T);
     ExpectedType VisitTypeOfExprType(const TypeOfExprType *T);
@@ -378,6 +379,8 @@ namespace clang {
     ExpectedType VisitElaboratedType(const ElaboratedType *T);
     ExpectedType VisitDependentNameType(const DependentNameType *T);
     ExpectedType VisitPackExpansionType(const PackExpansionType *T);
+    ExpectedType VisitCXXDependentVariadicReifierType
+    (const CXXDependentVariadicReifierType *T);
     ExpectedType VisitDependentTemplateSpecializationType(
         const DependentTemplateSpecializationType *T);
     ExpectedType VisitObjCInterfaceType(const ObjCInterfaceType *T);
@@ -828,9 +831,10 @@ ASTNodeImporter::import(const TemplateArgument &From) {
         *ToTemplateOrErr, From.getNumTemplateExpansions());
   }
 
+  case TemplateArgument::Reflected:
   case TemplateArgument::Expression:
     if (ExpectedExpr ToExpr = import(From.getAsExpr()))
-      return TemplateArgument(*ToExpr);
+      return TemplateArgument(*ToExpr, From.getKind());
     else
       return ToExpr.takeError();
 
@@ -1287,6 +1291,18 @@ ExpectedType ASTNodeImporter::VisitUnresolvedUsingType(
       ToD, cast_or_null<TypeDecl>(ToPrevD));
 }
 
+ExpectedType
+ASTNodeImporter::VisitCXXRequiredTypeType(const CXXRequiredTypeType *T) {
+  Error Err = Error::success();
+  auto ToD = importChecked(Err, T->getDecl());
+  auto ToPrevD = importChecked(Err, T->getDecl()->getPreviousDecl());
+  if (Err)
+    return std::move(Err);
+
+  return Importer.getToContext().getTypeDeclType(
+      ToD, cast_or_null<TypeDecl>(ToPrevD));
+}
+
 ExpectedType ASTNodeImporter::VisitParenType(const ParenType *T) {
   ExpectedType ToInnerTypeOrErr = import(T->getInnerType());
   if (!ToInnerTypeOrErr)
@@ -1499,6 +1515,14 @@ ASTNodeImporter::VisitPackExpansionType(const PackExpansionType *T) {
 
   return Importer.getToContext().getPackExpansionType(*ToPatternOrErr,
                                                       T->getNumExpansions());
+}
+
+ExpectedType
+ASTNodeImporter::VisitCXXDependentVariadicReifierType
+(const CXXDependentVariadicReifierType *T) {
+  return Importer.getToContext().
+    getCXXDependentVariadicReifierType(T->getRange(), T->getBeginLoc(),
+                                       T->getEllipsisLoc(), T->getEndLoc());
 }
 
 ExpectedType ASTNodeImporter::VisitDependentTemplateSpecializationType(

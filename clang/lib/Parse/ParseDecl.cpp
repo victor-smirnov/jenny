@@ -170,13 +170,20 @@ void Parser::ParseGNUAttributes(ParsedAttributes &attrs,
         ;
 
       // Expect an identifier or declaration specifier (const, int, etc.)
-      if (Tok.isAnnotation())
-        break;
-      IdentifierInfo *AttrName = Tok.getIdentifierInfo();
-      if (!AttrName)
-        break;
+      IdentifierInfo *AttrName;
+      SourceLocation AttrNameLoc;
+      if (isIdentifier()) {
+        AttrName = Tok.getIdentifierInfo();
+        AttrNameLoc = ConsumeIdentifier();
+      } else if (!Tok.isAnnotation()) {
+        AttrName = Tok.getIdentifierInfo();
+        if (!AttrName)
+          break;
 
-      SourceLocation AttrNameLoc = ConsumeToken();
+        AttrNameLoc = ConsumeToken();
+      } else {
+        break;
+      }
 
       if (Tok.isNot(tok::l_paren)) {
         attrs.addNew(AttrName, AttrNameLoc, nullptr, AttrNameLoc, nullptr, 0,
@@ -290,11 +297,11 @@ static bool attributeParsedArgsUnevaluated(const IdentifierInfo &II) {
 }
 
 IdentifierLoc *Parser::ParseIdentifierLoc() {
-  assert(Tok.is(tok::identifier) && "expected an identifier");
+  assert(isIdentifier() && "expected an identifier");
   IdentifierLoc *IL = IdentifierLoc::create(Actions.Context,
                                             Tok.getLocation(),
                                             Tok.getIdentifierInfo());
-  ConsumeToken();
+  ConsumeIdentifier();
   return IL;
 }
 
@@ -342,7 +349,7 @@ unsigned Parser::ParseAttributeArgsCommon(
     Tok.setKind(tok::identifier);
 
   ArgsVector ArgExprs;
-  if (Tok.is(tok::identifier)) {
+  if (isIdentifier()) {
     // If this attribute wants an 'identifier' argument, make it so.
     bool IsIdentifierArg = attributeHasIdentifierArg(*AttrName) ||
                            attributeHasVariadicIdentifierArg(*AttrName);
@@ -383,7 +390,7 @@ unsigned Parser::ParseAttributeArgsCommon(
         if (T.isUsable())
           TheParsedType = T.get();
         break; // FIXME: Multiple type arguments are not implemented.
-      } else if (Tok.is(tok::identifier) &&
+      } else if (isIdentifier() &&
                  attributeHasVariadicIdentifierArg(*AttrName)) {
         ArgExprs.push_back(ParseIdentifierLoc());
       } else {
@@ -549,7 +556,7 @@ bool Parser::ParseMicrosoftDeclSpecArgs(IdentifierInfo *AttrName,
     // Parse the accessor specifications.
     while (true) {
       // Stop if this doesn't look like an accessor spec.
-      if (!Tok.is(tok::identifier)) {
+      if (!isIdentifier()) {
         // If the user wrote a completely empty list, use a special diagnostic.
         if (Tok.is(tok::r_paren) && !HasInvalidAccessor &&
             AccessorNames[AK_Put] == nullptr &&
@@ -580,7 +587,7 @@ bool Parser::ParseMicrosoftDeclSpecArgs(IdentifierInfo *AttrName,
         // this accessor.
       } else if (NextToken().is(tok::comma) || NextToken().is(tok::r_paren)) {
         Diag(KindLoc, diag::err_ms_property_missing_accessor_kind);
-        ConsumeToken();
+        ConsumeIdentifier();
         HasInvalidAccessor = true;
         goto next_property_accessor;
 
@@ -596,7 +603,7 @@ bool Parser::ParseMicrosoftDeclSpecArgs(IdentifierInfo *AttrName,
       }
 
       // Consume the identifier.
-      ConsumeToken();
+      ConsumeIdentifier();
 
       // Consume the '='.
       if (!TryConsumeToken(tok::equal)) {
@@ -606,7 +613,7 @@ bool Parser::ParseMicrosoftDeclSpecArgs(IdentifierInfo *AttrName,
       }
 
       // Expect the method name.
-      if (!Tok.is(tok::identifier)) {
+      if (!isIdentifier()) {
         Diag(Tok.getLocation(), diag::err_ms_property_expected_accessor_name);
         break;
       }
@@ -619,7 +626,7 @@ bool Parser::ParseMicrosoftDeclSpecArgs(IdentifierInfo *AttrName,
       } else {
         AccessorNames[Kind] = Tok.getIdentifierInfo();
       }
-      ConsumeToken();
+      ConsumeIdentifier();
 
     next_property_accessor:
       // Keep processing accessors until we run out.
@@ -705,7 +712,7 @@ void Parser::ParseMicrosoftDeclSpecs(ParsedAttributes &Attrs,
         AttrNameLoc = ConsumeStringToken();
       } else {
         AttrName = Tok.getIdentifierInfo();
-        AttrNameLoc = ConsumeToken();
+        AttrNameLoc = ConsumeAsIdentifier();
       }
 
       bool AttrHandled = false;
@@ -1007,7 +1014,7 @@ void Parser::ParseAvailabilityAttribute(IdentifierInfo &Availability,
   }
 
   // Parse the platform name.
-  if (Tok.isNot(tok::identifier)) {
+  if (!isIdentifier()) {
     Diag(Tok, diag::err_availability_expected_platform);
     SkipUntil(tok::r_paren, StopAtSemi);
     return;
@@ -1048,13 +1055,13 @@ void Parser::ParseAvailabilityAttribute(IdentifierInfo &Availability,
   // introductions/deprecations/removals.
   SourceLocation UnavailableLoc, StrictLoc;
   do {
-    if (Tok.isNot(tok::identifier)) {
+    if (!isIdentifier()) {
       Diag(Tok, diag::err_availability_expected_change);
       SkipUntil(tok::r_paren, StopAtSemi);
       return;
     }
     IdentifierInfo *Keyword = Tok.getIdentifierInfo();
-    SourceLocation KeywordLoc = ConsumeToken();
+    SourceLocation KeywordLoc = ConsumeIdentifier();
 
     if (Keyword == Ident_strict) {
       if (StrictLoc.isValid()) {
@@ -1126,10 +1133,10 @@ void Parser::ParseAvailabilityAttribute(IdentifierInfo &Availability,
     // Special handling of 'NA' only when applied to introduced or
     // deprecated.
     if ((Keyword == Ident_introduced || Keyword == Ident_deprecated) &&
-        Tok.is(tok::identifier)) {
+        isIdentifier()) {
       IdentifierInfo *NA = Tok.getIdentifierInfo();
       if (NA->getName() == "NA") {
-        ConsumeToken();
+        ConsumeIdentifier();
         if (Keyword == Ident_introduced)
           UnavailableLoc = KeywordLoc;
         continue;
@@ -1247,7 +1254,7 @@ void Parser::ParseExternalSourceSymbolAttribute(
 
   // Parse the language/defined_in/generated_declaration keywords
   do {
-    if (Tok.isNot(tok::identifier)) {
+    if (!isIdentifier()) {
       Diag(Tok, diag::err_external_source_symbol_expected_keyword);
       SkipUntil(tok::r_paren, StopAtSemi);
       return;
@@ -1271,7 +1278,7 @@ void Parser::ParseExternalSourceSymbolAttribute(
       return;
     }
 
-    ConsumeToken();
+    ConsumeIdentifier();
     if (ExpectAndConsume(tok::equal, diag::err_expected_after,
                          Keyword->getName())) {
       SkipUntil(tok::r_paren, StopAtSemi);
@@ -1349,7 +1356,7 @@ void Parser::ParseObjCBridgeRelatedAttribute(IdentifierInfo &ObjCBridgeRelated,
   }
 
   // Parse the related class name.
-  if (Tok.isNot(tok::identifier)) {
+  if (!isIdentifier()) {
     Diag(Tok, diag::err_objcbridge_related_expected_related_class);
     SkipUntil(tok::r_paren, StopAtSemi);
     return;
@@ -1364,7 +1371,7 @@ void Parser::ParseObjCBridgeRelatedAttribute(IdentifierInfo &ObjCBridgeRelated,
   // comma is required, but it can be the empty string, and then we record a
   // nullptr.
   IdentifierLoc *ClassMethod = nullptr;
-  if (Tok.is(tok::identifier)) {
+  if (isIdentifier()) {
     ClassMethod = ParseIdentifierLoc();
     if (!TryConsumeToken(tok::colon)) {
       Diag(Tok, diag::err_objcbridge_related_selector_name);
@@ -1384,7 +1391,7 @@ void Parser::ParseObjCBridgeRelatedAttribute(IdentifierInfo &ObjCBridgeRelated,
   // Parse instance method name.  Also non-optional but empty string is
   // permitted.
   IdentifierLoc *InstanceMethod = nullptr;
-  if (Tok.is(tok::identifier))
+  if (isIdentifier())
     InstanceMethod = ParseIdentifierLoc();
   else if (Tok.isNot(tok::r_paren)) {
     Diag(Tok, diag::err_expected) << tok::r_paren;
@@ -1421,7 +1428,7 @@ void Parser::ParseTypeTagForDatatypeAttribute(IdentifierInfo &AttrName,
   BalancedDelimiterTracker T(*this, tok::l_paren);
   T.consumeOpen();
 
-  if (Tok.isNot(tok::identifier)) {
+  if (!isIdentifier()) {
     Diag(Tok, diag::err_expected) << tok::identifier;
     T.skipToEnd();
     return;
@@ -1443,7 +1450,7 @@ void Parser::ParseTypeTagForDatatypeAttribute(IdentifierInfo &AttrName,
   bool LayoutCompatible = false;
   bool MustBeNull = false;
   while (TryConsumeToken(tok::comma)) {
-    if (Tok.isNot(tok::identifier)) {
+    if (!isIdentifier()) {
       Diag(Tok, diag::err_expected) << tok::identifier;
       T.skipToEnd();
       return;
@@ -1458,7 +1465,7 @@ void Parser::ParseTypeTagForDatatypeAttribute(IdentifierInfo &AttrName,
       T.skipToEnd();
       return;
     }
-    ConsumeToken(); // consume flag
+    ConsumeIdentifier(); // consume flag
   }
 
   if (!T.consumeClose()) {
@@ -1629,6 +1636,18 @@ Parser::ParseDeclaration(DeclaratorContext Context, SourceLocation &DeclEnd,
     ProhibitAttributes(attrs);
     SingleDecl = ParseStaticAssertDeclaration(DeclEnd);
     break;
+  case tok::kw_requires:
+    ProhibitAttributes(attrs);
+    SingleDecl = ParseCXXRequiredDecl(Context);
+    break;
+  case tok::kw_consteval:
+    // [Meta] injector-declaration
+    if (Decl *ParsedDecl = MaybeParseCXXInjectorDeclaration()) {
+      SingleDecl = ParsedDecl;
+      break;
+    }
+    LLVM_FALLTHROUGH;
+
   default:
     return ParseSimpleDeclaration(Context, DeclEnd, attrs, true, nullptr,
                                   DeclSpecStart);
@@ -2124,6 +2143,7 @@ Decl *Parser::ParseDeclarationAfterDeclaratorAndAttributes(
           P.EnterScope(0);
           S = P.getCurScope();
         }
+
         P.Actions.ActOnCXXEnterDeclInitializer(S, ThisDecl);
       }
     }
@@ -2229,6 +2249,7 @@ Decl *Parser::ParseDeclarationAfterDeclaratorAndAttributes(
       }
 
       PreferredType.enterVariableInit(Tok.getLocation(), ThisDecl);
+
       ExprResult Init = ParseInitializer();
 
       // If this is the only decl in (possibly) range based for statement,
@@ -2427,7 +2448,7 @@ bool Parser::ParseImplicitInt(DeclSpec &DS, CXXScopeSpec *SS,
                               const ParsedTemplateInfo &TemplateInfo,
                               AccessSpecifier AS, DeclSpecContext DSC,
                               ParsedAttributesWithRange &Attrs) {
-  assert(Tok.is(tok::identifier) && "should have identifier");
+  assert(isIdentifier() && "should have identifier");
 
   SourceLocation Loc = Tok.getLocation();
   // If we see an identifier that is not a type name, we normally would
@@ -2484,7 +2505,7 @@ bool Parser::ParseImplicitInt(DeclSpec &DS, CXXScopeSpec *SS,
       DS.SetTypeSpecType(DeclSpec::TST_typename, Loc, PrevSpec, DiagID, T,
                          Actions.getASTContext().getPrintingPolicy());
       DS.SetRangeEnd(Tok.getLocation());
-      ConsumeToken();
+      ConsumeIdentifier();
       return false;
     }
   }
@@ -2557,7 +2578,7 @@ bool Parser::ParseImplicitInt(DeclSpec &DS, CXXScopeSpec *SS,
       // Since we're in an error case, we can afford to perform a tentative
       // parse to determine which case we're in.
       TentativeParsingAction PA(*this);
-      ConsumeToken();
+      ConsumeIdentifier();
       TPResult TPR = TryParseDeclarator(/*mayBeAbstract*/false);
       PA.Revert();
 
@@ -2621,7 +2642,7 @@ bool Parser::ParseImplicitInt(DeclSpec &DS, CXXScopeSpec *SS,
     DS.SetTypeSpecType(DeclSpec::TST_typename, Loc, PrevSpec, DiagID, T,
                        Actions.getASTContext().getPrintingPolicy());
     DS.SetRangeEnd(Tok.getLocation());
-    ConsumeToken();
+    ConsumeIdentifier();
     // There may be other declaration specifiers after this.
     return true;
   } else if (II != Tok.getIdentifierInfo()) {
@@ -2634,7 +2655,7 @@ bool Parser::ParseImplicitInt(DeclSpec &DS, CXXScopeSpec *SS,
   // Otherwise, the action had no suggestion for us.  Mark this as an error.
   DS.SetTypeSpecError();
   DS.SetRangeEnd(Tok.getLocation());
-  ConsumeToken();
+  ConsumeIdentifier();
 
   // Eat any following template arguments.
   if (IsTemplateName) {
@@ -2722,7 +2743,20 @@ void Parser::ParseAlignmentSpecifier(ParsedAttributes &Attrs,
     return;
 
   SourceLocation EllipsisLoc;
-  ExprResult ArgExpr = ParseAlignArgument(T.getOpenLocation(), EllipsisLoc);
+
+  ExprResult ArgExpr;
+  ArgsVector ArgExprs;
+
+  if (isVariadicReifier()) {
+    llvm::SmallVector<Expr*, 4> ExpandedAlignments;
+    if(ParseVariadicReifier(ExpandedAlignments)) {
+      T.skipToEnd();
+      return;
+    }
+
+    ArgExprs.append(ExpandedAlignments.begin(), ExpandedAlignments.end());
+  } else
+    ArgExpr = ParseAlignArgument(T.getOpenLocation(), EllipsisLoc);
   if (ArgExpr.isInvalid()) {
     T.skipToEnd();
     return;
@@ -2732,7 +2766,6 @@ void Parser::ParseAlignmentSpecifier(ParsedAttributes &Attrs,
   if (EndLoc)
     *EndLoc = T.getCloseLocation();
 
-  ArgsVector ArgExprs;
   ArgExprs.push_back(ArgExpr.get());
   Attrs.addNew(KWName, KWLoc, nullptr, KWLoc, ArgExprs.data(), 1,
                ParsedAttr::AS_Keyword, EllipsisLoc);
@@ -2798,13 +2831,14 @@ Parser::DiagnoseMissingSemiAfterTagDefinition(DeclSpec &DS, AccessSpecifier AS,
         static_cast<TemplateIdAnnotation *>(AfterScope.getAnnotationValue());
     if (Annot->Kind == TNK_Type_template)
       MightBeDeclarator = false;
-  } else if (AfterScope.is(tok::identifier)) {
+  } else if (AfterScope.isIdentifier()) {
     const Token &Next = HasScope ? GetLookAheadToken(2) : NextToken();
 
     // These tokens cannot come after the declarator-id in a
     // simple-declaration, and are likely to come after a type-specifier.
-    if (Next.isOneOf(tok::star, tok::amp, tok::ampamp, tok::identifier,
-                     tok::annot_cxxscope, tok::coloncolon)) {
+    if (Next.isOneOf(tok::star, tok::amp, tok::ampamp,
+                     tok::annot_cxxscope, tok::coloncolon) ||
+        Next.isIdentifier()) {
       // Missing a semicolon.
       MightBeDeclarator = false;
     } else if (HasScope) {
@@ -3091,6 +3125,20 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
         continue;
       }
 
+      // Handle the typename reifier. In this context, the reifier
+      // is always invalid as it shouldn't be preceded
+      // by a nested-name-specifier.
+      if (getLangOpts().Reflection && Next.is(tok::kw_typename) &&
+          GetLookAheadToken(2).is(tok::l_paren)) {
+        assert(SS.isNotEmpty());
+
+        PrevSpec = ""; // not actually used by the diagnostic
+        DiagID = diag::err_reify_typename_preceded;
+        isInvalid = true;
+
+        break;
+      }
+
       if (Next.is(tok::annot_typename)) {
         DS.getTypeSpecScope() = SS;
         ConsumeAnnotationToken(); // The C++ scope.
@@ -3104,7 +3152,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
         ConsumeAnnotationToken(); // The typename
       }
 
-      if (Next.isNot(tok::identifier))
+      if (!Next.isIdentifier())
         goto DoneWithDeclSpec;
 
       // Check whether this is a constructor declaration. If we're in a
@@ -3132,7 +3180,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
         if (TryAnnotateTypeConstraint())
           goto DoneWithDeclSpec;
         if (Tok.isNot(tok::annot_cxxscope) ||
-            NextToken().isNot(tok::identifier))
+            !NextToken().isIdentifier())
           continue;
         // Eat the scope spec so the identifier is current.
         ConsumeAnnotationToken();
@@ -3156,11 +3204,12 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
         break;
 
       DS.SetRangeEnd(Tok.getLocation());
-      ConsumeToken(); // The typename.
+      ConsumeIdentifier(); // The typename.
 
       continue;
     }
 
+    case tok::annot_refltype:
     case tok::annot_typename: {
       // If we've previously seen a tag definition, we were almost surely
       // missing a semicolon after it.
@@ -3209,7 +3258,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       // extensions are not enabled, it is likely that there will be cascading
       // parse errors if this really is a __declspec attribute. Attempt to
       // recognize that scenario and recover gracefully.
-      if (!getLangOpts().DeclSpecKeyword && Tok.is(tok::identifier) &&
+      if (!getLangOpts().DeclSpecKeyword && isIdentifier() &&
           Tok.getIdentifierInfo()->getName().equals("__declspec")) {
         Diag(Loc, diag::err_ms_attributes_not_enabled);
 
@@ -3217,7 +3266,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
         // attribute declaration and continue.
         if (NextToken().is(tok::l_paren)) {
           // Consume the __declspec identifier.
-          ConsumeToken();
+          ConsumeIdentifier();
 
           // Eat the parens and everything between them.
           BalancedDelimiterTracker T(*this, tok::l_paren);
@@ -3237,7 +3286,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
           DS.SetTypeSpecError();
           goto DoneWithDeclSpec;
         }
-        if (!Tok.is(tok::identifier))
+        if (!isIdentifier())
           continue;
       }
 
@@ -3260,7 +3309,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
           break;
 
         DS.SetRangeEnd(Loc);
-        ConsumeToken();
+        ConsumeIdentifier();
         continue;
       }
 
@@ -3281,7 +3330,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       if (!TypeRep) {
         if (TryAnnotateTypeConstraint())
           goto DoneWithDeclSpec;
-        if (Tok.isNot(tok::identifier))
+        if (!isIdentifier())
           continue;
         ParsedAttributesWithRange Attrs(AttrFactory);
         if (ParseImplicitInt(DS, nullptr, TemplateInfo, AS, DSContext, Attrs)) {
@@ -3311,7 +3360,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
         break;
 
       DS.SetRangeEnd(Tok.getLocation());
-      ConsumeToken(); // The identifier
+      ConsumeIdentifier();
 
       // Objective-C supports type arguments and protocol references
       // following an Objective-C object or object pointer
@@ -4107,7 +4156,7 @@ void Parser::ParseStructDeclaration(
 /// [OBC]   '@' 'defs' '(' class-name ')'
 ///
 void Parser::ParseStructUnionBody(SourceLocation RecordLoc,
-                                  DeclSpec::TST TagType, RecordDecl *TagDecl) {
+                                  DeclSpec::TST TagType, Decl *TagDecl) {
   PrettyDeclStackTraceEntry CrashInfo(Actions.Context, TagDecl, RecordLoc,
                                       "parsing struct/union body");
   assert(!getLangOpts().CPlusPlus && "C++ declarations not supported");
@@ -4183,9 +4232,9 @@ void Parser::ParseStructUnionBody(SourceLocation RecordLoc,
         SkipUntil(tok::semi);
         continue;
       }
-      ConsumeToken();
+      ConsumeIdentifier();
       ExpectAndConsume(tok::l_paren);
-      if (!Tok.is(tok::identifier)) {
+      if (!isIdentifier()) {
         Diag(Tok, diag::err_expected) << tok::identifier;
         SkipUntil(tok::semi);
         continue;
@@ -4193,7 +4242,7 @@ void Parser::ParseStructUnionBody(SourceLocation RecordLoc,
       SmallVector<Decl *, 16> Fields;
       Actions.ActOnDefs(getCurScope(), TagDecl, Tok.getLocation(),
                         Tok.getIdentifierInfo(), Fields);
-      ConsumeToken();
+      ConsumeIdentifier();
       ExpectAndConsume(tok::r_paren);
     }
 
@@ -4218,8 +4267,8 @@ void Parser::ParseStructUnionBody(SourceLocation RecordLoc,
   // If attributes exist after struct contents, parse them.
   MaybeParseGNUAttributes(attrs);
 
-  SmallVector<Decl *, 32> FieldDecls(TagDecl->field_begin(),
-                                     TagDecl->field_end());
+  SmallVector<Decl *, 32> FieldDecls(cast<RecordDecl>(TagDecl)->field_begin(),
+                                     cast<RecordDecl>(TagDecl)->field_end());
 
   Actions.ActOnFields(getCurScope(), RecordLoc, TagDecl, FieldDecls,
                       T.getOpenLocation(), T.getCloseLocation(), attrs);
@@ -4325,7 +4374,7 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
                                        /*EnteringContext=*/true))
       return;
 
-    if (Spec.isSet() && Tok.isNot(tok::identifier)) {
+    if (Spec.isSet() && !isIdentifier()) {
       Diag(Tok, diag::err_expected) << tok::identifier;
       if (Tok.isNot(tok::l_brace)) {
         // Has no name and is not a definition.
@@ -4339,8 +4388,8 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
   }
 
   // Must have either 'enum name' or 'enum {...}' or (rarely) 'enum : T { ... }'.
-  if (Tok.isNot(tok::identifier) && Tok.isNot(tok::l_brace) &&
-      Tok.isNot(tok::colon)) {
+  if (!isIdentifier() && Tok.isNot(tok::l_brace) &&
+      Tok.isNot(tok::colon) && Tok.isNot(tok::kw_unqualid)) {
     Diag(Tok, diag::err_expected_either) << tok::identifier << tok::l_brace;
 
     // Skip the rest of this declarator, up until the comma or semicolon.
@@ -4351,9 +4400,12 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
   // If an identifier is present, consume and remember it.
   IdentifierInfo *Name = nullptr;
   SourceLocation NameLoc;
-  if (Tok.is(tok::identifier)) {
+  if (isIdentifier()) {
     Name = Tok.getIdentifierInfo();
-    NameLoc = ConsumeToken();
+    NameLoc = ConsumeIdentifier();
+  } else if (Tok.is(tok::kw_unqualid)) {
+    // Ignore failure in an attempt to get better diagnostics.
+    ParseCXXIdentifierSplice(Name, NameLoc);
   }
 
   if (!Name && ScopedEnumKWLoc.isValid()) {
@@ -4555,10 +4607,10 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
   const char *PrevSpec = nullptr;
   unsigned DiagID;
   Decl *TagDecl = Actions.ActOnTag(
-      getCurScope(), DeclSpec::TST_enum, TUK, StartLoc, SS, Name, NameLoc,
-      attrs, AS, DS.getModulePrivateSpecLoc(), TParams, Owned, IsDependent,
-      ScopedEnumKWLoc, IsScopedUsingClassTag, BaseType,
-      DSC == DeclSpecContext::DSC_type_specifier,
+      getCurScope(), DeclSpec::TST_enum, /*Metafunction=*/nullptr, TUK,
+      StartLoc, SS, Name, NameLoc, attrs, AS, DS.getModulePrivateSpecLoc(),
+      TParams, Owned, IsDependent, ScopedEnumKWLoc, IsScopedUsingClassTag,
+      BaseType, DSC == DeclSpecContext::DSC_type_specifier,
       DSC == DeclSpecContext::DSC_template_param ||
           DSC == DeclSpecContext::DSC_template_type_arg,
       &SkipBody);
@@ -4632,15 +4684,51 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
     Diag(StartLoc, DiagID) << PrevSpec;
 }
 
+static void PushInjectedECD(
+    Parser &P, CXXInjectorDecl *MetaDecl,
+    SmallVectorImpl<Decl *> &EnumConstantDecls,
+    SmallVectorImpl<SuppressAccessChecks> &EnumAvailabilityDiags) {
+  EnumAvailabilityDiags.emplace_back(P);
+  EnumAvailabilityDiags.back().done();
+
+  EnumConstantDecls.push_back(MetaDecl);
+
+  for (Decl *ECD : MetaDecl->getInjectedDecls()) {
+    EnumAvailabilityDiags.emplace_back(P);
+    EnumAvailabilityDiags.back().done();
+
+    EnumConstantDecls.push_back(ECD);
+  }
+}
+
+static bool isEnumFragment(Scope *S) {
+  bool InFragment = S->getFlags() & Scope::FragmentScope;
+  if (!InFragment) {
+    return false;
+  }
+
+  bool InEnum = false;
+
+  do {
+    InEnum = S->getFlags() & Scope::EnumScope;
+    S = S->getParent();
+  } while(!InEnum && S);
+
+  return InEnum;
+}
+
 /// ParseEnumBody - Parse a {} enclosed enumerator-list.
 ///       enumerator-list:
 ///         enumerator
 ///         enumerator-list ',' enumerator
 ///       enumerator:
-///         enumeration-constant attributes[opt]
-///         enumeration-constant attributes[opt] '=' constant-expression
-///       enumeration-constant:
+///         enumerator-identifier attributes[opt]
+///         enumerator-identifier attributes[opt] '=' constant-expression
+///         metaprogram-declaration
+///         injection-declaration
+///       enumerator-identifier:
 ///         identifier
+///         reflected-unqualid-id
 ///
 void Parser::ParseEnumBody(SourceLocation StartLoc, Decl *EnumDecl) {
   // Enter the scope of the enum body and start the definition.
@@ -4657,21 +4745,47 @@ void Parser::ParseEnumBody(SourceLocation StartLoc, Decl *EnumDecl) {
   SmallVector<Decl *, 32> EnumConstantDecls;
   SmallVector<SuppressAccessChecks, 32> EnumAvailabilityDiags;
 
-  Decl *LastEnumConstDecl = nullptr;
+  EnumConstantDecl *OriginalLastEnumConst = Actions.LastEnumConstDecl;
+  Actions.LastEnumConstDecl = nullptr;
 
   // Parse the enumerator-list.
   while (Tok.isNot(tok::r_brace)) {
+    if (getLangOpts().CPlusPlus && Tok.is(tok::kw_consteval)) {
+      // [Meta] metaprogram-declaration
+      if (NextToken().is(tok::l_brace)) {
+        if (auto *ParsedDecl = ParseCXXMetaprogramDeclaration()) {
+          PushInjectedECD(*this, cast<CXXInjectorDecl>(ParsedDecl),
+                          EnumConstantDecls, EnumAvailabilityDiags);
+          TryConsumeToken(tok::comma);
+          continue;
+        }
+      }
+      // [Meta] injection-declaration
+      if (NextToken().is(tok::arrow)) {
+        if (auto *ParsedDecl = ParseCXXInjectionDeclaration()) {
+          PushInjectedECD(*this, cast<CXXInjectorDecl>(ParsedDecl),
+                          EnumConstantDecls, EnumAvailabilityDiags);
+          TryConsumeToken(tok::comma);
+          continue;
+        }
+      }
+    }
+
+    IdentifierInfo *Ident;
+    SourceLocation IdentLoc;
+
     // Parse enumerator. If failed, try skipping till the start of the next
     // enumerator definition.
-    if (Tok.isNot(tok::identifier)) {
+    if (isIdentifier()) {
+      Ident = Tok.getIdentifierInfo();
+      IdentLoc = ConsumeIdentifier();
+    } else {
       Diag(Tok.getLocation(), diag::err_expected) << tok::identifier;
       if (SkipUntil(tok::comma, tok::r_brace, StopBeforeMatch) &&
           TryConsumeToken(tok::comma))
         continue;
       break;
     }
-    IdentifierInfo *Ident = Tok.getIdentifierInfo();
-    SourceLocation IdentLoc = ConsumeToken();
 
     // If attributes exist after the enumerator, parse them.
     ParsedAttributesWithRange attrs(AttrFactory);
@@ -4700,14 +4814,15 @@ void Parser::ParseEnumBody(SourceLocation StartLoc, Decl *EnumDecl) {
 
     // Install the enumerator constant into EnumDecl.
     Decl *EnumConstDecl = Actions.ActOnEnumConstant(
-        getCurScope(), EnumDecl, LastEnumConstDecl, IdentLoc, Ident, attrs,
-        EqualLoc, AssignedVal.get());
+        getCurScope(), EnumDecl, Actions.LastEnumConstDecl,
+        DeclarationNameInfo(Ident, IdentLoc),
+        attrs, EqualLoc, AssignedVal.get());
     EnumAvailabilityDiags.back().done();
 
     EnumConstantDecls.push_back(EnumConstDecl);
-    LastEnumConstDecl = EnumConstDecl;
+    Actions.LastEnumConstDecl = cast_or_null<EnumConstantDecl>(EnumConstDecl);
 
-    if (Tok.is(tok::identifier)) {
+    if (isIdentifier()) {
       // We're missing a comma between enumerators.
       SourceLocation Loc = getEndOfPreviousToken();
       Diag(Loc, diag::err_enumerator_list_missing_comma)
@@ -4749,6 +4864,8 @@ void Parser::ParseEnumBody(SourceLocation StartLoc, Decl *EnumDecl) {
   // Eat the }.
   T.consumeClose();
 
+  Actions.LastEnumConstDecl = OriginalLastEnumConst;
+
   // If attributes exist after the identifier list, parse them.
   ParsedAttributes attrs(AttrFactory);
   MaybeParseGNUAttributes(attrs);
@@ -4770,7 +4887,8 @@ void Parser::ParseEnumBody(SourceLocation StartLoc, Decl *EnumDecl) {
   // The next token must be valid after an enum definition. If not, a ';'
   // was probably forgotten.
   bool CanBeBitfield = getCurScope()->getFlags() & Scope::ClassScope;
-  if (!isValidAfterTypeSpecifier(CanBeBitfield)) {
+  if (!isValidAfterTypeSpecifier(CanBeBitfield) &&
+      !isEnumFragment(getCurScope())) {
     ExpectAndConsume(tok::semi, diag::err_expected_after, "enum");
     // Push this token back into the preprocessor and change our current token
     // to ';' so that the rest of the code recovers as though there were an
@@ -4831,6 +4949,10 @@ bool Parser::isKnownToBeTypeSpecifier(const Token &Tok) const {
     // typedef-name
   case tok::annot_typename:
     return true;
+
+    // [Meta] reflected-type-specifier
+  case tok::annot_refltype:
+    return true;
   }
 }
 
@@ -4849,7 +4971,7 @@ bool Parser::isTypeSpecifierQualifier() {
     // recurse to handle whatever we get.
     if (TryAnnotateTypeOrScopeToken())
       return true;
-    if (Tok.is(tok::identifier))
+    if (isIdentifier())
       return false;
     return isTypeSpecifierQualifier();
 
@@ -4922,6 +5044,10 @@ bool Parser::isTypeSpecifierQualifier() {
   case tok::annot_typename:
     return true;
 
+    // [Meta] reflected-type-specifiers
+  case tok::annot_refltype:
+    return true;
+
     // GNU ObjC bizarre protocol extension: <proto1,proto2> with implicit 'id'.
   case tok::less:
     return getLangOpts().ObjC;
@@ -4991,7 +5117,7 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
       return true;
     if (TryAnnotateTypeConstraint())
       return true;
-    if (Tok.is(tok::identifier))
+    if (isIdentifier())
       return false;
 
     // If we're in Objective-C and we have an Objective-C class type followed
@@ -5106,6 +5232,9 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
   case tok::annot_decltype:
   case tok::kw_constexpr:
 
+    // [Meta] reflected-type-specifier
+  case tok::annot_refltype:
+
     // C++20 consteval and constinit.
   case tok::kw_consteval:
   case tok::kw_constinit:
@@ -5202,10 +5331,10 @@ bool Parser::isConstructorDeclarator(bool IsUnqualified, bool DeductionGuide) {
   }
 
   // Parse the constructor name.
-  if (Tok.is(tok::identifier)) {
+  if (isIdentifier()) {
     // We already know that we have a constructor name; just consume
     // the token.
-    ConsumeToken();
+    ConsumeIdentifier();
   } else if (Tok.is(tok::annot_template_id)) {
     ConsumeAnnotationToken();
   } else {
@@ -5256,15 +5385,15 @@ bool Parser::isConstructorDeclarator(bool IsUnqualified, bool DeductionGuide) {
   bool IsConstructor = false;
   if (isDeclarationSpecifier())
     IsConstructor = true;
-  else if (Tok.is(tok::identifier) ||
-           (Tok.is(tok::annot_cxxscope) && NextToken().is(tok::identifier))) {
+  else if (isIdentifier() ||
+           (Tok.is(tok::annot_cxxscope) && NextToken().isIdentifier())) {
     // We've seen "C ( X" or "C ( X::Y", but "X" / "X::Y" is not a type.
     // This might be a parenthesized member name, but is more likely to
     // be a constructor declaration with an invalid argument type. Keep
     // looking.
     if (Tok.is(tok::annot_cxxscope))
       ConsumeAnnotationToken();
-    ConsumeToken();
+    ConsumeIdentifier();
 
     // If this is not a constructor, we must be parsing a declarator,
     // which must have one of the following syntactic forms (see the
@@ -5568,7 +5697,7 @@ void Parser::ParseDeclaratorInternal(Declarator &D,
   // scope spec in the generic path below.
   if (getLangOpts().CPlusPlus &&
       (Tok.is(tok::coloncolon) || Tok.is(tok::kw_decltype) ||
-       (Tok.is(tok::identifier) &&
+       (isIdentifier() &&
         (NextToken().is(tok::coloncolon) || NextToken().is(tok::less))) ||
        Tok.is(tok::annot_cxxscope))) {
     bool EnteringContext =
@@ -5815,7 +5944,7 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
         // dealing with declarations in an Objective-C container.
         D.SetIdentifier(nullptr, Tok.getLocation());
         D.setInvalidType(true);
-        ConsumeToken();
+        ConsumeIdentifier();
         goto PastIdentifier;
       }
     }
@@ -5851,8 +5980,8 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
       // the l_paren token.
     }
 
-    if (Tok.isOneOf(tok::identifier, tok::kw_operator, tok::annot_template_id,
-                    tok::tilde)) {
+    if (isIdentifier() ||
+        Tok.isOneOf(tok::kw_operator, tok::annot_template_id, tok::tilde)) {
       // We found something that indicates the start of an unqualified-id.
       // Parse that unqualified-id.
       bool AllowConstructorName;
@@ -5909,15 +6038,15 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
       D.SetIdentifier(nullptr, Tok.getLocation());
       goto PastIdentifier;
     }
-  } else if (Tok.is(tok::identifier) && D.mayHaveIdentifier()) {
+  } else if (isIdentifier() && D.mayHaveIdentifier()) {
     assert(!getLangOpts().CPlusPlus &&
            "There's a C++-specific check for tok::identifier above");
     assert(Tok.getIdentifierInfo() && "Not an identifier?");
     D.SetIdentifier(Tok.getIdentifierInfo(), Tok.getLocation());
     D.SetRangeEnd(Tok.getLocation());
-    ConsumeToken();
+    ConsumeIdentifier();
     goto PastIdentifier;
-  } else if (Tok.is(tok::identifier) && !D.mayHaveIdentifier()) {
+  } else if (isIdentifier() && !D.mayHaveIdentifier()) {
     // We're not allowed an identifier here, but we got one. Try to figure out
     // if the user was trying to attach a name to the type, or whether the name
     // is some unrelated trailing syntax.
@@ -5943,7 +6072,7 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
       Diag(Tok.getLocation(), diag::err_unexpected_unqualified_id)
         << FixItHint::CreateRemoval(Tok.getLocation());
       D.SetIdentifier(nullptr, Tok.getLocation());
-      ConsumeToken();
+      ConsumeIdentifier();
       goto PastIdentifier;
     }
   }
@@ -6123,7 +6252,7 @@ void Parser::ParseDecompositionDeclarator(Declarator &D) {
       if (Tok.is(tok::comma))
         ConsumeToken();
       else {
-        if (Tok.is(tok::identifier)) {
+        if (isIdentifier()) {
           SourceLocation EndLoc = getEndOfPreviousToken();
           Diag(EndLoc, diag::err_expected)
               << tok::comma << FixItHint::CreateInsertion(EndLoc, ",");
@@ -6135,18 +6264,18 @@ void Parser::ParseDecompositionDeclarator(Declarator &D) {
                   StopAtSemi | StopBeforeMatch);
         if (Tok.is(tok::comma))
           ConsumeToken();
-        else if (Tok.isNot(tok::identifier))
+        else if (!isIdentifier())
           break;
       }
     }
 
-    if (Tok.isNot(tok::identifier)) {
+    if (!isIdentifier()) {
       Diag(Tok, diag::err_expected) << tok::identifier;
       break;
     }
 
     Bindings.push_back({Tok.getIdentifierInfo(), Tok.getLocation()});
-    ConsumeToken();
+    ConsumeIdentifier();
   }
 
   if (Tok.isNot(tok::r_square))
@@ -6530,7 +6659,7 @@ bool Parser::ParseRefQualifier(bool &RefQualifierIsLValueRef,
 /// abstract-declarators.
 bool Parser::isFunctionDeclaratorIdentifierList() {
   return !getLangOpts().CPlusPlus
-         && Tok.is(tok::identifier)
+         && isIdentifier()
          && !TryAltiVecVectorToken()
          // K&R identifier lists can't have typedefs as identifiers, per C99
          // 6.7.5.3p11.
@@ -6575,7 +6704,7 @@ void Parser::ParseFunctionDeclaratorIdentifierList(
 
   do {
     // If this isn't an identifier, report the error and skip until ')'.
-    if (Tok.isNot(tok::identifier)) {
+    if (!isIdentifier()) {
       Diag(Tok, diag::err_expected) << tok::identifier;
       SkipUntil(tok::r_paren, StopAtSemi | StopBeforeMatch);
       // Forget we parsed anything.
@@ -6599,8 +6728,7 @@ void Parser::ParseFunctionDeclaratorIdentifierList(
                                                      nullptr));
     }
 
-    // Eat the identifier.
-    ConsumeToken();
+    ConsumeIdentifier();
     // The list continues if we see a comma.
   } while (TryConsumeToken(tok::comma));
 }
@@ -6659,6 +6787,11 @@ void Parser::ParseParameterDeclarationClause(
     // before deciding this was a parameter-declaration-clause.
     if (TryConsumeToken(tok::ellipsis, EllipsisLoc))
       break;
+
+    if (Tok.is(tok::arrow)) {
+      ParseCXXInjectedParameter(ParamInfo);
+      continue;
+    }
 
     // Parse the declaration-specifiers.
     // Just use the ParsingDeclaration "scope" of the declarator.

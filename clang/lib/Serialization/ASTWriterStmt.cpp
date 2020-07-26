@@ -383,6 +383,76 @@ void ASTStmtWriter::VisitCoyieldExpr(CoyieldExpr *E) {
   Code = serialization::EXPR_COYIELD;
 }
 
+void ASTStmtWriter::VisitCXXReflectExpr(CXXReflectExpr *S) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXInvalidReflectionExpr(CXXInvalidReflectionExpr *S) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXReflectionReadQueryExpr(
+                                                CXXReflectionReadQueryExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXReflectionWriteQueryExpr(
+                                               CXXReflectionWriteQueryExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXReflectPrintLiteralExpr(
+                                                CXXReflectPrintLiteralExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXReflectPrintReflectionExpr(
+                                             CXXReflectPrintReflectionExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXReflectDumpReflectionExpr(
+                                              CXXReflectDumpReflectionExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXCompilerErrorExpr(CXXCompilerErrorExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXIdExprExpr(CXXIdExprExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXMemberIdExprExpr(CXXMemberIdExprExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXDependentVariadicReifierExpr(
+  CXXDependentVariadicReifierExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXDependentSpliceIdExpr(CXXDependentSpliceIdExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXValueOfExpr(CXXValueOfExpr *E) {
+  llvm_unreachable("unimplemented");
+}
+
+void ASTStmtWriter::VisitCXXConcatenateExpr(CXXConcatenateExpr *E) {
+  llvm_unreachable("not implemented");
+}
+
+void ASTStmtWriter::VisitCXXFragmentExpr(CXXFragmentExpr *E) {
+  llvm_unreachable("not implemented");
+}
+
+void ASTStmtWriter::VisitCXXFragmentCaptureExpr(CXXFragmentCaptureExpr *E) {
+  llvm_unreachable("not implemented");
+}
+
 void ASTStmtWriter::VisitDependentCoawaitExpr(DependentCoawaitExpr *E) {
   VisitExpr(E);
   Record.AddSourceLocation(E->getKeywordLoc());
@@ -843,6 +913,19 @@ void ASTStmtWriter::VisitOMPIteratorExpr(OMPIteratorExpr *E) {
     Record.AddStmt(HD.CounterUpdate);
   }
   Code = serialization::EXPR_OMP_ITERATOR;
+}
+
+void ASTStmtWriter::VisitCXXSelectionExpr(CXXSelectionExpr *E) {
+  // FIXME: Implement me.
+  assert(false);
+}
+
+void ASTStmtWriter::VisitCXXSelectMemberExpr(CXXSelectMemberExpr *E) {
+  VisitExpr(E);
+}
+
+void ASTStmtWriter::VisitCXXSelectPackExpr(CXXSelectPackExpr *E) {
+  VisitExpr(E);
 }
 
 void ASTStmtWriter::VisitCallExpr(CallExpr *E) {
@@ -1537,6 +1620,31 @@ void ASTStmtWriter::VisitCXXForRangeStmt(CXXForRangeStmt *S) {
   Record.AddStmt(S->getLoopVarStmt());
   Record.AddStmt(S->getBody());
   Code = serialization::STMT_CXX_FOR_RANGE;
+}
+
+void ASTStmtWriter::VisitCXXPackExpansionStmt(CXXPackExpansionStmt *S) {
+  VisitStmt(S);
+  // FIXME: Implement me.
+  Code = serialization::STMT_CXX_PACK_EXPANSION;
+}
+
+void ASTStmtWriter::VisitCXXCompositeExpansionStmt(
+                                                 CXXCompositeExpansionStmt *S) {
+  VisitStmt(S);
+  // FIXME: Implement me.
+  Code = serialization::STMT_CXX_COMP_EXPANSION;
+}
+
+void ASTStmtWriter::VisitCXXInjectionStmt(CXXInjectionStmt *S) {
+  VisitStmt(S);
+  // FIXME: Implement me.
+  Code = serialization::STMT_CXX_INJECTION;
+}
+
+void ASTStmtWriter::VisitCXXBaseInjectionStmt(CXXBaseInjectionStmt *S) {
+  VisitStmt(S);
+  // FIXME: Implement me.
+  Code = serialization::STMT_CXX_BASE_INJECTION;
 }
 
 void ASTStmtWriter::VisitMSDependentExistsStmt(MSDependentExistsStmt *S) {

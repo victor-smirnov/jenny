@@ -83,11 +83,19 @@ public:
     /// of the other forms yet, either because it's dependent or because we're
     /// representing a non-canonical template argument (for instance, in a
     /// TemplateSpecializationType).
+    ///
+    /// Also used to represent:
+    /// - a non-dependent reflection expression (C++ Reflection).
     Expression,
 
     /// The template argument is actually a parameter pack. Arguments are stored
     /// in the Args struct.
-    Pack
+    Pack,
+
+    /// The template argument is an expression, representing a reflection,
+    /// and we've not resolved it to one of the other forms yet, because
+    /// it's dependent.
+    Reflected
   };
 
 private:
@@ -206,8 +214,12 @@ public:
   /// This form of template argument only occurs in template argument
   /// lists used for dependent types and for expression; it will not
   /// occur in a non-dependent, canonical template argument list.
-  TemplateArgument(Expr *E) {
-    TypeOrValue.Kind = Expression;
+  TemplateArgument(Expr *E, ArgKind ExpressionKind) {
+    assert((ExpressionKind == Expression
+            || ExpressionKind == Reflected)
+           && "For expressions the only valid ArgKinds are "
+              "Expression and Reflected");
+    TypeOrValue.Kind = ExpressionKind;
     TypeOrValue.V = reinterpret_cast<uintptr_t>(E);
   }
 
@@ -253,6 +265,12 @@ public:
 
   /// Determine whether this template argument is a pack expansion.
   bool isPackExpansion() const;
+
+  /// Determine whether this template argument is a dependent variadic reifier.
+  bool isVariadicReifier() const;
+
+  /// Determine whether this template argument is constexpr promoting.
+  bool isConstexprPromoting() const;
 
   /// Retrieve the type for a type template argument.
   QualType getAsType() const {
@@ -329,7 +347,8 @@ public:
 
   /// Retrieve the template argument as an expression.
   Expr *getAsExpr() const {
-    assert(getKind() == Expression && "Unexpected kind");
+    assert((getKind() == Expression || getKind() == Reflected)
+           && "Unexpected kind");
     return reinterpret_cast<Expr *>(TypeOrValue.V);
   }
 
@@ -472,7 +491,8 @@ public:
     assert(Argument.getKind() == TemplateArgument::NullPtr ||
            Argument.getKind() == TemplateArgument::Integral ||
            Argument.getKind() == TemplateArgument::Declaration ||
-           Argument.getKind() == TemplateArgument::Expression);
+           Argument.getKind() == TemplateArgument::Expression ||
+           Argument.getKind() == TemplateArgument::Reflected);
   }
 
   TemplateArgumentLoc(const TemplateArgument &Argument,
@@ -511,7 +531,8 @@ public:
   }
 
   Expr *getSourceExpression() const {
-    assert(Argument.getKind() == TemplateArgument::Expression);
+    assert(Argument.getKind() == TemplateArgument::Expression
+           || Argument.getKind() == TemplateArgument::Reflected);
     return LocInfo.getAsExpr();
   }
 

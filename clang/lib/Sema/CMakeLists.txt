@@ -26,6 +26,7 @@ add_clang_library(clangSema
   JumpDiagnostics.cpp
   MultiplexExternalSemaSource.cpp
   ParsedAttr.cpp
+  ParserLookupSetup.cpp
   Scope.cpp
   ScopeInfo.cpp
   Sema.cpp
@@ -51,13 +52,16 @@ add_clang_library(clangSema
   SemaExprObjC.cpp
   SemaFixItUtils.cpp
   SemaInit.cpp
+  SemaInject.cpp
   SemaLambda.cpp
+  SemaLegacyFragment.cpp
   SemaLookup.cpp
   SemaModule.cpp
   SemaObjCProperty.cpp
   SemaOpenMP.cpp
   SemaOverload.cpp
   SemaPseudoObject.cpp
+  SemaReflect.cpp
   SemaStmt.cpp
   SemaStmtAsm.cpp
   SemaStmtAttr.cpp

@@ -1492,6 +1492,7 @@ bool CursorVisitor::VisitTemplateArgumentLoc(const TemplateArgumentLoc &TAL) {
       return Visit(MakeCXCursor(E, StmtParent, TU, RegionOfInterest));
     return false;
 
+  case TemplateArgument::Reflected:
   case TemplateArgument::Expression:
     if (Expr *E = TAL.getSourceExpression())
       return Visit(MakeCXCursor(E, StmtParent, TU, RegionOfInterest));
@@ -1527,6 +1528,7 @@ bool CursorVisitor::VisitBuiltinTypeLoc(BuiltinTypeLoc TL) {
 
   case BuiltinType::Void:
   case BuiltinType::NullPtr:
+  case BuiltinType::MetaInfo:
   case BuiltinType::Dependent:
 #define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix)                   \
   case BuiltinType::Id:
@@ -1575,6 +1577,10 @@ bool CursorVisitor::VisitTypedefTypeLoc(TypedefTypeLoc TL) {
 }
 
 bool CursorVisitor::VisitUnresolvedUsingTypeLoc(UnresolvedUsingTypeLoc TL) {
+  return Visit(MakeCursorTypeRef(TL.getDecl(), TL.getNameLoc(), TU));
+}
+
+bool CursorVisitor::VisitCXXRequiredTypeTypeLoc(CXXRequiredTypeTypeLoc TL) {
   return Visit(MakeCursorTypeRef(TL.getDecl(), TL.getNameLoc(), TU));
 }
 
@@ -1761,8 +1767,20 @@ bool CursorVisitor::VisitPackExpansionTypeLoc(PackExpansionTypeLoc TL) {
   return Visit(TL.getPatternLoc());
 }
 
+bool CursorVisitor::VisitCXXDependentVariadicReifierTypeLoc
+(CXXDependentVariadicReifierTypeLoc TL) {
+  return Visit(TL.getPatternLoc());
+}
+
 bool CursorVisitor::VisitDecltypeTypeLoc(DecltypeTypeLoc TL) {
   if (Expr *E = TL.getUnderlyingExpr())
+    return Visit(MakeCXCursor(E, StmtParent, TU));
+
+  return false;
+}
+
+bool CursorVisitor::VisitReflectedTypeLoc(ReflectedTypeLoc TL) {
+  if (Expr *E = TL.getReflection())
     return Visit(MakeCXCursor(E, StmtParent, TU));
 
   return false;
@@ -3894,7 +3912,8 @@ static const ExprEvalResult *evaluateExpr(Expr *expr, CXCursor C) {
   expr = expr->IgnoreParens();
   if (expr->isValueDependent())
     return nullptr;
-  if (!expr->EvaluateAsRValue(ER, ctx))
+  Expr::EvalContext EvalCtx(ctx, nullptr);
+  if (!expr->EvaluateAsRValue(ER, EvalCtx))
     return nullptr;
 
   QualType rettype;
@@ -6406,6 +6425,12 @@ CXCursor clang_getCursorDefinition(CXCursor C) {
   case Decl::Concept:
   case Decl::LifetimeExtendedTemporary:
   case Decl::RequiresExprBody:
+  case Decl::CXXFragment:
+  case Decl::CXXMetaprogram:
+  case Decl::CXXInjection:
+  case Decl::CXXStmtFragment:
+  case Decl::CXXRequiredType:
+  case Decl::CXXRequiredDeclarator:
     return C;
 
   // Declaration kinds that don't make any sense here, but are
@@ -6857,7 +6882,7 @@ static void getTokens(ASTUnit *CXXUnit, SourceRange Range,
         CXTok.int_data[0] = CXToken_Keyword;
       } else {
         CXTok.int_data[0] =
-            Tok.is(tok::identifier) ? CXToken_Identifier : CXToken_Keyword;
+            Tok.isIdentifier() ? CXToken_Identifier : CXToken_Keyword;
       }
       CXTok.ptr_data = II;
     } else if (Tok.is(tok::comment)) {

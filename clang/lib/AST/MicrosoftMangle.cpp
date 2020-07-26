@@ -364,7 +364,8 @@ private:
   // Declare manglers for every type class.
 #define ABSTRACT_TYPE(CLASS, PARENT)
 #define NON_CANONICAL_TYPE(CLASS, PARENT)
-#define TYPE(CLASS, PARENT) void mangleType(const CLASS##Type *T, \
+#define META_TYPE(CLASS, PARENT)
+#define TYPE(CLASS, PARENT) void mangleType(const CLASS##Type *T,       \
                                             Qualifiers Quals, \
                                             SourceRange Range);
 #include "clang/AST/TypeNodes.inc"
@@ -1372,9 +1373,10 @@ void MicrosoftCXXNameMangler::mangleIntegerLiteral(const llvm::APSInt &Value,
 
 void MicrosoftCXXNameMangler::mangleExpression(const Expr *E) {
   // See if this is a constant expression.
-  if (Optional<llvm::APSInt> Value =
-          E->getIntegerConstantExpr(Context.getASTContext())) {
-    mangleIntegerLiteral(*Value, E->getType()->isBooleanType());
+  llvm::APSInt Value;
+  Expr::EvalContext EvalCtx(Context.getASTContext(), nullptr);
+  if (E->isIntegerConstantExpr(Value, EvalCtx)) {
+    mangleIntegerLiteral(Value, E->getType()->isBooleanType());
     return;
   }
 
@@ -1518,6 +1520,8 @@ void MicrosoftCXXNameMangler::mangleTemplateArg(const TemplateDecl *TD,
     }
     break;
   }
+  case TemplateArgument::Reflected:
+    llvm_unreachable("This should not exist at codegen");
   }
 }
 
@@ -1916,6 +1920,10 @@ void MicrosoftCXXNameMangler::mangleType(QualType T, SourceRange Range,
   case Type::CLASS: \
     llvm_unreachable("can't mangle non-canonical type " #CLASS "Type"); \
     return;
+#define META_TYPE(CLASS, PARENT) \
+    case Type::CLASS: \
+      llvm_unreachable("can't mangle meta type " #CLASS "Type"); \
+      return;
 #define TYPE(CLASS, PARENT) \
   case Type::CLASS: \
     mangleType(cast<CLASS##Type>(ty), Quals, Range); \
@@ -2077,6 +2085,10 @@ void MicrosoftCXXNameMangler::mangleType(const BuiltinType *T, Qualifiers,
 
   case BuiltinType::NullPtr:
     Out << "$$T";
+    break;
+
+  case BuiltinType::MetaInfo:
+    Out << "$$M";
     break;
 
   case BuiltinType::Float16:
@@ -2882,6 +2894,15 @@ void MicrosoftCXXNameMangler::mangleType(const DecltypeType *T, Qualifiers,
   DiagnosticsEngine &Diags = Context.getDiags();
   unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
     "cannot mangle this decltype() yet");
+  Diags.Report(Range.getBegin(), DiagID)
+    << Range;
+}
+
+void MicrosoftCXXNameMangler::mangleType(const ReflectedType *T, Qualifiers,
+                                         SourceRange Range) {
+  DiagnosticsEngine &Diags = Context.getDiags();
+  unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
+    "cannot mangle this typename() yet");
   Diags.Report(Range.getBegin(), DiagID)
     << Range;
 }

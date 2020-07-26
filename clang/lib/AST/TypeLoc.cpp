@@ -333,6 +333,7 @@ TypeSpecifierType BuiltinTypeLoc::getWrittenTypeSpec() const {
   case BuiltinType::WChar_S:
   case BuiltinType::WChar_U:
     return TST_wchar;
+  case BuiltinType::MetaInfo:
   case BuiltinType::UChar:
   case BuiltinType::UShort:
   case BuiltinType::UInt:
@@ -452,6 +453,10 @@ TypeLoc TypeLoc::findExplicitQualifierLoc() const {
   return {};
 }
 
+QualType CXXDependentVariadicReifierTypeLoc::getInnerType() const {
+  return getTypePtr()->getRange()->getType();
+}
+
 void ObjCTypeParamTypeLoc::initializeLocal(ASTContext &Context,
                                            SourceLocation Loc) {
   setNameLoc(Loc);
@@ -562,6 +567,7 @@ void TemplateSpecializationTypeLoc::initializeArgLocs(ASTContext &Context,
       ArgInfos[i] = TemplateArgumentLocInfo();
       break;
 
+    case TemplateArgument::Reflected:
     case TemplateArgument::Expression:
       ArgInfos[i] = TemplateArgumentLocInfo(Args[i].getAsExpr());
       break;

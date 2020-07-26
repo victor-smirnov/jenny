@@ -307,8 +307,9 @@ static const Expr *IgnoreNarrowingConversion(ASTContext &Ctx,
 /// \param IgnoreFloatToIntegralConversion If true type-narrowing conversions
 ///        from floating point types to integral types should be ignored.
 NarrowingKind StandardConversionSequence::getNarrowingKind(
-    ASTContext &Ctx, const Expr *Converted, APValue &ConstantValue,
+    Expr::EvalContext &EvalCtx, const Expr *Converted, APValue &ConstantValue,
     QualType &ConstantType, bool IgnoreFloatToIntegralConversion) const {
+  ASTContext &Ctx = EvalCtx.ASTCtx;
   assert(Ctx.getLangOpts().CPlusPlus && "narrowing check outside C++");
 
   // C++11 [dcl.init.list]p7:
@@ -353,20 +354,20 @@ NarrowingKind StandardConversionSequence::getNarrowingKind(
       if (Initializer->isValueDependent())
         return NK_Dependent_Narrowing;
 
-      if (Optional<llvm::APSInt> IntConstantValue =
-              Initializer->getIntegerConstantExpr(Ctx)) {
+      llvm::APSInt IntConstantValue;
+      if (Initializer->isIntegerConstantExpr(IntConstantValue, EvalCtx)) {
         // Convert the integer to the floating type.
         llvm::APFloat Result(Ctx.getFloatTypeSemantics(ToType));
-        Result.convertFromAPInt(*IntConstantValue, IntConstantValue->isSigned(),
+        Result.convertFromAPInt(IntConstantValue, IntConstantValue.isSigned(),
                                 llvm::APFloat::rmNearestTiesToEven);
         // And back.
-        llvm::APSInt ConvertedValue = *IntConstantValue;
+        llvm::APSInt ConvertedValue = IntConstantValue;
         bool ignored;
         Result.convertToInteger(ConvertedValue,
                                 llvm::APFloat::rmTowardZero, &ignored);
         // If the resulting value is different, this was a narrowing conversion.
-        if (*IntConstantValue != ConvertedValue) {
-          ConstantValue = APValue(*IntConstantValue);
+        if (IntConstantValue != ConvertedValue) {
+          ConstantValue = APValue(IntConstantValue);
           ConstantType = Initializer->getType();
           return NK_Constant_Narrowing;
         }
@@ -391,7 +392,7 @@ NarrowingKind StandardConversionSequence::getNarrowingKind(
       if (Initializer->isValueDependent())
         return NK_Dependent_Narrowing;
 
-      if (Initializer->isCXX11ConstantExpr(Ctx, &ConstantValue)) {
+      if (Initializer->isCXX11ConstantExpr(EvalCtx, &ConstantValue)) {
         // Constant!
         assert(ConstantValue.isFloat());
         llvm::APFloat FloatVal = ConstantValue.getFloat();
@@ -436,12 +437,12 @@ NarrowingKind StandardConversionSequence::getNarrowingKind(
       if (Initializer->isValueDependent())
         return NK_Dependent_Narrowing;
 
-      Optional<llvm::APSInt> OptInitializerValue;
-      if (!(OptInitializerValue = Initializer->getIntegerConstantExpr(Ctx))) {
+      llvm::APSInt OptInitializerValue;
+      if (!Initializer->isIntegerConstantExpr(OptInitializerValue, EvalCtx)) {
         // Such conversions on variables are always narrowing.
         return NK_Variable_Narrowing;
       }
-      llvm::APSInt &InitializerValue = *OptInitializerValue;
+      llvm::APSInt &InitializerValue = OptInitializerValue;
       bool Narrowing = false;
       if (FromWidth < ToWidth) {
         // Negative -> unsigned is narrowing. Otherwise, more bits is never
@@ -1829,6 +1830,7 @@ static bool IsStandardConversion(Sema &S, Expr* From, QualType ToType,
   // conversion.
   bool IncompatibleObjC = false;
   ImplicitConversionKind SecondICK = ICK_Identity;
+  Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
   if (S.Context.hasSameUnqualifiedType(FromType, ToType)) {
     // The unqualified versions of the types are the same: there's no
     // conversion to do.
@@ -1849,7 +1851,8 @@ static bool IsStandardConversion(Sema &S, Expr* From, QualType ToType,
              (FromType->isArithmeticType() ||
               FromType->isAnyPointerType() ||
               FromType->isBlockPointerType() ||
-              FromType->isMemberPointerType())) {
+              FromType->isMemberPointerType() ||
+              FromType->isReflectionType())) {
     // Boolean conversions (C++ 4.12).
     SCS.Second = ICK_Boolean_Conversion;
     FromType = S.Context.BoolTy;
@@ -1934,17 +1937,17 @@ static bool IsStandardConversion(Sema &S, Expr* From, QualType ToType,
     // appropriately.
     return true;
   } else if (ToType->isEventT() &&
-             From->isIntegerConstantExpr(S.getASTContext()) &&
-             From->EvaluateKnownConstInt(S.getASTContext()) == 0) {
+             From->isIntegerConstantExpr(EvalCtx) &&
+             From->EvaluateKnownConstInt(EvalCtx) == 0) {
     SCS.Second = ICK_Zero_Event_Conversion;
     FromType = ToType;
   } else if (ToType->isQueueT() &&
-             From->isIntegerConstantExpr(S.getASTContext()) &&
-             (From->EvaluateKnownConstInt(S.getASTContext()) == 0)) {
+             From->isIntegerConstantExpr(EvalCtx) &&
+             (From->EvaluateKnownConstInt(EvalCtx) == 0)) {
     SCS.Second = ICK_Zero_Queue_Conversion;
     FromType = ToType;
   } else if (ToType->isSamplerT() &&
-             From->isIntegerConstantExpr(S.getASTContext())) {
+             From->isIntegerConstantExpr(EvalCtx)) {
     SCS.Second = ICK_Compatible_Conversion;
     FromType = ToType;
   } else {
@@ -2184,22 +2187,22 @@ bool Sema::IsIntegralPromotion(Expr *From, QualType FromType, QualType ToType) {
   // compatibility.
   if (From) {
     if (FieldDecl *MemberDecl = From->getSourceBitField()) {
-      Optional<llvm::APSInt> BitWidth;
+      llvm::APSInt BitWidth;
+      Expr::EvalContext EvalCtx(Context, GetReflectionCallbackObj());
       if (FromType->isIntegralType(Context) &&
-          (BitWidth =
-               MemberDecl->getBitWidth()->getIntegerConstantExpr(Context))) {
-        llvm::APSInt ToSize(BitWidth->getBitWidth(), BitWidth->isUnsigned());
+          MemberDecl->getBitWidth()->isIntegerConstantExpr(BitWidth, EvalCtx)) {
+        llvm::APSInt ToSize(BitWidth.getBitWidth(), BitWidth.isUnsigned());
         ToSize = Context.getTypeSize(ToType);
 
         // Are we promoting to an int from a bitfield that fits in an int?
-        if (*BitWidth < ToSize ||
-            (FromType->isSignedIntegerType() && *BitWidth <= ToSize)) {
+        if (BitWidth < ToSize ||
+            (FromType->isSignedIntegerType() && BitWidth <= ToSize)) {
           return To->getKind() == BuiltinType::Int;
         }
 
         // Are we promoting to an unsigned int from an unsigned bitfield
         // that fits into an unsigned int?
-        if (FromType->isUnsignedIntegerType() && *BitWidth <= ToSize) {
+        if (FromType->isUnsignedIntegerType() && BitWidth <= ToSize) {
           return To->getKind() == BuiltinType::UInt;
         }
 
@@ -5507,7 +5510,8 @@ static bool CheckConvertedConstantConversions(Sema &S,
     // FIXME: Per core issue 1407, we should not allow this, but that breaks
     // a lot of popular code. We should at least add a warning for this
     // (non-conforming) extension.
-    return SCS.getFromType()->isIntegralOrUnscopedEnumerationType() &&
+    return (SCS.getFromType()->isIntegralOrUnscopedEnumerationType() ||
+            SCS.getFromType()->isReflectionType()) &&
            SCS.getToType(2)->isBooleanType();
 
   case ICK_Pointer_Conversion:
@@ -5614,6 +5618,8 @@ static ExprResult CheckConvertedConstantExpression(Sema &S, Expr *From,
            << From->getType() << From->getSourceRange() << T;
   }
 
+  Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
+
   ExprResult Result =
       S.PerformImplicitConversion(From, T, ICS, Sema::AA_Converting);
   if (Result.isInvalid())
@@ -5630,7 +5636,7 @@ static ExprResult CheckConvertedConstantExpression(Sema &S, Expr *From,
   // Check for a narrowing implicit conversion.
   APValue PreNarrowingValue;
   QualType PreNarrowingType;
-  switch (SCS->getNarrowingKind(S.Context, Result.get(), PreNarrowingValue,
+  switch (SCS->getNarrowingKind(EvalCtx, Result.get(), PreNarrowingValue,
                                 PreNarrowingType)) {
   case NK_Dependent_Narrowing:
     // Implicit conversion to a narrower type, but the expression is
@@ -5666,7 +5672,7 @@ static ExprResult CheckConvertedConstantExpression(Sema &S, Expr *From,
                                    ? Expr::EvaluateForMangling
                                    : Expr::EvaluateForCodeGen;
 
-  if (!Result.get()->EvaluateAsConstantExpr(Eval, Usage, S.Context) ||
+  if (!Result.get()->EvaluateAsConstantExpr(Eval, Usage, EvalCtx) ||
       (RequireInt && !Eval.Val.isInt())) {
     // The expression can't be folded, so we can't keep it at this position in
     // the AST.
@@ -5675,8 +5681,22 @@ static ExprResult CheckConvertedConstantExpression(Sema &S, Expr *From,
     Value = Eval.Val;
 
     if (Notes.empty()) {
+      Expr *InitExpr = Result.get();
+
+      // The valueof operator creates a constant expression
+      // which can appear in template arguments (and presumably other
+      // present, and future callers of this function). Unwrap
+      // the constant expression so that we don't have nesting
+      // of constant expressions.
+      //
+      // At the time of writing, nesting of constant expressions
+      // is forbidden by the ConstantExpr::Create via assertion.
+      if (auto *ConstExpr = dyn_cast<ConstantExpr>(InitExpr)) {
+        InitExpr = ConstExpr->getSubExpr();
+      }
+
       // It's a constant expression.
-      return ConstantExpr::Create(S.Context, Result.get(), Value);
+      return ConstantExpr::Create(S.Context, InitExpr, Value);
     }
   }
 
@@ -6552,13 +6572,14 @@ EnableIfAttr *Sema::CheckEnableIf(FunctionDecl *Function,
           /*MissingImplicitThis=*/true, DiscardedThis, ConvertedArgs))
     return *EnableIfAttrs.begin();
 
+  Expr::EvalContext EvalCtx(Context, GetReflectionCallbackObj());
   for (auto *EIA : EnableIfAttrs) {
     APValue Result;
     // FIXME: This doesn't consider value-dependent cases, because doing so is
     // very difficult. Ideally, we should handle them more gracefully.
     if (EIA->getCond()->isValueDependent() ||
         !EIA->getCond()->EvaluateWithSubstitution(
-            Result, Context, Function, llvm::makeArrayRef(ConvertedArgs)))
+            Result, EvalCtx, Function, llvm::makeArrayRef(ConvertedArgs)))
       return EIA;
 
     if (!Result.isInt() || !Result.getInt().getBoolValue())
@@ -6615,11 +6636,12 @@ bool Sema::diagnoseArgDependentDiagnoseIfAttrs(const FunctionDecl *Function,
       *this, Function, /*ArgDependent=*/true, Loc,
       [&](const DiagnoseIfAttr *DIA) {
         APValue Result;
+        Expr::EvalContext EvalCtx(Context, GetReflectionCallbackObj());
         // It's sane to use the same Args for any redecl of this function, since
         // EvaluateWithSubstitution only cares about the position of each
         // argument in the arg list, not the ParmVarDecl* it maps to.
-        if (!DIA->getCond()->EvaluateWithSubstitution(
-                Result, Context, cast<FunctionDecl>(DIA->getParent()), Args, ThisArg))
+        if (!DIA->getCond()->EvaluateWithSubstitution(Result, EvalCtx,
+                  cast<FunctionDecl>(DIA->getParent()), Args, ThisArg))
           return false;
         return Result.isInt() && Result.getInt().getBoolValue();
       });
@@ -6631,7 +6653,8 @@ bool Sema::diagnoseArgIndependentDiagnoseIfAttrs(const NamedDecl *ND,
       *this, ND, /*ArgDependent=*/false, Loc,
       [&](const DiagnoseIfAttr *DIA) {
         bool Result;
-        return DIA->getCond()->EvaluateAsBooleanCondition(Result, Context) &&
+        Expr::EvalContext EvalCtx(Context, GetReflectionCallbackObj());
+        return DIA->getCond()->EvaluateAsBooleanCondition(Result, EvalCtx) &&
                Result;
       });
 }
@@ -9283,7 +9306,7 @@ void
 Sema::AddArgumentDependentLookupCandidates(DeclarationName Name,
                                            SourceLocation Loc,
                                            ArrayRef<Expr *> Args,
-                                 TemplateArgumentListInfo *ExplicitTemplateArgs,
+					   TemplateArgumentListInfo *ExplicitTemplateArgs,
                                            OverloadCandidateSet& CandidateSet,
                                            bool PartialOverloading) {
   ADLResult Fns;
@@ -9307,6 +9330,7 @@ Sema::AddArgumentDependentLookupCandidates(DeclarationName Name,
       if (FunctionTemplateDecl *FunTmpl = Cand->Function->getPrimaryTemplate())
         Fns.erase(FunTmpl);
     }
+
 
   // For each of the ADL candidates we found, add it to the overload
   // set.
@@ -9344,6 +9368,7 @@ Sema::AddArgumentDependentLookupCandidates(DeclarationName Name,
       }
     }
   }
+
 }
 
 namespace {
@@ -10024,12 +10049,12 @@ void MaybeEmitInheritedConstructorNote(Sema &S, Decl *FoundDecl) {
 
 } // end anonymous namespace
 
-static bool isFunctionAlwaysEnabled(const ASTContext &Ctx,
+static bool isFunctionAlwaysEnabled(const Expr::EvalContext &EvalCtx,
                                     const FunctionDecl *FD) {
   for (auto *EnableIf : FD->specific_attrs<EnableIfAttr>()) {
     bool AlwaysTrue;
     if (EnableIf->getCond()->isValueDependent() ||
-        !EnableIf->getCond()->EvaluateAsBooleanCondition(AlwaysTrue, Ctx))
+        !EnableIf->getCond()->EvaluateAsBooleanCondition(AlwaysTrue, EvalCtx))
       return false;
     if (!AlwaysTrue)
       return false;
@@ -10048,7 +10073,8 @@ static bool checkAddressOfFunctionIsAvailable(Sema &S, const FunctionDecl *FD,
                                               bool Complain,
                                               bool InOverloadResolution,
                                               SourceLocation Loc) {
-  if (!isFunctionAlwaysEnabled(S.Context, FD)) {
+  Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
+  if (!isFunctionAlwaysEnabled(EvalCtx, FD)) {
     if (Complain) {
       if (InOverloadResolution)
         S.Diag(FD->getBeginLoc(),
@@ -13779,7 +13805,7 @@ Sema::CreateOverloadedArraySubscriptExpr(SourceLocation LLoc,
     UnresolvedLookupExpr *Fn
       = UnresolvedLookupExpr::Create(Context, NamingClass,
                                      NestedNameSpecifierLoc(), OpNameInfo,
-                                     /*ADL*/ true, /*Overloaded*/ false,
+                                     /*ADL=*/true, /*Overloaded=*/false,
                                      UnresolvedSetIterator(),
                                      UnresolvedSetIterator());
     // Can't add any actual overloads yet
@@ -13994,6 +14020,11 @@ Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
       return ExprError();
 
     return MaybeBindToTemporary(call);
+    // FIXME: We added CheckForImmediateInvocation, as we were previously
+    // calling out FinishCallExpr function. This may not be right,
+    // as upstream did not do this (or it is a bug in upstream).
+    // return CheckForImmediateInvocation(MaybeBindToTemporary(call),
+    //                                    call->getMethodDecl());
   }
 
   if (isa<CXXPseudoDestructorExpr>(NakedMemExpr))
@@ -14731,7 +14762,7 @@ Sema::BuildForRangeBeginEndCall(SourceLocation Loc,
     UnresolvedLookupExpr *Fn =
       UnresolvedLookupExpr::Create(Context, /*NamingClass=*/nullptr,
                                    NestedNameSpecifierLoc(), NameInfo,
-                                   /*NeedsADL=*/true, /*Overloaded=*/false,
+                                   /*ADL=*/true, /*Overloaded=*/false,
                                    FoundNames.begin(), FoundNames.end());
 
     bool CandidateSetError = buildOverloadedCallSet(S, Fn, Fn, Range, Loc,
@@ -14757,6 +14788,53 @@ Sema::BuildForRangeBeginEndCall(SourceLocation Loc,
       return FRS_DiagnosticIssued;
     }
   }
+  return FRS_Success;
+}
+
+/// Build a call to 'std::next' or 'std::distance' for a
+/// Constexpr Expansion Statement.
+/// Return values are the same as BuildForRangeBeginEndCall.
+Sema::ForRangeStatus
+Sema::BuildConstexprExpansionCall(SourceLocation Loc,
+				  SourceLocation RangeLoc,
+				  const DeclarationNameInfo &NameInfo,
+				  OverloadCandidateSet *CandidateSet,
+				  MultiExprArg Args,
+				  ExprResult *CallExpr) {
+  Scope *S = nullptr;
+
+  CandidateSet->clear(OverloadCandidateSet::CSK_Normal);
+  UnresolvedSet<0> FoundNames;
+  UnresolvedLookupExpr *Fn =
+    UnresolvedLookupExpr::Create(Context, /*NamingClass=*/nullptr,
+				 NestedNameSpecifierLoc(), NameInfo,
+				 /*NeedsADL=*/true, /*Overloaded=*/false,
+				 FoundNames.begin(), FoundNames.end());
+
+  bool CandidateSetError = buildOverloadedCallSet(S, Fn, Fn, Args, Loc,
+						  CandidateSet, CallExpr);
+  if (CandidateSet->empty() || CandidateSetError) {
+    *CallExpr = ExprError();
+    return FRS_NoViableFunction;
+  }
+
+  OverloadCandidateSet::iterator Best;
+  OverloadingResult OverloadResult =
+    CandidateSet->BestViableFunction(*this, Fn->getBeginLoc(), Best);
+
+  if (OverloadResult == OR_No_Viable_Function) {
+    *CallExpr = ExprError();
+    return FRS_NoViableFunction;
+  }
+  *CallExpr = FinishOverloadedCallExpr(*this, S, Fn, Fn, Loc, Args,
+				       Loc, nullptr, CandidateSet, &Best,
+				       OverloadResult,
+				       /*AllowTypoCorrection=*/false);
+  if (CallExpr->isInvalid() || OverloadResult != OR_Success) {
+    *CallExpr = ExprError();
+    return FRS_DiagnosticIssued;
+  }
+
   return FRS_Success;
 }
 

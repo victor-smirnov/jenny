@@ -1780,6 +1780,7 @@ bool CastExpr::CastConsistency() const {
   case CK_MemberPointerToBoolean:
   case CK_FloatingComplexToBoolean:
   case CK_IntegralComplexToBoolean:
+  case CK_ReflectionToBoolean:
   case CK_LValueBitCast:            // -> bool&
   case CK_LValueToRValueBitCast:
   case CK_UserDefinedConversion:    // operator bool()
@@ -1822,10 +1823,13 @@ Expr *CastExpr::getSubExprAsWritten() {
 
     // Conversions by constructor and conversion functions have a
     // subexpression describing the call; strip it off.
-    if (E->getCastKind() == CK_ConstructorConversion)
+    if (E->getCastKind() == CK_ConstructorConversion) {
+      if (isa<ConstantExpr>(SubExpr))
+        break;
+
       SubExpr =
         skipImplicitTemporary(cast<CXXConstructExpr>(SubExpr)->getArg(0));
-    else if (E->getCastKind() == CK_UserDefinedConversion) {
+    } else if (E->getCastKind() == CK_UserDefinedConversion) {
       assert((isa<CXXMemberCallExpr>(SubExpr) ||
               isa<BlockExpr>(SubExpr)) &&
              "Unexpected SubExpr for CK_UserDefinedConversion.");
@@ -3160,6 +3164,14 @@ bool Expr::hasAnyTypeDependentArguments(ArrayRef<Expr *> Exprs) {
   return false;
 }
 
+bool Expr::hasDependentVariadicReifierArguments(ArrayRef<Expr *> Exprs) {
+  for (unsigned I = 0; I < Exprs.size(); ++I)
+    if (isa<CXXDependentVariadicReifierExpr>(Exprs[I]))
+      return true;
+
+  return false;
+}
+
 bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef,
                                  const Expr **Culprit) const {
   assert(!isValueDependent() &&
@@ -3176,7 +3188,8 @@ bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef,
 
   if (IsForRef) {
     EvalResult Result;
-    if (EvaluateAsLValue(Result, Ctx) && !Result.HasSideEffects)
+    EvalContext EvalCtx(Ctx, nullptr);
+    if (EvaluateAsLValue(Result, EvalCtx) && !Result.HasSideEffects)
       return true;
     if (Culprit)
       *Culprit = this;
@@ -3254,7 +3267,8 @@ bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef,
           if (Field->isBitField()) {
             // Bitfields have to evaluate to an integer.
             EvalResult Result;
-            if (!Elt->EvaluateAsInt(Result, Ctx)) {
+            EvalContext EvalCtx(Ctx, nullptr);
+            if (!Elt->EvaluateAsInt(Result, EvalCtx)) {
               if (Culprit)
                 *Culprit = Elt;
               return false;
@@ -3335,14 +3349,15 @@ bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef,
   // Allow certain forms of UB in constant initializers: signed integer
   // overflow and floating-point division by zero. We'll give a warning on
   // these, but they're common enough that we have to accept them.
-  if (isEvaluatable(Ctx, SE_AllowUndefinedBehavior))
+  EvalContext EvalCtx(Ctx, nullptr);
+  if (isEvaluatable(EvalCtx, SE_AllowUndefinedBehavior))
     return true;
   if (Culprit)
     *Culprit = this;
   return false;
 }
 
-bool CallExpr::isBuiltinAssumeFalse(const ASTContext &Ctx) const {
+bool CallExpr::isBuiltinAssumeFalse(const EvalContext &Ctx) const {
   const FunctionDecl* FD = getDirectCallee();
   if (!FD || (FD->getBuiltinID() != Builtin::BI__assume &&
               FD->getBuiltinID() != Builtin::BI__builtin_assume))
@@ -3362,7 +3377,7 @@ namespace {
     bool HasSideEffects;
 
   public:
-    explicit SideEffectFinder(const ASTContext &Context, bool IncludePossible)
+    explicit SideEffectFinder(const Expr::EvalContext &Context, bool IncludePossible)
       : Inherited(Context),
         IncludePossibleEffects(IncludePossible), HasSideEffects(false) { }
 
@@ -3377,7 +3392,7 @@ namespace {
       if (auto *VD = dyn_cast<VarDecl>(D)) {
         // Registering a destructor is a side-effect.
         if (IncludePossibleEffects && VD->isThisDeclarationADefinition() &&
-            VD->needsDestruction(Context))
+            VD->needsDestruction(Context.ASTCtx))
           HasSideEffects = true;
       }
     }
@@ -3396,7 +3411,7 @@ namespace {
   };
 }
 
-bool Expr::HasSideEffects(const ASTContext &Ctx,
+bool Expr::HasSideEffects(const EvalContext &Ctx,
                           bool IncludePossibleEffects) const {
   // In circumstances where we care about definite side effects instead of
   // potential side effects, we want to ignore expressions that are part of a
@@ -3462,6 +3477,24 @@ bool Expr::HasSideEffects(const ASTContext &Ctx,
   case SourceLocExprClass:
   case ConceptSpecializationExprClass:
   case RequiresExprClass:
+  case CXXReflectExprClass:
+  case CXXInvalidReflectionExprClass:
+  case CXXReflectionReadQueryExprClass:
+  case CXXReflectionWriteQueryExprClass:
+  case CXXReflectPrintLiteralExprClass:
+  case CXXReflectPrintReflectionExprClass:
+  case CXXReflectDumpReflectionExprClass:
+  case CXXCompilerErrorExprClass:
+  case CXXIdExprExprClass:
+  case CXXMemberIdExprExprClass:
+  case CXXValueOfExprClass:
+  case CXXDependentSpliceIdExprClass:
+  case CXXConcatenateExprClass:
+  case CXXDependentVariadicReifierExprClass:
+  case CXXFragmentExprClass:
+  case CXXFragmentCaptureExprClass:
+  case CXXSelectMemberExprClass:
+  case CXXSelectPackExprClass:
     // These never have a side-effect.
     return false;
 
@@ -3692,7 +3725,7 @@ namespace {
     bool NonTrivial;
 
   public:
-    explicit NonTrivialCallFinder(const ASTContext &Context)
+    explicit NonTrivialCallFinder(const Expr::EvalContext &Context)
       : Inherited(Context), NonTrivial(false) { }
 
     bool hasNonTrivialCall() const { return NonTrivial; }
@@ -3731,7 +3764,7 @@ namespace {
   };
 }
 
-bool Expr::hasNonTrivialCall(const ASTContext &Ctx) const {
+bool Expr::hasNonTrivialCall(const EvalContext &Ctx) const {
   NonTrivialCallFinder Finder(Ctx);
   Finder.Visit(this);
   return Finder.hasNonTrivialCall();
@@ -3844,6 +3877,7 @@ Expr::isNullPointerConstant(ASTContext &Ctx,
       (Ctx.getLangOpts().CPlusPlus && getType()->isEnumeralType()))
     return NPCK_NotNull;
 
+  Expr::EvalContext EvalCtx(Ctx, nullptr);
   if (Ctx.getLangOpts().CPlusPlus11) {
     // C++11 [conv.ptr]p1: A null pointer constant is an integer literal with
     // value zero or a prvalue of type std::nullptr_t.
@@ -3851,16 +3885,16 @@ Expr::isNullPointerConstant(ASTContext &Ctx,
     const IntegerLiteral *Lit = dyn_cast<IntegerLiteral>(this);
     if (Lit && !Lit->getValue())
       return NPCK_ZeroLiteral;
-    else if (!Ctx.getLangOpts().MSVCCompat || !isCXX98IntegralConstantExpr(Ctx))
+    else if (!Ctx.getLangOpts().MSVCCompat || !isCXX98IntegralConstantExpr(EvalCtx))
       return NPCK_NotNull;
   } else {
     // If we have an integer constant expression, we need to *evaluate* it and
     // test for the value 0.
-    if (!isIntegerConstantExpr(Ctx))
+    if (!isIntegerConstantExpr(EvalCtx))
       return NPCK_NotNull;
   }
 
-  if (EvaluateKnownConstInt(Ctx) != 0)
+  if (EvaluateKnownConstInt(EvalCtx) != 0)
     return NPCK_NotNull;
 
   if (isa<IntegerLiteral>(this))
@@ -4993,4 +5027,18 @@ OMPIteratorExpr *OMPIteratorExpr::CreateEmpty(const ASTContext &Context,
           NumIterators * static_cast<int>(RangeLocOffset::Total), NumIterators),
       alignof(OMPIteratorExpr));
   return new (Mem) OMPIteratorExpr(EmptyShell(), NumIterators);
+}
+
+const DiagnosticBuilder &clang::operator<<(const DiagnosticBuilder &DB,
+                                           const Expr *E) {
+  // This shouldn't actually ever happen, so it's okay that we're
+  // regurgitating an expression here.
+  // FIXME: We're guessing at LangOptions!
+  SmallString<32> Str;
+  llvm::raw_svector_ostream OS(Str);
+  LangOptions LangOpts;
+  LangOpts.CPlusPlus = true;
+  PrintingPolicy Policy(LangOpts);
+  E->printPretty(OS, nullptr, Policy);
+  return DB << OS.str();
 }

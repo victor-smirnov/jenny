@@ -145,6 +145,7 @@ TemplateArgumentDependence TemplateArgument::getDependence() const {
   case Integral:
     return TemplateArgumentDependence::None;
 
+  case Reflected:
   case Expression:
     Deps = toTemplateArgumentDependence(getAsExpr()->getDependence());
     if (isa<PackExpansionExpr>(getAsExpr()))
@@ -184,11 +185,41 @@ bool TemplateArgument::isPackExpansion() const {
   case Type:
     return isa<PackExpansionType>(getAsType());
 
+  case Reflected:
   case Expression:
     return isa<PackExpansionExpr>(getAsExpr());
   }
 
   llvm_unreachable("Invalid TemplateArgument Kind!");
+}
+
+bool TemplateArgument::isVariadicReifier() const {
+  switch (getKind()) {
+  case Null:
+  case Declaration:
+  case Integral:
+  case Pack:
+  case Template:
+  case NullPtr:
+  case TemplateExpansion:
+    return false;
+
+  case Type:
+    return isa<CXXDependentVariadicReifierType>(getAsType());
+
+  case Reflected:
+  case Expression:
+    return isa<CXXDependentVariadicReifierExpr>(getAsExpr());
+  }
+
+  llvm_unreachable("Invalid TemplateArgument Kind!");
+}
+
+bool TemplateArgument::isConstexprPromoting() const {
+  if (getKind() != Type)
+    return false;
+
+  return getAsType()->isMetaType();
 }
 
 bool TemplateArgument::containsUnexpandedParameterPack() const {
@@ -215,6 +246,7 @@ QualType TemplateArgument::getNonTypeTemplateArgumentType() const {
   case TemplateArgument::Integral:
     return getIntegralType();
 
+  case TemplateArgument::Reflected:
   case TemplateArgument::Expression:
     return getAsExpr()->getType();
 
@@ -270,6 +302,7 @@ void TemplateArgument::Profile(llvm::FoldingSetNodeID &ID,
     getIntegralType().Profile(ID);
     break;
 
+  case Reflected:
   case Expression:
     getAsExpr()->Profile(ID, Context, true);
     break;
@@ -287,6 +320,7 @@ bool TemplateArgument::structurallyEquals(const TemplateArgument &Other) const {
   switch (getKind()) {
   case Null:
   case Type:
+  case Reflected:
   case Expression:
   case Template:
   case TemplateExpansion:
@@ -314,12 +348,15 @@ bool TemplateArgument::structurallyEquals(const TemplateArgument &Other) const {
 TemplateArgument TemplateArgument::getPackExpansionPattern() const {
   assert(isPackExpansion());
 
-  switch (getKind()) {
+  auto TemplateArgKind = getKind();
+  switch (TemplateArgKind) {
   case Type:
     return getAsType()->castAs<PackExpansionType>()->getPattern();
 
+  case Reflected:
   case Expression:
-    return cast<PackExpansionExpr>(getAsExpr())->getPattern();
+    return TemplateArgument(cast<PackExpansionExpr>(getAsExpr())->getPattern(),
+                            TemplateArgKind);
 
   case TemplateExpansion:
     return TemplateArgument(getAsTemplateOrTemplatePattern());
@@ -375,6 +412,7 @@ void TemplateArgument::print(const PrintingPolicy &Policy,
     printIntegral(*this, Out, Policy);
     break;
 
+  case Reflected:
   case Expression:
     getAsExpr()->printPretty(Out, nullptr, Policy);
     break;
@@ -410,6 +448,7 @@ LLVM_DUMP_METHOD void TemplateArgument::dump() const { dump(llvm::errs()); }
 
 SourceRange TemplateArgumentLoc::getSourceRange() const {
   switch (Argument.getKind()) {
+  case TemplateArgument::Reflected:
   case TemplateArgument::Expression:
     return getSourceExpression()->getSourceRange();
 
@@ -474,17 +513,9 @@ const DiagnosticBuilder &clang::operator<<(const DiagnosticBuilder &DB,
   case TemplateArgument::TemplateExpansion:
     return DB << Arg.getAsTemplateOrTemplatePattern() << "...";
 
+  case TemplateArgument::Reflected:
   case TemplateArgument::Expression: {
-    // This shouldn't actually ever happen, so it's okay that we're
-    // regurgitating an expression here.
-    // FIXME: We're guessing at LangOptions!
-    SmallString<32> Str;
-    llvm::raw_svector_ostream OS(Str);
-    LangOptions LangOpts;
-    LangOpts.CPlusPlus = true;
-    PrintingPolicy Policy(LangOpts);
-    Arg.getAsExpr()->printPretty(OS, nullptr, Policy);
-    return DB << OS.str();
+    return DB << Arg.getAsExpr();
   }
 
   case TemplateArgument::Pack: {

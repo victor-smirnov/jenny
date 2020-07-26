@@ -316,7 +316,8 @@ static const Decl *getOutermostFuncOrBlockContext(const Decl *D) {
 /// Note that we don't take an LVComputationKind because we always
 /// want to honor the visibility of template arguments in the same way.
 LinkageInfo
-LinkageComputer::getLVForTemplateArgumentList(ArrayRef<TemplateArgument> Args,
+LinkageComputer::getLVForTemplateArgumentList(ASTContext &Ctx,
+                                              ArrayRef<TemplateArgument> Args,
                                               LVComputationKind computation) {
   LinkageInfo LV;
 
@@ -324,8 +325,42 @@ LinkageComputer::getLVForTemplateArgumentList(ArrayRef<TemplateArgument> Args,
     switch (Arg.getKind()) {
     case TemplateArgument::Null:
     case TemplateArgument::Integral:
-    case TemplateArgument::Expression:
+    case TemplateArgument::Reflected:
       continue;
+
+    case TemplateArgument::Expression: {
+      Expr *E = Arg.getAsExpr();
+      if (E->getType()->isReflectionType()) {
+        Expr::EvalResult Result;
+        Expr::EvalContext EvalCtx(Ctx, nullptr);
+        bool EvalStatus = E->EvaluateAsRValue(Result, EvalCtx);
+        assert(EvalStatus);
+
+        Reflection Refl(Ctx, Result.Val);
+        switch (Refl.getKind()) {
+        case RK_type: {
+          LV.merge(getLVForType(*Refl.getAsType(), computation));
+          continue;
+        }
+        case RK_declaration: {
+          const Decl *D = Refl.getAsDeclaration();
+          if (const auto *ND = dyn_cast<NamedDecl>(D)) {
+            LV.merge(getLVForDecl(ND, computation));
+            continue;
+          }
+          LLVM_FALLTHROUGH;
+        }
+        case RK_invalid:
+        case RK_expression:
+        case RK_fragment:
+        case RK_base_specifier: {
+          LV.merge(LinkageInfo::internal());
+          continue;
+        }
+        }
+      }
+      continue;
+    }
 
     case TemplateArgument::Type:
       LV.merge(getLVForType(*Arg.getAsType(), computation));
@@ -350,7 +385,8 @@ LinkageComputer::getLVForTemplateArgumentList(ArrayRef<TemplateArgument> Args,
       continue;
 
     case TemplateArgument::Pack:
-      LV.merge(getLVForTemplateArgumentList(Arg.getPackAsArray(), computation));
+      LV.merge(getLVForTemplateArgumentList(Ctx, Arg.getPackAsArray(),
+                                            computation));
       continue;
     }
     llvm_unreachable("bad template argument kind");
@@ -360,9 +396,10 @@ LinkageComputer::getLVForTemplateArgumentList(ArrayRef<TemplateArgument> Args,
 }
 
 LinkageInfo
-LinkageComputer::getLVForTemplateArgumentList(const TemplateArgumentList &TArgs,
+LinkageComputer::getLVForTemplateArgumentList(ASTContext &Ctx,
+                                              const TemplateArgumentList &TArgs,
                                               LVComputationKind computation) {
-  return getLVForTemplateArgumentList(TArgs.asArray(), computation);
+  return getLVForTemplateArgumentList(Ctx, TArgs.asArray(), computation);
 }
 
 static bool shouldConsiderTemplateVisibility(const FunctionDecl *fn,
@@ -399,7 +436,8 @@ void LinkageComputer::mergeTemplateLV(
 
   // Merge information from the template arguments.
   const TemplateArgumentList &templateArgs = *specInfo->TemplateArguments;
-  LinkageInfo argsLV = getLVForTemplateArgumentList(templateArgs, computation);
+  LinkageInfo argsLV = getLVForTemplateArgumentList(fn->getASTContext(),
+                                                    templateArgs, computation);
   LV.mergeMaybeWithVisibility(argsLV, considerVisibility);
 }
 
@@ -470,7 +508,8 @@ void LinkageComputer::mergeTemplateLV(
   // template-argument visibility if we've got an explicit
   // instantiation with a visibility attribute.
   const TemplateArgumentList &templateArgs = spec->getTemplateArgs();
-  LinkageInfo argsLV = getLVForTemplateArgumentList(templateArgs, computation);
+  LinkageInfo argsLV = getLVForTemplateArgumentList(spec->getASTContext(),
+                                                    templateArgs, computation);
   if (considerVisibility)
     LV.mergeVisibility(argsLV);
   LV.mergeExternalVisibility(argsLV);
@@ -522,7 +561,8 @@ void LinkageComputer::mergeTemplateLV(LinkageInfo &LV,
   // template-argument visibility if we've got an explicit
   // instantiation with a visibility attribute.
   const TemplateArgumentList &templateArgs = spec->getTemplateArgs();
-  LinkageInfo argsLV = getLVForTemplateArgumentList(templateArgs, computation);
+  LinkageInfo argsLV = getLVForTemplateArgumentList(spec->getASTContext(),
+                                                    templateArgs, computation);
   if (considerVisibility)
     LV.mergeVisibility(argsLV);
   LV.mergeExternalVisibility(argsLV);
@@ -1948,10 +1988,10 @@ const char *VarDecl::getStorageClassSpecifierString(StorageClass SC) {
 }
 
 VarDecl::VarDecl(Kind DK, ASTContext &C, DeclContext *DC,
-                 SourceLocation StartLoc, SourceLocation IdLoc,
-                 IdentifierInfo *Id, QualType T, TypeSourceInfo *TInfo,
+                 SourceLocation StartLoc, SourceLocation NameLoc,
+                 const DeclarationName &Name, QualType T, TypeSourceInfo *TInfo,
                  StorageClass SC)
-    : DeclaratorDecl(DK, DC, IdLoc, Id, T, TInfo, StartLoc),
+    : DeclaratorDecl(DK, DC, NameLoc, Name, T, TInfo, StartLoc),
       redeclarable_base(C) {
   static_assert(sizeof(VarDeclBitfields) <= sizeof(unsigned),
                 "VarDeclBitfields too large!");
@@ -1965,15 +2005,15 @@ VarDecl::VarDecl(Kind DK, ASTContext &C, DeclContext *DC,
 }
 
 VarDecl *VarDecl::Create(ASTContext &C, DeclContext *DC,
-                         SourceLocation StartL, SourceLocation IdL,
-                         IdentifierInfo *Id, QualType T, TypeSourceInfo *TInfo,
-                         StorageClass S) {
-  return new (C, DC) VarDecl(Var, C, DC, StartL, IdL, Id, T, TInfo, S);
+                         SourceLocation StartL,
+                         SourceLocation NameLoc, const DeclarationName &Name,
+                         QualType T, TypeSourceInfo *TInfo, StorageClass S) {
+  return new (C, DC) VarDecl(Var, C, DC, StartL, NameLoc, Name, T, TInfo, S);
 }
 
 VarDecl *VarDecl::CreateDeserialized(ASTContext &C, unsigned ID) {
   return new (C, ID)
-      VarDecl(Var, C, nullptr, SourceLocation(), SourceLocation(), nullptr,
+      VarDecl(Var, C, nullptr, SourceLocation(), SourceLocation(), DeclarationName(),
               QualType(), nullptr, SC_None);
 }
 
@@ -2366,8 +2406,8 @@ APValue *VarDecl::evaluateValue(
   }
 
   Eval->IsEvaluating = true;
-
-  bool Result = Init->EvaluateAsInitializer(Eval->Evaluated, getASTContext(),
+  Expr::EvalContext EvalCtx(getASTContext(), nullptr);
+  bool Result = Init->EvaluateAsInitializer(Eval->Evaluated, EvalCtx,
                                             this, Notes);
 
   // Ensure the computed APValue is cleaned up later if evaluation succeeded,
@@ -2442,7 +2482,8 @@ bool VarDecl::checkInitIsICE() const {
     return false;
   Eval->CheckingICE = true;
 
-  Eval->IsICE = Init->isIntegerConstantExpr(getASTContext());
+  Expr::EvalContext EvalCtx(getASTContext(), nullptr);
+  Eval->IsICE = Init->isIntegerConstantExpr(EvalCtx);
   Eval->CheckingICE = false;
   Eval->CheckedICE = true;
   return Eval->IsICE;
@@ -2656,13 +2697,40 @@ VarDecl::setInstantiationOfStaticDataMember(VarDecl *VD,
 // ParmVarDecl Implementation
 //===----------------------------------------------------------------------===//
 
+ParmVarDecl::ParmVarDecl(ASTContext &C, DeclContext *DC,
+                         SourceLocation StartLoc, SourceLocation NameLoc,
+                         const DeclarationName &Name, QualType T,
+                         TypeSourceInfo *TInfo, StorageClass S, Expr *DefArg)
+    : VarDecl(ParmVar, C, DC, StartLoc, NameLoc, Name, T, TInfo, S),
+      InjectedParmsInfo(nullptr) {
+  assert(ParmVarDeclBits.HasInheritedDefaultArg == false);
+  assert(ParmVarDeclBits.DefaultArgKind == DAK_None);
+  assert(ParmVarDeclBits.IsKNRPromoted == false);
+  assert(ParmVarDeclBits.IsObjCMethodParam == false);
+  setDefaultArg(DefArg);
+}
+
+ParmVarDecl::ParmVarDecl(ASTContext &C, DeclContext *DC, const CXXInjectedParmsInfo &IPI)
+    : VarDecl(ParmVar, C, DC, SourceLocation(), SourceLocation(),
+              DeclarationName(), C.DependentTy, nullptr, SC_None),
+      InjectedParmsInfo(new (C) CXXInjectedParmsInfo(IPI)) {
+  setDefaultArg(nullptr);
+}
+
 ParmVarDecl *ParmVarDecl::Create(ASTContext &C, DeclContext *DC,
                                  SourceLocation StartLoc,
-                                 SourceLocation IdLoc, IdentifierInfo *Id,
+                                 SourceLocation NameLoc,
+                                 const DeclarationName &Name,
                                  QualType T, TypeSourceInfo *TInfo,
                                  StorageClass S, Expr *DefArg) {
-  return new (C, DC) ParmVarDecl(ParmVar, C, DC, StartLoc, IdLoc, Id, T, TInfo,
+  return new (C, DC) ParmVarDecl(C, DC, StartLoc, NameLoc, Name, T, TInfo,
                                  S, DefArg);
+}
+
+ParmVarDecl *ParmVarDecl::Create(ASTContext &C,
+                                const CXXInjectedParmsInfo &InjectedParmsInfo) {
+  DeclContext *DC = C.getTranslationUnitDecl();
+  return new (C, DC) ParmVarDecl(C, DC, InjectedParmsInfo);
 }
 
 QualType ParmVarDecl::getOriginalType() const {
@@ -2675,8 +2743,9 @@ QualType ParmVarDecl::getOriginalType() const {
 
 ParmVarDecl *ParmVarDecl::CreateDeserialized(ASTContext &C, unsigned ID) {
   return new (C, ID)
-      ParmVarDecl(ParmVar, C, nullptr, SourceLocation(), SourceLocation(),
-                  nullptr, QualType(), nullptr, SC_None, nullptr);
+      ParmVarDecl(C, nullptr, SourceLocation(), SourceLocation(),
+                  static_cast<IdentifierInfo *>(nullptr), QualType(), nullptr,
+                  SC_None, nullptr);
 }
 
 SourceRange ParmVarDecl::getSourceRange() const {
@@ -2775,6 +2844,7 @@ FunctionDecl::FunctionDecl(Kind DK, ASTContext &C, DeclContext *DC,
       DeclContext(DK), redeclarable_base(C), Body(), ODRHash(0),
       EndRangeLoc(NameInfo.getEndLoc()), DNLoc(NameInfo.getInfo()) {
   assert(T.isNull() || T->isFunctionType());
+
   FunctionDeclBits.SClass = S;
   FunctionDeclBits.IsInline = isInlineSpecified;
   FunctionDeclBits.IsInlineSpecified = isInlineSpecified;
@@ -2799,8 +2869,11 @@ FunctionDecl::FunctionDecl(Kind DK, ASTContext &C, DeclContext *DC,
   FunctionDeclBits.IsMultiVersion = false;
   FunctionDeclBits.IsCopyDeductionCandidate = false;
   FunctionDeclBits.HasODRHash = false;
+
   if (TrailingRequiresClause)
     setTrailingRequiresClause(TrailingRequiresClause);
+
+  setMetaprogram(false);
 }
 
 void FunctionDecl::getNameForDiagnostic(
@@ -2888,6 +2961,21 @@ Stmt *FunctionDecl::getBody(const FunctionDecl *&Definition) const {
     return Definition->Body.get(getASTContext().getExternalSource());
 
   return nullptr;
+}
+
+bool FunctionDecl::doesThisDeclarationHaveAPrintableBody() const {
+  // This function may have a body, however, that body is generated
+  // and should not be printed.
+  if (isExplicitlyDefaulted())
+    return false;
+
+  if (doesThisDeclarationHaveABody())
+    return true;
+
+  if (FunctionDecl *Pattern = getInstantiatedFromMemberFunction())
+    return Pattern->doesThisDeclarationHaveABody();
+
+  return false;
 }
 
 void FunctionDecl::setBody(Stmt *B) {
@@ -4021,18 +4109,18 @@ unsigned FunctionDecl::getODRHash() {
 //===----------------------------------------------------------------------===//
 
 FieldDecl *FieldDecl::Create(const ASTContext &C, DeclContext *DC,
-                             SourceLocation StartLoc, SourceLocation IdLoc,
-                             IdentifierInfo *Id, QualType T,
+                             SourceLocation StartLoc, SourceLocation NameLoc,
+                             const DeclarationName &Name, QualType T,
                              TypeSourceInfo *TInfo, Expr *BW, bool Mutable,
                              InClassInitStyle InitStyle) {
-  return new (C, DC) FieldDecl(Decl::Field, DC, StartLoc, IdLoc, Id, T, TInfo,
-                               BW, Mutable, InitStyle);
+  return new (C, DC) FieldDecl(Decl::Field, DC, StartLoc, NameLoc, Name, T,
+                               TInfo, BW, Mutable, InitStyle);
 }
 
 FieldDecl *FieldDecl::CreateDeserialized(ASTContext &C, unsigned ID) {
   return new (C, ID) FieldDecl(Field, nullptr, SourceLocation(),
-                               SourceLocation(), nullptr, QualType(), nullptr,
-                               nullptr, false, ICIS_NoInit);
+                               SourceLocation(), DeclarationName(), QualType(),
+                               nullptr, nullptr, false, ICIS_NoInit);
 }
 
 bool FieldDecl::isAnonymousStructOrUnion() const {
@@ -4047,7 +4135,9 @@ bool FieldDecl::isAnonymousStructOrUnion() const {
 
 unsigned FieldDecl::getBitWidthValue(const ASTContext &Ctx) const {
   assert(isBitField() && "not a bitfield");
-  return getBitWidth()->EvaluateKnownConstInt(Ctx).getZExtValue();
+
+  Expr::EvalContext EvalCtx(Ctx, nullptr);
+  return getBitWidth()->EvaluateKnownConstInt(EvalCtx).getZExtValue();
 }
 
 bool FieldDecl::isZeroLengthBitField(const ASTContext &Ctx) const {
@@ -4158,6 +4248,20 @@ SourceRange TagDecl::getSourceRange() const {
 }
 
 TagDecl *TagDecl::getCanonicalDecl() { return getFirstDecl(); }
+
+AccessSpecifier TagDecl::getDefaultAccessSpecifier() const {
+  switch (getTagKind()) {
+  case TTK_Struct:
+  case TTK_Union:
+  case TTK_Enum:
+    return AS_public;
+  case TTK_Class:
+    return AS_private;
+  case TTK_Interface:
+    break;
+  }
+  llvm_unreachable("Invalid tag kind");
+}
 
 void TagDecl::setTypedefNameForAnonDecl(TypedefNameDecl *TDD) {
   TypedefNameDeclOrQualifier = TDD;
@@ -4702,6 +4806,59 @@ char *Buffer = new (getASTContext(), 1) char[Name.size() + 1];
   MSAsmName = Buffer;
 }
 
+NamespaceDecl::NamespaceDecl(ASTContext &C, DeclContext *DC, bool Inline,
+                             SourceLocation StartLoc, SourceLocation IdLoc,
+                             IdentifierInfo *Id, NamespaceDecl *PrevDecl)
+    : NamedDecl(Namespace, DC, IdLoc, Id), DeclContext(Namespace),
+      redeclarable_base(C), LocStart(StartLoc),
+      AnonOrFirstNamespaceAndInline(nullptr, Inline) {
+  setPreviousDecl(PrevDecl);
+
+  if (PrevDecl)
+    AnonOrFirstNamespaceAndInline.setPointer(PrevDecl->getOriginalNamespace());
+}
+
+NamespaceDecl *NamespaceDecl::Create(ASTContext &C, DeclContext *DC,
+                                     bool Inline, SourceLocation StartLoc,
+                                     SourceLocation IdLoc, IdentifierInfo *Id,
+                                     NamespaceDecl *PrevDecl) {
+  return new (C, DC) NamespaceDecl(C, DC, Inline, StartLoc, IdLoc, Id,
+                                   PrevDecl);
+}
+
+NamespaceDecl *NamespaceDecl::CreateDeserialized(ASTContext &C, unsigned ID) {
+  return new (C, ID) NamespaceDecl(C, nullptr, false, SourceLocation(),
+                                   SourceLocation(), nullptr, nullptr);
+}
+
+NamespaceDecl *NamespaceDecl::getOriginalNamespace() {
+  if (isFirstDecl())
+    return this;
+
+  return AnonOrFirstNamespaceAndInline.getPointer();
+}
+
+const NamespaceDecl *NamespaceDecl::getOriginalNamespace() const {
+  if (isFirstDecl())
+    return this;
+
+  return AnonOrFirstNamespaceAndInline.getPointer();
+}
+
+bool NamespaceDecl::isOriginalNamespace() const { return isFirstDecl(); }
+
+NamespaceDecl *NamespaceDecl::getNextRedeclarationImpl() {
+  return getNextRedeclaration();
+}
+
+NamespaceDecl *NamespaceDecl::getPreviousDeclImpl() {
+  return getPreviousDecl();
+}
+
+NamespaceDecl *NamespaceDecl::getMostRecentDeclImpl() {
+  return getMostRecentDecl();
+}
+
 void ValueDecl::anchor() {}
 
 bool ValueDecl::isWeak() const {
@@ -4784,16 +4941,18 @@ bool CapturedDecl::isNothrow() const { return BodyAndNothrow.getInt(); }
 void CapturedDecl::setNothrow(bool Nothrow) { BodyAndNothrow.setInt(Nothrow); }
 
 EnumConstantDecl *EnumConstantDecl::Create(ASTContext &C, EnumDecl *CD,
-                                           SourceLocation L,
-                                           IdentifierInfo *Id, QualType T,
-                                           Expr *E, const llvm::APSInt &V) {
-  return new (C, CD) EnumConstantDecl(CD, L, Id, T, E, V);
+                                           SourceLocation NameLoc,
+                                           const DeclarationName &Name,
+                                           QualType T, Expr *E,
+                                           const llvm::APSInt &V) {
+  return new (C, CD) EnumConstantDecl(CD, NameLoc, Name, T, E, V);
 }
 
 EnumConstantDecl *
 EnumConstantDecl::CreateDeserialized(ASTContext &C, unsigned ID) {
-  return new (C, ID) EnumConstantDecl(nullptr, SourceLocation(), nullptr,
-                                      QualType(), nullptr, llvm::APSInt());
+  return new (C, ID) EnumConstantDecl(nullptr, SourceLocation(),
+                                      DeclarationName(), QualType(),
+                                      nullptr, llvm::APSInt());
 }
 
 void IndirectFieldDecl::anchor() {}

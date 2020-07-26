@@ -775,6 +775,7 @@ bool RecursiveASTVisitor<Derived>::TraverseTemplateArgument(
     return getDerived().TraverseTemplateName(
         Arg.getAsTemplateOrTemplatePattern());
 
+  case TemplateArgument::Reflected:
   case TemplateArgument::Expression:
     return getDerived().TraverseStmt(Arg.getAsExpr());
 
@@ -816,6 +817,7 @@ bool RecursiveASTVisitor<Derived>::TraverseTemplateArgumentLoc(
     return getDerived().TraverseTemplateName(
         Arg.getAsTemplateOrTemplatePattern());
 
+  case TemplateArgument::Reflected:
   case TemplateArgument::Expression:
     return getDerived().TraverseStmt(ArgLoc.getSourceExpression());
 
@@ -970,6 +972,7 @@ DEF_TRAVERSE_TYPE(FunctionProtoType, {
 })
 
 DEF_TRAVERSE_TYPE(UnresolvedUsingType, {})
+DEF_TRAVERSE_TYPE(CXXRequiredTypeType, {})
 DEF_TRAVERSE_TYPE(TypedefType, {})
 
 DEF_TRAVERSE_TYPE(TypeOfExprType,
@@ -979,6 +982,9 @@ DEF_TRAVERSE_TYPE(TypeOfType, { TRY_TO(TraverseType(T->getUnderlyingType())); })
 
 DEF_TRAVERSE_TYPE(DecltypeType,
                   { TRY_TO(TraverseStmt(T->getUnderlyingExpr())); })
+
+DEF_TRAVERSE_TYPE(ReflectedType,
+                  { TRY_TO(TraverseStmt(T->getReflection())); })
 
 DEF_TRAVERSE_TYPE(UnaryTransformType, {
   TRY_TO(TraverseType(T->getBaseType()));
@@ -1038,6 +1044,7 @@ DEF_TRAVERSE_TYPE(DependentTemplateSpecializationType, {
 })
 
 DEF_TRAVERSE_TYPE(PackExpansionType, { TRY_TO(TraverseType(T->getPattern())); })
+DEF_TRAVERSE_TYPE(CXXDependentVariadicReifierType, {})
 
 DEF_TRAVERSE_TYPE(ObjCTypeParamType, {})
 
@@ -1241,6 +1248,7 @@ DEF_TRAVERSE_TYPELOC(FunctionProtoType, {
 })
 
 DEF_TRAVERSE_TYPELOC(UnresolvedUsingType, {})
+DEF_TRAVERSE_TYPELOC(CXXRequiredTypeType, {})
 DEF_TRAVERSE_TYPELOC(TypedefType, {})
 
 DEF_TRAVERSE_TYPELOC(TypeOfExprType,
@@ -1253,6 +1261,10 @@ DEF_TRAVERSE_TYPELOC(TypeOfType, {
 // FIXME: location of underlying expr
 DEF_TRAVERSE_TYPELOC(DecltypeType, {
   TRY_TO(TraverseStmt(TL.getTypePtr()->getUnderlyingExpr()));
+})
+
+DEF_TRAVERSE_TYPELOC(ReflectedType, {
+  TRY_TO(TraverseStmt(TL.getTypePtr()->getReflection()));
 })
 
 DEF_TRAVERSE_TYPELOC(UnaryTransformType, {
@@ -1325,6 +1337,8 @@ DEF_TRAVERSE_TYPELOC(DependentTemplateSpecializationType, {
 
 DEF_TRAVERSE_TYPELOC(PackExpansionType,
                      { TRY_TO(TraverseTypeLoc(TL.getPatternLoc())); })
+
+DEF_TRAVERSE_TYPELOC(CXXDependentVariadicReifierType, {})
 
 DEF_TRAVERSE_TYPELOC(ObjCTypeParamType, {})
 
@@ -1961,6 +1975,25 @@ DEF_TRAVERSE_DECL(MSPropertyDecl, { TRY_TO(TraverseDeclaratorHelper(D)); })
 
 DEF_TRAVERSE_DECL(MSGuidDecl, {})
 
+DEF_TRAVERSE_DECL(CXXMetaprogramDecl, {
+  // FIXME: Not sure if we can do anything useful here.
+})
+
+DEF_TRAVERSE_DECL(CXXInjectionDecl, {
+  // FIXME: Not sure if we can do anything useful here.
+})
+
+DEF_TRAVERSE_DECL(CXXFragmentDecl, {
+  TRY_TO(TraverseDecl(D->getContent()));
+})
+
+DEF_TRAVERSE_DECL(CXXStmtFragmentDecl, {
+    TRY_TO(TraverseStmt(D->getBody()));
+})
+
+DEF_TRAVERSE_DECL(CXXRequiredTypeDecl, {})
+DEF_TRAVERSE_DECL(CXXRequiredDeclaratorDecl, {})
+
 DEF_TRAVERSE_DECL(FieldDecl, {
   TRY_TO(TraverseDeclaratorHelper(D));
   if (D->isBitField())
@@ -2236,6 +2269,29 @@ DEF_TRAVERSE_STMT(CXXForRangeStmt, {
     ShouldVisitChildren = false;
   }
 })
+
+DEF_TRAVERSE_STMT(CXXCompositeExpansionStmt, {
+  if (!getDerived().shouldVisitImplicitCode()) {
+    TRY_TO_TRAVERSE_OR_ENQUEUE_STMT(S->getRangeVarStmt());
+    TRY_TO_TRAVERSE_OR_ENQUEUE_STMT(S->getLoopVarStmt());
+    TRY_TO_TRAVERSE_OR_ENQUEUE_STMT(S->getBody());
+    // Visit everything else only if shouldVisitImplicitCode().
+    ShouldVisitChildren = false;
+  }
+})
+
+DEF_TRAVERSE_STMT(CXXPackExpansionStmt, {
+  if (!getDerived().shouldVisitImplicitCode()) {
+    TRY_TO_TRAVERSE_OR_ENQUEUE_STMT(S->getRangeExprStmt());
+    TRY_TO_TRAVERSE_OR_ENQUEUE_STMT(S->getLoopVarStmt());
+    TRY_TO_TRAVERSE_OR_ENQUEUE_STMT(S->getBody());
+    // Visit everything else only if shouldVisitImplicitCode().
+    ShouldVisitChildren = false;
+  }
+})
+
+DEF_TRAVERSE_STMT(CXXInjectionStmt, {})
+DEF_TRAVERSE_STMT(CXXBaseInjectionStmt, {})
 
 DEF_TRAVERSE_STMT(MSDependentExistsStmt, {
   TRY_TO(TraverseNestedNameSpecifierLoc(S->getQualifierLoc()));
@@ -2534,6 +2590,8 @@ DEF_TRAVERSE_STMT(MatrixSubscriptExpr, {})
 DEF_TRAVERSE_STMT(OMPArraySectionExpr, {})
 DEF_TRAVERSE_STMT(OMPArrayShapingExpr, {})
 DEF_TRAVERSE_STMT(OMPIteratorExpr, {})
+DEF_TRAVERSE_STMT(CXXSelectMemberExpr, {})
+DEF_TRAVERSE_STMT(CXXSelectPackExpr, {})
 
 DEF_TRAVERSE_STMT(BlockExpr, {
   TRY_TO(TraverseDecl(S->getBlockDecl()));
@@ -2669,6 +2727,22 @@ DEF_TRAVERSE_STMT(SubstNonTypeTemplateParmExpr, {})
 DEF_TRAVERSE_STMT(FunctionParmPackExpr, {})
 DEF_TRAVERSE_STMT(CXXFoldExpr, {})
 DEF_TRAVERSE_STMT(AtomicExpr, {})
+DEF_TRAVERSE_STMT(CXXReflectExpr, {})
+DEF_TRAVERSE_STMT(CXXInvalidReflectionExpr, {})
+DEF_TRAVERSE_STMT(CXXReflectionReadQueryExpr, {})
+DEF_TRAVERSE_STMT(CXXReflectionWriteQueryExpr, {})
+DEF_TRAVERSE_STMT(CXXReflectPrintLiteralExpr, {})
+DEF_TRAVERSE_STMT(CXXReflectPrintReflectionExpr, {})
+DEF_TRAVERSE_STMT(CXXReflectDumpReflectionExpr, {})
+DEF_TRAVERSE_STMT(CXXCompilerErrorExpr, {})
+DEF_TRAVERSE_STMT(CXXIdExprExpr, {})
+DEF_TRAVERSE_STMT(CXXMemberIdExprExpr, {})
+DEF_TRAVERSE_STMT(CXXDependentSpliceIdExpr, {})
+DEF_TRAVERSE_STMT(CXXValueOfExpr, {})
+DEF_TRAVERSE_STMT(CXXConcatenateExpr, {})
+DEF_TRAVERSE_STMT(CXXDependentVariadicReifierExpr, {})
+DEF_TRAVERSE_STMT(CXXFragmentExpr, {})
+DEF_TRAVERSE_STMT(CXXFragmentCaptureExpr, {})
 
 DEF_TRAVERSE_STMT(MaterializeTemporaryExpr, {
   if (S->getLifetimeExtendedTemporaryDecl()) {

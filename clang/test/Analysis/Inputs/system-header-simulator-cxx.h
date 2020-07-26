@@ -953,30 +953,25 @@ next(ForwardIterator it,
 
 #if __cplusplus >= 201103L
 namespace std {
-template <typename T> // TODO: Implement the stub for deleter.
-class unique_ptr {
-public:
-  unique_ptr() noexcept {}
-  unique_ptr(T *) noexcept {}
-  unique_ptr(const unique_ptr &) noexcept = delete;
-  unique_ptr(unique_ptr &&) noexcept;
 
-  T *get() const noexcept;
-  T *release() noexcept;
-  void reset(T *p = nullptr) noexcept;
-  void swap(unique_ptr<T> &p) noexcept;
+  template <typename T> // TODO: Implement the stub for deleter.
+  class unique_ptr {
+  public:
+    unique_ptr() {}
+    unique_ptr(T *) {}
+    unique_ptr(const unique_ptr &) = delete;
+    unique_ptr(unique_ptr &&);
+    ~unique_ptr();
 
-  typename std::add_lvalue_reference<T>::type operator*() const;
-  T *operator->() const noexcept;
-  operator bool() const noexcept;
-  unique_ptr<T> &operator=(unique_ptr<T> &&p) noexcept;
-};
+    T *get() const;
+    T *release() const;
+    void reset(T *p = nullptr) const;
+    void swap(unique_ptr<T> &p) const;
 
-// TODO :: Once the deleter parameter is added update with additional template parameter.
-template <typename T>
-void swap(unique_ptr<T> &x, unique_ptr<T> &y) noexcept {
-  x.swap(y);
-}
+    typename std::add_lvalue_reference<T>::type operator*() const;
+    T *operator->() const;
+    operator bool() const;
+  };
 } // namespace std
 #endif
 
@@ -1054,6 +1049,9 @@ namespace std {
 
   template<class BidirIt, class UnaryPredicate>
   BidirIt stable_partition(BidirIt first, BidirIt last, UnaryPredicate p);
+
+  template<class InputIt, class UnaryPredicate>
+  bool any_of(InputIt first, InputIt last, UnaryPredicate p);
 }
 
 namespace std {

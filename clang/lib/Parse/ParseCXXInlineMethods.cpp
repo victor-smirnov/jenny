@@ -107,6 +107,9 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(
   // In delayed template parsing mode, if we are within a class template
   // or if we are about to parse function member template then consume
   // the tokens and store them for parsing at the end of the translation unit.
+  //
+  // An exception is made for fragment contexts, as injection will
+  // require a complete delcaration before the end of the translation unit.
   if (getLangOpts().DelayedTemplateParsing &&
       D.getFunctionDefinitionKind() == FDK_Definition &&
       !D.getDeclSpec().hasConstexprSpecifier() &&
@@ -115,7 +118,8 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(
       ((Actions.CurContext->isDependentContext() ||
         (TemplateInfo.Kind != ParsedTemplateInfo::NonTemplate &&
          TemplateInfo.Kind != ParsedTemplateInfo::ExplicitSpecialization)) &&
-       !Actions.IsInsideALocalClassWithinATemplateFunction())) {
+       !Actions.IsInsideALocalClassWithinATemplateFunction()) &&
+      !Actions.CurContext->isFragmentContext()) {
 
     CachedTokens Toks;
     LexTemplateFunctionForLateParsing(Toks);
@@ -138,6 +142,9 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(
   tok::TokenKind kind = Tok.getKind();
   // Consume everything up to (and including) the left brace of the
   // function body.
+
+  // FIXME: a memember initializer list will parse to here.
+
   if (ConsumeAndStoreFunctionPrologue(Toks)) {
     // We didn't find the left-brace we expected after the
     // constructor initializer; we already printed an error, and it's likely
@@ -825,6 +832,7 @@ bool Parser::ConsumeAndStoreUntil(tok::TokenKind T1, tok::TokenKind T2,
       ConsumeAndStoreUntil(tok::r_square, Toks, /*StopAtSemi=*/false);
       break;
     case tok::l_brace:
+    case tok::percentl_brace:
       // Recursively consume properly-nested braces.
       Toks.push_back(Tok);
       ConsumeBrace();
@@ -941,9 +949,9 @@ bool Parser::ConsumeAndStoreFunctionPrologue(CachedTokens &Toks) {
         }
       }
 
-      if (Tok.is(tok::identifier)) {
+      if (isIdentifier()) {
         Toks.push_back(Tok);
-        ConsumeToken();
+        ConsumeIdentifier();
       } else {
         break;
       }
@@ -981,6 +989,27 @@ bool Parser::ConsumeAndStoreFunctionPrologue(CachedTokens &Toks) {
         // We're not just missing the initializer, we're also missing the
         // function body!
         return Diag(Tok.getLocation(), diag::err_expected) << tok::l_brace;
+      }
+    } else if(isVariadicReifier()) {
+      if (!ConsumeAndStoreUntil(tok::l_paren, Toks, /*StopAtSemi=*/true,
+                               /*ConsumeFinalToken=*/true))
+        return Diag(Tok.getLocation(), diag::err_expected) << tok::l_paren;
+      if (!ConsumeAndStoreUntil(tok::ellipsis, Toks, /*StopAtSemi=*/true,
+                               /*ConsumeFinalToken=*/true)){
+        return Diag(Tok.getLocation(), diag::err_expected) << tok::ellipsis;
+      }
+      if (!isIdentifier())
+        return Diag(Tok.getLocation(), diag::err_expected) << tok::identifier;
+      Toks.push_back(Tok);
+      ConsumeIdentifier();
+
+      // if(!Tok.is(tok::r_paren))
+      //   return Diag(Tok.getLocation(), diag::err_expected) << tok::r_paren;
+      // Toks.push_back(Tok);
+      // ConsumeToken();
+      if (!ConsumeAndStoreUntil(tok::r_paren, Toks, /*StopAtSemi=*/true,
+                                /*ConsumeFinalToken=*/true)) {
+        return Diag(Tok.getLocation(), diag::err_expected) << tok::r_paren;
       }
     } else if (Tok.isNot(tok::l_paren) && Tok.isNot(tok::l_brace)) {
       // We found something weird in a mem-initializer-id.
@@ -1254,9 +1283,10 @@ bool Parser::ConsumeAndStoreInitializer(CachedTokens &Toks,
       // FIXME: Support all forms of 'template' unqualified-id '<'.
       Toks.push_back(Tok);
       ConsumeToken();
-      if (Tok.is(tok::identifier)) {
+
+      if (isIdentifier()) {
         Toks.push_back(Tok);
-        ConsumeToken();
+        ConsumeIdentifier();
         if (Tok.is(tok::less)) {
           ++AngleCount;
           ++KnownTemplateCount;
@@ -1298,6 +1328,7 @@ bool Parser::ConsumeAndStoreInitializer(CachedTokens &Toks,
       ConsumeAndStoreUntil(tok::r_square, Toks, /*StopAtSemi=*/false);
       break;
     case tok::l_brace:
+    case tok::percentl_brace:
       // Recursively consume properly-nested braces.
       Toks.push_back(Tok);
       ConsumeBrace();
@@ -1343,6 +1374,11 @@ bool Parser::ConsumeAndStoreInitializer(CachedTokens &Toks,
     case tok::utf32_string_literal:
       Toks.push_back(Tok);
       ConsumeStringToken();
+      break;
+    case tok::identifier:
+    case tok::annot_identifier_splice:
+      Toks.push_back(Tok);
+      ConsumeIdentifier();
       break;
     case tok::semi:
       if (CIK == CIK_DefaultInitializer)

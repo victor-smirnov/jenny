@@ -459,6 +459,21 @@ namespace clang {
     }
     void skipToEnd();
   };
+
+  class CXXFragmentParseRAII {
+    Parser &P;
+    Sema::CXXFragmentScopeRAII FragmentScope;
+    SmallVector<CachedTokens, 2> OriginalPendingUnquotes;
+  public:
+    CXXFragmentParseRAII(Parser &P)
+        : P(P), FragmentScope(P.getActions()), OriginalPendingUnquotes() {
+      OriginalPendingUnquotes.swap(P.PendingUnquotes);
+    }
+    ~CXXFragmentParseRAII() {
+      assert(P.PendingUnquotes.empty() && "Unparsed unquotes");
+      OriginalPendingUnquotes.swap(P.PendingUnquotes);
+    }
+  };
 } // end namespace clang
 
 #endif

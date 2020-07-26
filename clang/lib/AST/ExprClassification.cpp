@@ -142,6 +142,8 @@ static Cl::Kinds ClassifyInternal(ASTContext &Ctx, const Expr *E) {
   case Expr::OMPArraySectionExprClass:
   case Expr::OMPArrayShapingExprClass:
   case Expr::OMPIteratorExprClass:
+  case Expr::CXXSelectMemberExprClass:
+  case Expr::CXXSelectPackExprClass:
     return Cl::CL_LValue;
 
     // C99 6.5.2.5p5 says that compound literals are lvalues.
@@ -197,6 +199,22 @@ static Cl::Kinds ClassifyInternal(ASTContext &Ctx, const Expr *E) {
   case Expr::SourceLocExprClass:
   case Expr::ConceptSpecializationExprClass:
   case Expr::RequiresExprClass:
+  case Expr::CXXReflectExprClass:
+  case Expr::CXXInvalidReflectionExprClass:
+  case Expr::CXXReflectionReadQueryExprClass:
+  case Expr::CXXReflectionWriteQueryExprClass:
+  case Expr::CXXReflectPrintLiteralExprClass:
+  case Expr::CXXReflectPrintReflectionExprClass:
+  case Expr::CXXReflectDumpReflectionExprClass:
+  case Expr::CXXCompilerErrorExprClass:
+  case Expr::CXXIdExprExprClass:
+  case Expr::CXXMemberIdExprExprClass:
+  case Expr::CXXValueOfExprClass:
+  case Expr::CXXDependentSpliceIdExprClass:
+  case Expr::CXXConcatenateExprClass:
+  case Expr::CXXDependentVariadicReifierExprClass:
+  case Expr::CXXFragmentExprClass:
+  case Expr::CXXFragmentCaptureExprClass:
     return Cl::CL_PRValue;
 
   case Expr::ConstantExprClass:

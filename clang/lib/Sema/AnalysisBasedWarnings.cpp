@@ -25,6 +25,7 @@
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Analysis/Analyses/CFGReachabilityAnalysis.h"
 #include "clang/Analysis/Analyses/Consumed.h"
+#include "clang/Analysis/Analyses/Lifetime.h"
 #include "clang/Analysis/Analyses/ReachableCode.h"
 #include "clang/Analysis/Analyses/ThreadSafety.h"
 #include "clang/Analysis/Analyses/UninitializedValues.h"
@@ -34,6 +35,7 @@
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Sema/Overload.h"
 #include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/SemaInternal.h"
 #include "llvm/ADT/BitVector.h"
@@ -729,7 +731,7 @@ class ContainsReference : public ConstEvaluatedExprVisitor<ContainsReference> {
 public:
   typedef ConstEvaluatedExprVisitor<ContainsReference> Inherited;
 
-  ContainsReference(ASTContext &Context, const DeclRefExpr *Needle)
+  ContainsReference(const Expr::EvalContext &Context, const DeclRefExpr *Needle)
     : Inherited(Context), FoundReference(false), Needle(Needle) {}
 
   void VisitExpr(const Expr *E) {
@@ -1006,7 +1008,8 @@ static bool DiagnoseUninitializedUse(Sema &S, const VarDecl *VD,
       if (!alwaysReportSelfInit && DRE == Initializer->IgnoreParenImpCasts())
         return false;
 
-      ContainsReference CR(S.Context, DRE);
+      Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
+      ContainsReference CR(EvalCtx, DRE);
       CR.Visit(Initializer);
       if (CR.doesContainReference()) {
         S.Diag(DRE->getBeginLoc(), diag::warn_uninit_self_reference_in_init)
@@ -1323,7 +1326,7 @@ static void DiagnoseSwitchLabelsFallthrough(Sema &S, AnalysisDeclContext &AC,
     S.Diag(F->getBeginLoc(), diag::err_fallthrough_attr_invalid_placement);
 }
 
-static bool isInLoop(const ASTContext &Ctx, const ParentMap &PM,
+static bool isInLoop(const Expr::EvalContext &Ctx, const ParentMap &PM,
                      const Stmt *S) {
   assert(S);
 
@@ -1359,6 +1362,7 @@ static void diagnoseRepeatedUseOfWeak(Sema &S,
   StmtUsesPair;
 
   ASTContext &Ctx = S.getASTContext();
+  Expr::EvalContext EvalCtx(Ctx, S.GetReflectionCallbackObj());
 
   const WeakObjectUseMap &WeakMap = CurFn->getWeakObjectUses();
 
@@ -1390,7 +1394,7 @@ static void diagnoseRepeatedUseOfWeak(Sema &S,
           break;
 
       if (UI2 == UE) {
-        if (!isInLoop(Ctx, PM, UI->getUseExpr()))
+        if (!isInLoop(EvalCtx, PM, UI->getUseExpr()))
           continue;
 
         const WeakObjectProfileTy &Profile = I->first;
@@ -2017,6 +2021,108 @@ public:
 } // namespace consumed
 } // namespace clang
 
+namespace clang {
+namespace lifetime {
+const int Warnings[] = {
+    diag::warn_deref_dangling, diag::warn_deref_nullptr,
+    diag::warn_assign_nullptr, diag::warn_null,
+    diag::warn_dangling,
+};
+const int Notes[] = {diag::note_never_initialized,
+                     diag::note_temporary_destroyed,
+                     diag::note_dereferenced,
+                     diag::note_forbidden_cast,
+                     diag::note_modified,
+                     diag::note_deleted,
+                     diag::note_assigned,
+                     diag::note_null_reason_parameter,
+                     diag::note_null_reason_default_construct,
+                     diag::note_null_reason_compared_to_null};
+
+class Reporter : public LifetimeReporterBase {
+  Sema &S;
+  bool FilterWarnings;
+  std::set<SourceLocation> WarningLocs;
+  bool IgnoreCurrentWarning = false;
+
+  bool enableIfNew(SourceRange Range) {
+    auto I = WarningLocs.insert(Range.getBegin());
+    IgnoreCurrentWarning = !I.second;
+    return !IgnoreCurrentWarning;
+  }
+
+public:
+  Reporter(Sema &S, bool FilterWarnings)
+      : S(S), FilterWarnings(FilterWarnings) {}
+
+  bool shouldFilterWarnings() const final { return FilterWarnings; }
+
+  void warnPsetOfGlobal(SourceRange Range, StringRef VariableName,
+                        std::string ActualPset) final {
+    if (enableIfNew(Range))
+      S.Diag(Range.getBegin(), diag::warn_pset_of_global)
+          << VariableName << ActualPset << Range;
+  }
+  void warnNullDangling(WarnType T, SourceRange Range, ValueSource Source,
+                        StringRef ValueName, bool Possibly) final {
+    assert(T == WarnType::Dangling || T == WarnType::Null);
+    if (enableIfNew(Range))
+      S.Diag(Range.getBegin(), Warnings[(int)T])
+          << (int)Source << ValueName << Possibly << Range;
+  }
+  void warn(WarnType T, SourceRange Range, bool Possibly) final {
+    assert((unsigned)T < sizeof(Warnings) / sizeof(Warnings[0]));
+    assert(T != WarnType::Dangling && T != WarnType::Null);
+    if (enableIfNew(Range))
+      S.Diag(Range.getBegin(), Warnings[(int)T]) << Possibly << Range;
+  }
+  void warnNonStaticThrow(SourceRange Range, StringRef ThrownPset) final {
+    if (enableIfNew(Range))
+      S.Diag(Range.getBegin(), diag::warn_non_static_throw)
+          << ThrownPset << Range;
+  }
+  void warnWrongPset(SourceRange Range, ValueSource Source, StringRef ValueName,
+                     StringRef RetPset, StringRef ExpectedPset) final {
+    if (enableIfNew(Range))
+      S.Diag(Range.getBegin(), diag::warn_wrong_pset)
+          << (int)Source << ValueName << RetPset << ExpectedPset << Range;
+  }
+  void warnPointerArithmetic(SourceRange Range) final {
+    if (enableIfNew(Range))
+      S.Diag(Range.getBegin(), diag::warn_lifetime_pointer_arithmetic);
+  }
+  void warnUnsafeCast(SourceRange Range) final {
+    if (enableIfNew(Range))
+      S.Diag(Range.getBegin(), diag::warn_lifetime_unsafe_cast);
+  }
+
+  void warnUnsupportedExpr(SourceRange Range) final {
+    if (enableIfNew(Range))
+      S.Diag(Range.getBegin(), diag::warn_unsupported_expression) << Range;
+  }
+  void notePointeeLeftScope(SourceRange Range, std::string Name) final {
+    if (!IgnoreCurrentWarning)
+      S.Diag(Range.getBegin(), diag::note_pointee_left_scope) << Name << Range;
+  }
+  void note(NoteType T, SourceRange Range) final {
+    assert((unsigned)T < sizeof(Notes) / sizeof(Notes[0]));
+    if (!IgnoreCurrentWarning)
+      S.Diag(Range.getBegin(), Notes[(int)T]) << Range;
+  }
+  void debugPset(SourceRange Range, StringRef Variable,
+                 std::string Pset) final {
+    S.Diag(Range.getBegin(), diag::warn_pset) << Variable << Pset << Range;
+  }
+
+  void debugTypeCategory(SourceRange Range, TypeCategory Category,
+                         StringRef Pointee) final {
+    S.Diag(Range.getBegin(), diag::warn_lifetime_type_category)
+        << (int)Category << !Pointee.empty() << Pointee;
+  }
+};
+} // namespace lifetime
+} // namespace clang
+
 //===----------------------------------------------------------------------===//
 // AnalysisBasedWarnings - Worker object used by Sema to execute analysis-based
 //  warnings on a function, method, or block.
@@ -2027,6 +2133,8 @@ clang::sema::AnalysisBasedWarnings::Policy::Policy() {
   enableCheckUnreachable = 0;
   enableThreadSafetyAnalysis = 0;
   enableConsumedAnalysis = 0;
+  enableLifetimeAnalysis = 0;
+  filterLifetimeWarnings = 0;
 }
 
 static unsigned isEnabled(DiagnosticsEngine &D, unsigned diag) {
@@ -2059,6 +2167,9 @@ clang::sema::AnalysisBasedWarnings::AnalysisBasedWarnings(Sema &s)
 
   DefaultPolicy.enableConsumedAnalysis =
     isEnabled(D, warn_use_in_invalid_state);
+
+  DefaultPolicy.enableLifetimeAnalysis = isEnabled(D, warn_deref_dangling);
+  DefaultPolicy.filterLifetimeWarnings = isEnabled(D, warn_lifetime_filtered);
 }
 
 static void flushDiagnostics(Sema &S, const sema::FunctionScopeInfo *fscope) {
@@ -2230,6 +2341,23 @@ AnalysisBasedWarnings::IssueWarnings(sema::AnalysisBasedWarnings::Policy P,
     consumed::ConsumedWarningsHandler WarningHandler(S);
     consumed::ConsumedAnalyzer Analyzer(WarningHandler);
     Analyzer.run(AC);
+  }
+
+  // Check for lifetime safety violations
+  if (P.enableLifetimeAnalysis && S.getLangOpts().CPlusPlus) {
+    auto isConvertible = [this, D](QualType From, QualType To) {
+      OpaqueValueExpr Expr(D->getBeginLoc(), From, VK_RValue);
+      ImplicitConversionSequence ICS = S.TryImplicitConversion(
+          &Expr, To, /*SuppressUserConversions=*/false,
+          Sema::AllowedExplicit::All,
+          /*InOverloadResolution=*/false, /*CStyle=*/false,
+          /*AllowObjCWritebackConversion=*/false);
+      return !ICS.isFailure();
+    };
+
+    lifetime::Reporter Reporter{S, (bool)P.filterLifetimeWarnings};
+    if (const auto *FD = dyn_cast<FunctionDecl>(D))
+      lifetime::runAnalysis(FD, S.Context, Reporter, isConvertible);
   }
 
   if (!Diags.isIgnored(diag::warn_uninit_var, D->getBeginLoc()) ||

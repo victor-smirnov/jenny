@@ -412,6 +412,19 @@ let Class = DecltypeType in {
   }]>;
 }
 
+let Class = ReflectedType in {
+  def : Property<"underlyingType", QualType> {
+    let Read = [{ node->getUnderlyingType() }];
+  }
+  def : Property<"reflection", ExprRef> {
+    let Read = [{ node->getReflection() }];
+  }
+
+  def : Creator<[{
+    return ctx.getDecltypeType(reflection, underlyingType);
+  }]>;
+}
+
 let Class = UnaryTransformType in {
   def : Property<"baseType", QualType> {
     let Read = [{ node->getBaseType() }];
@@ -723,6 +736,36 @@ let Class = PackExpansionType in {
 
   def : Creator<[{
     return ctx.getPackExpansionType(pattern, numExpansions);
+  }]>;
+}
+
+let Class = CXXDependentVariadicReifierType in {
+  def : Property<"range", ExprRef> {
+    let Read = [{ node->getRange() }];
+  }
+  def : Property<"keywordLoc", SourceLocation> {
+    let Read = [{ node->getBeginLoc() }];
+  }
+  def : Property<"ellipsisLoc", SourceLocation> {
+    let Read = [{ node->getEllipsisLoc() }];
+  }
+  def : Property<"rparenLoc", SourceLocation> {
+    let Read = [{ node->getEndLoc() }];
+  }
+
+  def : Creator<[{
+    return ctx.getCXXDependentVariadicReifierType(range, keywordLoc,
+                                                  ellipsisLoc, rparenLoc);
+  }]>;
+}
+
+let Class = CXXRequiredTypeType in {
+  def : Property<"declaration", DeclRef> {
+    let Read = [{ node->getDecl() }];
+  }
+
+  def : Creator<[{
+    return ctx.getCXXRequiredTypeType(cast<CXXRequiredTypeDecl>(declaration));
   }]>;
 }
 

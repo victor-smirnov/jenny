@@ -711,6 +711,8 @@ void USRGenerator::VisitType(QualType T) {
           c = 'Q'; break;
         case BuiltinType::NullPtr:
           c = 'n'; break;
+        case BuiltinType::MetaInfo:
+          c = 'm'; break;
 #define BUILTIN_TYPE(Id, SingletonId)
 #define PLACEHOLDER_TYPE(Id, SingletonId) case BuiltinType::Id:
 #include "clang/AST/BuiltinTypes.def"
@@ -961,6 +963,7 @@ void USRGenerator::VisitTemplateArgument(const TemplateArgument &Arg) {
     VisitTemplateName(Arg.getAsTemplateOrTemplatePattern());
     break;
 
+  case TemplateArgument::Reflected:
   case TemplateArgument::Expression:
     // FIXME: Visit expressions.
     break;

@@ -2115,6 +2115,7 @@ void OMPClausePrinter::VisitOMPAffinityClause(OMPAffinityClause *Node) {
 
 void OMPTraitInfo::getAsVariantMatchInfo(ASTContext &ASTCtx,
                                          VariantMatchInfo &VMI) const {
+  Expr::EvalContext EvalCtx(ASTCtx, nullptr);
   for (const OMPTraitSet &Set : Sets) {
     for (const OMPTraitSelector &Selector : Set.Selectors) {
 
@@ -2127,21 +2128,21 @@ void OMPTraitInfo::getAsVariantMatchInfo(ASTContext &ASTCtx,
                    TraitProperty::user_condition_unknown &&
                "Ill-formed user condition, expected unknown trait property!");
 
-        if (Optional<APSInt> CondVal =
-                Selector.ScoreOrCondition->getIntegerConstantExpr(ASTCtx))
-          VMI.addTrait(CondVal->isNullValue()
-                           ? TraitProperty::user_condition_false
-                           : TraitProperty::user_condition_true);
+        llvm::APSInt CondVal;
+        if (Selector.ScoreOrCondition->isIntegerConstantExpr(CondVal, EvalCtx))
+          VMI.addTrait(CondVal.isNullValue()
+                          ? TraitProperty::user_condition_false
+                          : TraitProperty::user_condition_true);
         else
           VMI.addTrait(TraitProperty::user_condition_false);
         continue;
       }
 
-      Optional<llvm::APSInt> Score;
+      llvm::APSInt Score;
       llvm::APInt *ScorePtr = nullptr;
       if (Selector.ScoreOrCondition) {
-        if ((Score = Selector.ScoreOrCondition->getIntegerConstantExpr(ASTCtx)))
-          ScorePtr = &*Score;
+        if (Selector.ScoreOrCondition->isIntegerConstantExpr(Score, EvalCtx))
+          ScorePtr = &Score;
         else
           VMI.addTrait(TraitProperty::user_condition_false);
       }

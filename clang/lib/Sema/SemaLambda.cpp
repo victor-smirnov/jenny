@@ -1562,7 +1562,8 @@ mapImplicitCaptureStyle(CapturingScopeInfo::ImplicitCaptureStyle ICS) {
 bool Sema::CaptureHasSideEffects(const Capture &From) {
   if (From.isInitCapture()) {
     Expr *Init = From.getVariable()->getInit();
-    if (Init && Init->HasSideEffects(Context))
+    Expr::EvalContext EvalCtx(Context, GetReflectionCallbackObj());
+    if (Init && Init->HasSideEffects(EvalCtx))
       return true;
   }
 
@@ -1623,8 +1624,8 @@ FieldDecl *Sema::BuildCaptureField(RecordDecl *RD,
 
   // Build the non-static data member.
   FieldDecl *Field =
-      FieldDecl::Create(Context, RD, Loc, Loc, nullptr, FieldType, TSI, nullptr,
-                        false, ICIS_NoInit);
+      FieldDecl::Create(Context, RD, Loc, Loc, DeclarationName(), FieldType,
+                        TSI, nullptr, false, ICIS_NoInit);
   // If the variable being captured has an invalid type, mark the class as
   // invalid as well.
   if (!FieldType->isDependentType()) {
@@ -1920,7 +1921,7 @@ ExprResult Sema::BuildBlockForLambdaConversion(SourceLocation CurrentLocation,
   TypeSourceInfo *CapVarTSI =
       Context.getTrivialTypeSourceInfo(Src->getType());
   VarDecl *CapVar = VarDecl::Create(Context, Block, ConvLocation,
-                                    ConvLocation, nullptr,
+                                    ConvLocation, DeclarationName(),
                                     Src->getType(), CapVarTSI,
                                     SC_None);
   BlockDecl::Capture Capture(/*variable=*/CapVar, /*byRef=*/false,

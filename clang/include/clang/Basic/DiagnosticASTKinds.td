@@ -354,12 +354,27 @@ def note_constexpr_unsupported_layout : Note<
 def err_experimental_clang_interp_failed : Error<
   "the experimental clang interpreter failed to evaluate an expression">;
 
+// Reflection errors
+def note_reflection_not_defined : Note<
+  "query is not defined for reflected %select{construct|type %1}0"
+  >;
+def note_reflection_query_unimplemented : Note<
+  "query is not yet implemented"
+  >;
+
+// [Meta] Compile-time code generation
+def note_injection_outside_constexpr_decl : Note<
+  "code injection outside of a constexpr-declaration">;
+
 def warn_integer_constant_overflow : Warning<
   "overflow in expression; result is %0 with type %1">,
   InGroup<DiagGroup<"integer-overflow">>;
 def warn_fixedpoint_constant_overflow : Warning<
   "overflow in expression; result is %0 with type %1">,
   InGroup<DiagGroup<"fixed-point-overflow">>;
+
+def err_injecting_non_decl_reflection : Error<
+  "cannot inject a reflection which does not reflect a declaration">;
 
 // This is a temporary diagnostic, and shall be removed once our
 // implementation is complete, and like the preceding constexpr notes belongs
@@ -579,4 +594,30 @@ def warn_padded_struct_size : Warning<
   InGroup<Padded>, DefaultIgnore;
 def warn_unnecessary_packed : Warning<
   "packed attribute is unnecessary for %0">, InGroup<Packed>, DefaultIgnore;
+
+// Reflection related issues
+let CategoryName = "Reflection Issue" in {
+def note_reflection_not_metadata : Note<
+  "expression does not have a reflection type; got '%0' instead">;
+def note_reflection_not_known : Note<
+  "expression does not reflect a construct">;
+def note_empty_reflection : Note<
+  "cannot compute properties of an empty reflection">;
+def note_reflection_not_declared : Note<
+  "reflected %select{entity|construct}0 is not a declaration">;
+def note_reflection_not_nested : Note<
+  "reflected declaration does not contain other declarations">;
+def note_reflection_not_named : Note<
+  "reflected %select{entity|construct}0 does not have a name">;
+def note_reflection_not_typed : Note<
+  "reflected %select{entity|construct}0 does not have a type">;
+def note_reflection_not_valued : Note<
+  "reflected %select{entity|construct}0 does not have a value">;
+def note_reflection_no_members : Note<
+  "reflected %select{declaration|entity|construct}0 does not have members">;
+def note_assignment_to_object_of_different_type : Note<
+  "cannot assign to an object of different type">;
+def err_user_defined_error : Error<"%0">;
+}
+
 }

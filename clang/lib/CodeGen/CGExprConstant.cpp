@@ -1169,6 +1169,8 @@ public:
     case CK_IntegralToFixedPoint:
     case CK_ZeroToOCLOpaqueType:
       return nullptr;
+    case CK_ReflectionToBoolean:
+      llvm_unreachable("reflection emitted as runtime value");
     }
     llvm_unreachable("Invalid CastKind");
   }
@@ -1712,13 +1714,13 @@ llvm::Constant *ConstantEmitter::emitForMemory(CodeGenModule &CGM,
 llvm::Constant *ConstantEmitter::tryEmitPrivate(const Expr *E,
                                                 QualType destType) {
   Expr::EvalResult Result;
-
+  Expr::EvalContext EvalCtx(CGM.getContext(), nullptr);
   bool Success = false;
 
   if (destType->isReferenceType())
-    Success = E->EvaluateAsLValue(Result, CGM.getContext());
+    Success = E->EvaluateAsLValue(Result, EvalCtx);
   else
-    Success = E->EvaluateAsRValue(Result, CGM.getContext(), InConstantContext);
+    Success = E->EvaluateAsRValue(Result, EvalCtx, InConstantContext);
 
   llvm::Constant *C;
   if (Success && !Result.HasSideEffects)
@@ -2035,6 +2037,10 @@ llvm::Constant *ConstantEmitter::tryEmitPrivate(const APValue &Value,
   case APValue::FixedPoint:
     return llvm::ConstantInt::get(CGM.getLLVMContext(),
                                   Value.getFixedPoint().getValue());
+  case APValue::Reflection:
+  case APValue::Fragment:
+    // FIXME: Could this branch be reached?
+    llvm_unreachable("Reflections should not be codegened.");
   case APValue::ComplexInt: {
     llvm::Constant *Complex[2];
 

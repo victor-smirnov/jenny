@@ -172,7 +172,8 @@ calculateConstraintSatisfaction(Sema &S, const Expr *ConstraintExpr,
   SmallVector<PartialDiagnosticAt, 2> EvaluationDiags;
   Expr::EvalResult EvalResult;
   EvalResult.Diag = &EvaluationDiags;
-  if (!SubstitutedAtomicExpr.get()->EvaluateAsRValue(EvalResult, S.Context)) {
+  Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
+  if (!SubstitutedAtomicExpr.get()->EvaluateAsRValue(EvalResult, EvalCtx)) {
       // C++2a [temp.constr.atomic]p1
       //   ...E shall be a constant expression of type bool.
     S.Diag(SubstitutedAtomicExpr.get()->getBeginLoc(),
@@ -522,9 +523,10 @@ static void diagnoseWellFormedUnsatisfiedConstraintExpr(Sema &S,
       diagnoseWellFormedUnsatisfiedConstraintExpr(S, BO->getRHS(),
                                                   /*First=*/false);
       return;
-    case BO_LAnd:
+    case BO_LAnd: {
       bool LHSSatisfied;
-      BO->getLHS()->EvaluateAsBooleanCondition(LHSSatisfied, S.Context);
+      Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
+      BO->getLHS()->EvaluateAsBooleanCondition(LHSSatisfied, EvalCtx);
       if (LHSSatisfied) {
         // LHS is true, so RHS must be false.
         diagnoseWellFormedUnsatisfiedConstraintExpr(S, BO->getRHS(), First);
@@ -535,23 +537,25 @@ static void diagnoseWellFormedUnsatisfiedConstraintExpr(Sema &S,
 
       // RHS might also be false
       bool RHSSatisfied;
-      BO->getRHS()->EvaluateAsBooleanCondition(RHSSatisfied, S.Context);
+      BO->getRHS()->EvaluateAsBooleanCondition(RHSSatisfied, EvalCtx);
       if (!RHSSatisfied)
         diagnoseWellFormedUnsatisfiedConstraintExpr(S, BO->getRHS(),
                                                     /*First=*/false);
       return;
+    }
     case BO_GE:
     case BO_LE:
     case BO_GT:
     case BO_LT:
     case BO_EQ:
-    case BO_NE:
+    case BO_NE: {
       if (BO->getLHS()->getType()->isIntegerType() &&
           BO->getRHS()->getType()->isIntegerType()) {
         Expr::EvalResult SimplifiedLHS;
         Expr::EvalResult SimplifiedRHS;
-        BO->getLHS()->EvaluateAsInt(SimplifiedLHS, S.Context);
-        BO->getRHS()->EvaluateAsInt(SimplifiedRHS, S.Context);
+        Expr::EvalContext EvalCtx(S.Context, S.GetReflectionCallbackObj());
+        BO->getLHS()->EvaluateAsInt(SimplifiedLHS, EvalCtx);
+        BO->getRHS()->EvaluateAsInt(SimplifiedRHS, EvalCtx);
         if (!SimplifiedLHS.Diag && ! SimplifiedRHS.Diag) {
           S.Diag(SubstExpr->getBeginLoc(),
                  diag::note_atomic_constraint_evaluated_to_false_elaborated)
@@ -563,6 +567,7 @@ static void diagnoseWellFormedUnsatisfiedConstraintExpr(Sema &S,
         }
       }
       break;
+    }
 
     default:
       break;

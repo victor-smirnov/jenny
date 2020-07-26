@@ -49,6 +49,7 @@ namespace {
 
     void PrintObjCTypeParams(ObjCTypeParamList *Params);
 
+    void PrintFunctionBody(FunctionDecl *D, PrintingPolicy &SubPolicy);
   public:
     DeclPrinter(raw_ostream &Out, const PrintingPolicy &Policy,
                 const ASTContext &Context, unsigned Indentation = 0,
@@ -77,6 +78,8 @@ namespace {
     void VisitNamespaceDecl(NamespaceDecl *D);
     void VisitUsingDirectiveDecl(UsingDirectiveDecl *D);
     void VisitNamespaceAliasDecl(NamespaceAliasDecl *D);
+    void VisitCXXRequiredTypeDecl(CXXRequiredTypeDecl *D);
+    void VisitCXXRequiredDeclaratorDecl(CXXRequiredDeclaratorDecl *D);
     void VisitCXXRecordDecl(CXXRecordDecl *D);
     void VisitLinkageSpecDecl(LinkageSpecDecl *D);
     void VisitTemplateDecl(const TemplateDecl *D);
@@ -107,6 +110,8 @@ namespace {
     void VisitOMPCapturedExprDecl(OMPCapturedExprDecl *D);
     void VisitTemplateTypeParmDecl(const TemplateTypeParmDecl *TTP);
     void VisitNonTypeTemplateParmDecl(const NonTypeTemplateParmDecl *NTTP);
+    void VisitCXXMetaprogramDecl(CXXMetaprogramDecl *D);
+    void VisitCXXInjectionDecl(CXXInjectionDecl *D);
 
     void printTemplateParameters(const TemplateParameterList *Params,
                                  bool OmitTemplateKW = false);
@@ -313,15 +318,23 @@ void DeclPrinter::PrintConstructorInitializers(CXXConstructorDecl *CDecl,
     if (BMInitializer->isAnyMemberInitializer()) {
       FieldDecl *FD = BMInitializer->getAnyMember();
       Out << *FD;
+    } else if (BMInitializer->isDelegatingInitializer()) {
+      Out << CDecl->getTargetConstructor()->getDeclName();
     } else {
+      assert(BMInitializer->isBaseInitializer());
       Out << QualType(BMInitializer->getBaseClass(), 0).getAsString(Policy);
     }
 
-    Out << "(";
-    if (!BMInitializer->getInit()) {
+    Expr *Init = BMInitializer->getInit();
+
+    bool UsesParens = !Init || !isa<InitListExpr>(Init);
+    char OpeningToken = UsesParens ? '(' : '{';
+    char ClosingToken = UsesParens ? ')' : '}';
+
+    Out << OpeningToken;
+    if (!Init) {
       // Nothing to print
     } else {
-      Expr *Init = BMInitializer->getInit();
       if (ExprWithCleanups *Tmp = dyn_cast<ExprWithCleanups>(Init))
         Init = Tmp->getSubExpr();
 
@@ -333,6 +346,9 @@ void DeclPrinter::PrintConstructorInitializers(CXXConstructorDecl *CDecl,
       if (ParenListExpr *ParenList = dyn_cast<ParenListExpr>(Init)) {
         Args = ParenList->getExprs();
         NumArgs = ParenList->getNumExprs();
+      } else if (InitListExpr *InitList = dyn_cast<InitListExpr>(Init)) {
+        Args = InitList->getInits();
+        NumArgs = InitList->getNumInits();
       } else if (CXXConstructExpr *Construct =
                      dyn_cast<CXXConstructExpr>(Init)) {
         Args = Construct->getArgs();
@@ -354,7 +370,7 @@ void DeclPrinter::PrintConstructorInitializers(CXXConstructorDecl *CDecl,
         }
       }
     }
-    Out << ")";
+    Out << ClosingToken;
     if (BMInitializer->isPackExpansion())
       Out << "...";
   }
@@ -370,6 +386,13 @@ void DeclPrinter::VisitDeclContext(DeclContext *DC, bool Indent) {
 
   if (Indent)
     Indentation += Policy.Indentation;
+
+  // Maintain a current access specifier so that we can generate new
+  // access specifiers to represent state changes resulting from source
+  // code injections.
+  AccessSpecifier CurrentAccess;
+  if (CXXRecordDecl *Class = dyn_cast<CXXRecordDecl>(DC))
+    CurrentAccess = Class->isClass() ? AS_private : AS_public;
 
   SmallVector<Decl*, 2> Decls;
   for (DeclContext::decl_iterator D = DC->decls_begin(), DEnd = DC->decls_end();
@@ -390,6 +413,19 @@ void DeclPrinter::VisitDeclContext(DeclContext *DC, bool Indent) {
       if (FD->getTemplateSpecializationKind() == TSK_ImplicitInstantiation &&
           !isa<ClassTemplateSpecializationDecl>(DC))
         continue;
+
+    // Do not print injector decls, unless in a dependent context where
+    // they haven't been evaluated.
+    if (isa<CXXInjectorDecl>(*D)) {
+      // FIXME: Should we give them access specifier rules instead?
+      // Handle this here as injectors do not have access specifiers.
+      if (DC->isDependentContext()) {
+        this->Indent();
+        Visit(*D);
+        Out << "\n";
+      }
+      continue;
+    }
 
     // The next bits of code handle stuff like "struct {int x;} a,b"; we're
     // forced to merge the declarations because there's no other way to
@@ -430,7 +466,20 @@ void DeclPrinter::VisitDeclContext(DeclContext *DC, bool Indent) {
       Print(D->getAccess());
       Out << ":\n";
       Indentation += Policy.Indentation;
+
+      CurrentAccess = D->getAccess();
       continue;
+    }
+
+    if (isa<CXXRecordDecl>(DC) && D->getAccess() != AS_none
+        && D->getAccess() != CurrentAccess) {
+      Indentation -= Policy.Indentation;
+      this->Indent();
+      Print(D->getAccess());
+      Out << ":\n";
+      Indentation += Policy.Indentation;
+
+      CurrentAccess = D->getAccess();
     }
 
     this->Indent();
@@ -445,7 +494,7 @@ void DeclPrinter::VisitDeclContext(DeclContext *DC, bool Indent) {
     else if (isa<ObjCMethodDecl>(*D) && cast<ObjCMethodDecl>(*D)->hasBody())
       Terminator = nullptr;
     else if (auto FD = dyn_cast<FunctionDecl>(*D)) {
-      if (FD->isThisDeclarationADefinition())
+      if (FD->doesThisDeclarationHaveAPrintableBody())
         Terminator = nullptr;
       else
         Terminator = ";";
@@ -473,7 +522,7 @@ void DeclPrinter::VisitDeclContext(DeclContext *DC, bool Indent) {
       Out << Terminator;
     if (!Policy.TerseOutput &&
         ((isa<FunctionDecl>(*D) &&
-          cast<FunctionDecl>(*D)->doesThisDeclarationHaveABody()) ||
+          cast<FunctionDecl>(*D)->doesThisDeclarationHaveAPrintableBody()) ||
          (isa<FunctionTemplateDecl>(*D) &&
           cast<FunctionTemplateDecl>(*D)->getTemplatedDecl()->doesThisDeclarationHaveABody())))
       ; // StmtPrinter already added '\n' after CompoundStmt.
@@ -714,20 +763,22 @@ void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
         }
       Proto += ")";
     } else if (FT && isNoexceptExceptionSpec(FT->getExceptionSpecType())) {
-      Proto += " noexcept";
-      if (isComputedNoexcept(FT->getExceptionSpecType())) {
-        Proto += "(";
-        llvm::raw_string_ostream EOut(Proto);
-        FT->getNoexceptExpr()->printPretty(EOut, nullptr, SubPolicy,
-                                           Indentation);
-        EOut.flush();
-        Proto += EOut.str();
-        Proto += ")";
+      if (!D->isExplicitlyDefaulted()) {
+        Proto += " noexcept";
+        if (isComputedNoexcept(FT->getExceptionSpecType())) {
+          Proto += "(";
+          llvm::raw_string_ostream EOut(Proto);
+          FT->getNoexceptExpr()->printPretty(EOut, nullptr, SubPolicy,
+                                             Indentation);
+          EOut.flush();
+          Proto += EOut.str();
+          Proto += ")";
+        }
       }
     }
 
     if (CDecl) {
-      if (!Policy.TerseOutput)
+      if (!Policy.TerseOutput && !D->isExplicitlyDefaulted())
         PrintConstructorInitializers(CDecl, Proto);
     } else if (!ConversionDecl && !isa<CXXDestructorDecl>(D)) {
       if (FT && FT->hasTrailingReturn()) {
@@ -757,28 +808,12 @@ void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
     Out << " = delete";
   else if (D->isExplicitlyDefaulted())
     Out << " = default";
-  else if (D->doesThisDeclarationHaveABody()) {
-    if (!Policy.TerseOutput) {
-      if (!D->hasPrototype() && D->getNumParams()) {
-        // This is a K&R function definition, so we need to print the
-        // parameters.
-        Out << '\n';
-        DeclPrinter ParamPrinter(Out, SubPolicy, Context, Indentation);
-        Indentation += Policy.Indentation;
-        for (unsigned i = 0, e = D->getNumParams(); i != e; ++i) {
-          Indent();
-          ParamPrinter.VisitParmVarDecl(D->getParamDecl(i));
-          Out << ";\n";
-        }
-        Indentation -= Policy.Indentation;
-      } else
-        Out << ' ';
-
-      if (D->getBody())
-        D->getBody()->printPretty(Out, nullptr, SubPolicy, Indentation);
-    } else {
-      if (!Policy.TerseOutput && isa<CXXConstructorDecl>(*D))
-        Out << " {}";
+  else if (D->doesThisDeclarationHaveAPrintableBody()) {
+    // Figure out how exactly it's printable
+    if (D->doesThisDeclarationHaveABody())
+      PrintFunctionBody(D, SubPolicy);
+    else if (FunctionDecl *Pattern = D->getInstantiatedFromMemberFunction()) {
+      PrintFunctionBody(Pattern, SubPolicy);
     }
   }
 }
@@ -950,6 +985,25 @@ void DeclPrinter::VisitNamespaceAliasDecl(NamespaceAliasDecl *D) {
   if (D->getQualifier())
     D->getQualifier()->print(Out, Policy);
   Out << *D->getAliasedNamespace();
+}
+
+void
+DeclPrinter::VisitCXXRequiredTypeDecl(CXXRequiredTypeDecl *D) {
+  Out << "requires ";
+  if (D->wasDeclaredWithTypename())
+    Out << "typename ";
+  else
+    Out << "class ";
+
+  QualType T = QualType(D->getTypeForDecl(), 0);
+  printDeclType(T, D->getName());
+}
+
+void
+DeclPrinter::VisitCXXRequiredDeclaratorDecl(CXXRequiredDeclaratorDecl *D) {
+  Out << "requires ";
+  QualType T = D->getTypeSourceInfo()->getType();
+  printDeclType(T, D->getName());
 }
 
 void DeclPrinter::VisitEmptyDecl(EmptyDecl *D) {
@@ -1223,6 +1277,33 @@ void DeclPrinter::PrintObjCTypeParams(ObjCTypeParamList *Params) {
     }
   }
   Out << ">";
+}
+
+void DeclPrinter::PrintFunctionBody(FunctionDecl *D, PrintingPolicy &SubPolicy) {
+  assert(D->doesThisDeclarationHaveABody());
+
+  if (!Policy.TerseOutput) {
+    if (!D->hasPrototype() && D->getNumParams()) {
+      // This is a K&R function definition, so we need to print the
+      // parameters.
+      Out << '\n';
+      DeclPrinter ParamPrinter(Out, SubPolicy, Context, Indentation);
+      Indentation += Policy.Indentation;
+      for (unsigned i = 0, e = D->getNumParams(); i != e; ++i) {
+        Indent();
+        ParamPrinter.VisitParmVarDecl(D->getParamDecl(i));
+        Out << ";\n";
+      }
+      Indentation -= Policy.Indentation;
+    } else
+      Out << ' ';
+
+    if (D->getBody())
+      D->getBody()->printPretty(Out, nullptr, SubPolicy, Indentation);
+  } else {
+    if (!Policy.TerseOutput && isa<CXXConstructorDecl>(*D))
+      Out << " {}";
+  }
 }
 
 void DeclPrinter::VisitObjCMethodDecl(ObjCMethodDecl *OMD) {
@@ -1717,4 +1798,24 @@ void DeclPrinter::VisitNonTypeTemplateParmDecl(
     Out << " = ";
     NTTP->getDefaultArgument()->printPretty(Out, nullptr, Policy, Indentation);
   }
+}
+
+void DeclPrinter::VisitCXXMetaprogramDecl(CXXMetaprogramDecl *D) {
+  Out << "consteval {\n";
+
+  Indentation += Policy.Indentation;
+  // FIXME: This adds extra brackets.
+  cast<CompoundStmt>(D->getBody())->printPretty(Out, nullptr, Policy, Indentation);
+  Indentation -= Policy.Indentation;
+
+  Indent();
+  Out << "};";
+}
+
+void DeclPrinter::VisitCXXInjectionDecl(CXXInjectionDecl *D) {
+  Out << "consteval ";
+  PrintingPolicy SubPolicy(Policy);
+  SubPolicy.IncludeNewlines = false;
+  D->getInjectionStmt()->printPretty(Out, nullptr, SubPolicy, 0);
+  Out << ";";
 }

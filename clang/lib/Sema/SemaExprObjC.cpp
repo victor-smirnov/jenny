@@ -942,8 +942,9 @@ CheckObjCDictionaryLiteralDuplicateKeys(Sema &S,
       }
 
       Expr::EvalResult Result;
-      if (Boxed->EvaluateAsInt(Result, S.getASTContext(),
-                               Expr::SE_AllowSideEffects)) {
+      Expr::EvalContext EvalCtx(
+          S.getASTContext(), S.GetReflectionCallbackObj());
+      if (Boxed->EvaluateAsInt(Result, EvalCtx, Expr::SE_AllowSideEffects)) {
         checkOneKey(IntegralKeys, Result.Val.getInt(), Loc);
       }
     }

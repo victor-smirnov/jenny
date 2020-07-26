@@ -288,6 +288,14 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
     K = CXCursor_SEHLeaveStmt;
     break;
 
+  case Stmt::CXXCompositeExpansionStmtClass:
+  case Stmt::CXXPackExpansionStmtClass:
+  case Stmt::CXXInjectionStmtClass:
+  case Stmt::CXXBaseInjectionStmtClass:
+    // FIXME: These should be exposed.
+    K = CXCursor_UnexposedStmt;
+    break;
+
   case Stmt::CoroutineBodyStmtClass:
   case Stmt::CoreturnStmtClass:
     K = CXCursor_UnexposedStmt;
@@ -308,6 +316,21 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::CXXDefaultInitExprClass:
   case Stmt::CXXFoldExprClass:
   case Stmt::CXXRewrittenBinaryOperatorClass:
+  case Stmt::CXXReflectExprClass:
+  case Stmt::CXXInvalidReflectionExprClass:
+  case Stmt::CXXReflectionReadQueryExprClass:
+  case Stmt::CXXReflectionWriteQueryExprClass:
+  case Stmt::CXXReflectPrintLiteralExprClass:
+  case Stmt::CXXReflectPrintReflectionExprClass:
+  case Stmt::CXXReflectDumpReflectionExprClass:
+  case Stmt::CXXIdExprExprClass:
+  case Stmt::CXXMemberIdExprExprClass:
+  case Stmt::CXXValueOfExprClass:
+  case Stmt::CXXDependentSpliceIdExprClass:
+  case Stmt::CXXConcatenateExprClass:
+  case Stmt::CXXDependentVariadicReifierExprClass:
+  case Stmt::CXXSelectMemberExprClass:
+  case Stmt::CXXSelectPackExprClass:
   case Stmt::CXXStdInitializerListExprClass:
   case Stmt::CXXScalarValueInitExprClass:
   case Stmt::CXXUuidofExprClass:
@@ -336,6 +359,9 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::ObjCBoxedExprClass:
   case Stmt::ObjCSubscriptRefExprClass:
   case Stmt::RecoveryExprClass:
+  case Stmt::CXXCompilerErrorExprClass:
+  case Stmt::CXXFragmentExprClass:
+  case Stmt::CXXFragmentCaptureExprClass:
     K = CXCursor_UnexposedExpr;
     break;
 
@@ -1383,6 +1409,8 @@ enum CXTemplateArgumentKind clang_Cursor_getTemplateArgumentKind(CXCursor C,
     return CXTemplateArgumentKind_Expression;
   case TemplateArgument::Pack:
     return CXTemplateArgumentKind_Pack;
+  case TemplateArgument::Reflected:
+    return CXTemplateArgumentKind_Reflected;
   }
 
   return CXTemplateArgumentKind_Invalid;

@@ -456,6 +456,25 @@ public:
       Visit(C);
   }
 
+  void VisitCXXMetaprogramDecl(const CXXMetaprogramDecl *D) {
+    if (D->hasBody())
+      Visit(D->getBody());
+    // if (D->hasInjectedStmt())
+    //   Visit(D->getInjectedStmt());
+  }
+
+  void VisitCXXInjectionDecl(const CXXInjectionDecl *D) {
+    if (D->hasBody())
+      Visit(D->getBody());
+    // if (D->hasInjectedStmt())
+    //   Visit(D->getInjectedStmt());
+  }
+
+  void VisitCXXStmtFragmentDecl(const CXXStmtFragmentDecl *D) {
+    if (D->hasBody())
+      Visit(D->getBody());
+  }
+
   template <typename SpecializationDecl>
   void dumpTemplateDeclSpecialization(const SpecializationDecl *D) {
     for (const auto *RedeclWithBadType : D->redecls()) {
@@ -555,10 +574,11 @@ public:
   void VisitNonTypeTemplateParmDecl(const NonTypeTemplateParmDecl *D) {
     if (const auto *E = D->getPlaceholderTypeConstraint())
       Visit(E);
-    if (D->hasDefaultArgument())
-      Visit(D->getDefaultArgument(), SourceRange(),
-            D->getDefaultArgStorage().getInheritedFrom(),
+    if (D->hasDefaultArgument()) {
+      TemplateArgument Arg(D->getDefaultArgument(), TemplateArgument::Expression);
+      Visit(Arg, SourceRange(), D->getDefaultArgStorage().getInheritedFrom(),
             D->defaultArgumentWasInherited() ? "inherited from" : "previous");
+    }
   }
 
   void VisitTemplateTemplateParmDecl(const TemplateTemplateParmDecl *D) {

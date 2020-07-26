@@ -69,6 +69,7 @@ using namespace clang::tblgen;
 #define TypeMacroArgs "(Class, Base)"
 #define LastTypeMacroName "LAST_TYPE"
 #define LeafTypeMacroName "LEAF_TYPE"
+#define MetaTypeMacroName "META_TYPE"
 
 #define TypeClassName "Type"
 
@@ -112,8 +113,9 @@ void TypeNodeEmitter::emit() {
   emitFallbackDefine(AbstractTypeMacroName, TypeMacroName, TypeMacroArgs);
   emitFallbackDefine(NonCanonicalTypeMacroName, TypeMacroName, TypeMacroArgs);
   emitFallbackDefine(DependentTypeMacroName, TypeMacroName, TypeMacroArgs);
-  emitFallbackDefine(NonCanonicalUnlessDependentTypeMacroName, TypeMacroName, 
+  emitFallbackDefine(NonCanonicalUnlessDependentTypeMacroName, TypeMacroName,
                      TypeMacroArgs);
+  emitFallbackDefine(MetaTypeMacroName, DependentTypeMacroName, TypeMacroArgs);
 
   // Invocations.
   emitNodeInvocations();
@@ -158,6 +160,8 @@ void TypeNodeEmitter::emitNodeInvocations() {
       setMacroName(NonCanonicalTypeMacroName);
     if (type.isSubClassOf(NeverCanonicalUnlessDependentClassName))
       setMacroName(NonCanonicalUnlessDependentTypeMacroName);
+    if (type.isSubClassOf(MetaTypeClassName))
+      setMacroName(MetaTypeMacroName);
     if (type.isAbstract())
       setMacroName(AbstractTypeMacroName);
     if (macroName.empty())

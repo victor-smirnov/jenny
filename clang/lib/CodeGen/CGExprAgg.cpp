@@ -212,6 +212,10 @@ public:
     RValue Res = CGF.EmitAtomicExpr(E);
     EmitFinalDestCopy(E->getType(), Res);
   }
+
+  void VisitCXXFragmentExpr(CXXFragmentExpr *E) {
+    return; // nothing to do.
+  }
 };
 }  // end anonymous namespace.
 
@@ -894,6 +898,7 @@ void AggExprEmitter::VisitCastExpr(CastExpr *E) {
   case CK_IntegralComplexToBoolean:
   case CK_IntegralComplexCast:
   case CK_IntegralComplexToFloatingComplex:
+  case CK_ReflectionToBoolean:
   case CK_ARCProduceObject:
   case CK_ARCConsumeObject:
   case CK_ARCReclaimReturnedObject:
@@ -1164,8 +1169,8 @@ void AggExprEmitter::VisitBinAssign(const BinaryOperator *E) {
   // potentially cause a block copy, we need to evaluate the RHS first
   // so that the assignment goes the right place.
   // This is pretty semantically fragile.
-  if (isBlockVarRef(E->getLHS()) &&
-      E->getRHS()->HasSideEffects(CGF.getContext())) {
+  Expr::EvalContext EvalCtx(CGF.getContext(), nullptr);
+  if (isBlockVarRef(E->getLHS()) && E->getRHS()->HasSideEffects(EvalCtx)) {
     // Ensure that we have a destination, and evaluate the RHS into that.
     EnsureDest(E->getRHS()->getType());
     Visit(E->getRHS());
@@ -1387,10 +1392,12 @@ static bool isSimpleZero(const Expr *E, CodeGenFunction &CGF) {
       CGF.getTypes().isZeroInitializable(E->getType()))
     return true;
   // (int*)0 - Null pointer expressions.
-  if (const CastExpr *ICE = dyn_cast<CastExpr>(E))
+  if (const CastExpr *ICE = dyn_cast<CastExpr>(E)) {
+    Expr::EvalContext EvalCtx(CGF.getContext(), nullptr);
     return ICE->getCastKind() == CK_NullToPointer &&
            CGF.getTypes().isPointerZeroInitializable(E->getType()) &&
-           !E->HasSideEffects(CGF.getContext());
+           !E->HasSideEffects(EvalCtx);
+  }
   // '\0'
   if (const CharacterLiteral *CL = dyn_cast<CharacterLiteral>(E))
     return CL->getValue() == 0;

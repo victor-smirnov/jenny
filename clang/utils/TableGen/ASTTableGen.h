@@ -38,6 +38,7 @@
 #define NeverCanonicalClassName "NeverCanonical"
 #define NeverCanonicalUnlessDependentClassName "NeverCanonicalUnlessDependent"
 #define LeafTypeClassName "LeafType"
+#define MetaTypeClassName "MetaType"
 
 // Cases of various non-ASTNode structured types like DeclarationName.
 #define TypeKindClassName "PropertyTypeKind"

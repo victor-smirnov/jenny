@@ -102,6 +102,7 @@ void ODRHash::AddDeclarationNameImpl(DeclarationName Name) {
     if (Template) {
       AddDecl(Template);
     }
+    break;
   }
   }
 }
@@ -174,6 +175,7 @@ void ODRHash::AddTemplateArgument(TemplateArgument TA) {
     case TemplateArgument::TemplateExpansion:
       AddTemplateName(TA.getAsTemplateOrTemplatePattern());
       break;
+    case TemplateArgument::Reflected:
     case TemplateArgument::Expression:
       AddStmt(TA.getAsExpr());
       break;
@@ -960,6 +962,12 @@ public:
 
   void VisitPackExpansionType(const PackExpansionType *T) {
     AddQualType(T->getPattern());
+    VisitType(T);
+  }
+
+  void VisitCXXDependentVariadicReifierType
+  (const CXXDependentVariadicReifierType *T) {
+    AddQualType(T->getRange()->getType());
     VisitType(T);
   }
 

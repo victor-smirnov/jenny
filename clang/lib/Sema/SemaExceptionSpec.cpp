@@ -1358,6 +1358,8 @@ CanThrowResult Sema::canThrow(const Stmt *S) {
   case Expr::ObjCAvailabilityCheckExprClass:
   case Expr::OffsetOfExprClass:
   case Expr::PackExpansionExprClass:
+  case Expr::CXXSelectMemberExprClass:
+  case Expr::CXXSelectPackExprClass:
   case Expr::SubstNonTypeTemplateParmExprClass:
   case Expr::SubstNonTypeTemplateParmPackExprClass:
   case Expr::FunctionParmPackExprClass:
@@ -1365,6 +1367,8 @@ CanThrowResult Sema::canThrow(const Stmt *S) {
   case Expr::UnresolvedLookupExprClass:
   case Expr::UnresolvedMemberExprClass:
   case Expr::TypoExprClass:
+  case Expr::CXXFragmentExprClass:
+  case Expr::CXXFragmentCaptureExprClass:
     // FIXME: Many of the above can throw.
     return CT_Cannot;
 
@@ -1399,6 +1403,20 @@ CanThrowResult Sema::canThrow(const Stmt *S) {
   case Expr::SourceLocExprClass:
   case Expr::ConceptSpecializationExprClass:
   case Expr::RequiresExprClass:
+  case Expr::CXXReflectExprClass:
+  case Expr::CXXInvalidReflectionExprClass:
+  case Expr::CXXReflectionReadQueryExprClass:
+  case Expr::CXXReflectionWriteQueryExprClass:
+  case Expr::CXXReflectPrintLiteralExprClass:
+  case Expr::CXXReflectPrintReflectionExprClass:
+  case Expr::CXXReflectDumpReflectionExprClass:
+  case Expr::CXXCompilerErrorExprClass:
+  case Expr::CXXIdExprExprClass:
+  case Expr::CXXMemberIdExprExprClass:
+  case Expr::CXXDependentSpliceIdExprClass:
+  case Expr::CXXValueOfExprClass:
+  case Expr::CXXConcatenateExprClass:
+  case Expr::CXXDependentVariadicReifierExprClass:
     // These expressions can never throw.
     return CT_Cannot;
 
@@ -1415,8 +1433,12 @@ CanThrowResult Sema::canThrow(const Stmt *S) {
   case Stmt::ContinueStmtClass:
   case Stmt::CoreturnStmtClass:
   case Stmt::CoroutineBodyStmtClass:
+  case Stmt::CXXBaseInjectionStmtClass:
   case Stmt::CXXCatchStmtClass:
+  case Stmt::CXXCompositeExpansionStmtClass:
   case Stmt::CXXForRangeStmtClass:
+  case Stmt::CXXInjectionStmtClass:
+  case Stmt::CXXPackExpansionStmtClass:
   case Stmt::DefaultStmtClass:
   case Stmt::DoStmtClass:
   case Stmt::ForStmtClass:

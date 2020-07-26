@@ -13,6 +13,7 @@
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTMutationListener.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclarationName.h"
 #include "clang/AST/Expr.h"
@@ -521,6 +522,20 @@ void ClassTemplateDecl::AddPartialSpecialization(
       = getPartialSpecializations().GetOrInsertNode(D);
     (void)Existing;
     assert(Existing->isCanonicalDecl() && "Non-canonical specialization?");
+  }
+
+  // Inherit [[gsl::Owner]]/[[gsl::Pointer]] if D hasn't one of them already.
+  if (!D->hasAttr<OwnerAttr>() && !D->hasAttr<PointerAttr>()) {
+    if(auto *AT = getTemplatedDecl()->getAttr<OwnerAttr>()) {
+      D->addAttr(OwnerAttr::CreateImplicit(getASTContext(),
+                                           AT->getDerefTypeLoc(),
+                                           AT->getLocation()));
+
+    } else if(auto *AT = getTemplatedDecl()->getAttr<PointerAttr>()) {
+      D->addAttr(PointerAttr::CreateImplicit(getASTContext(),
+                                             AT->getDerefTypeLoc(),
+                                             AT->getLocation()));
+    }
   }
 
   if (ASTMutationListener *L = getASTMutationListener())
@@ -1225,17 +1240,18 @@ VarTemplateDecl::findPartialSpecInstantiatedFromMember(
 
 VarTemplateSpecializationDecl::VarTemplateSpecializationDecl(
     Kind DK, ASTContext &Context, DeclContext *DC, SourceLocation StartLoc,
-    SourceLocation IdLoc, VarTemplateDecl *SpecializedTemplate, QualType T,
+    SourceLocation NameLoc, VarTemplateDecl *SpecializedTemplate, QualType T,
     TypeSourceInfo *TInfo, StorageClass S, ArrayRef<TemplateArgument> Args)
-    : VarDecl(DK, Context, DC, StartLoc, IdLoc,
-              SpecializedTemplate->getIdentifier(), T, TInfo, S),
+    : VarDecl(DK, Context, DC, StartLoc,
+              NameLoc, SpecializedTemplate->getDeclName(), T, TInfo, S),
       SpecializedTemplate(SpecializedTemplate),
       TemplateArgs(TemplateArgumentList::CreateCopy(Context, Args)),
       SpecializationKind(TSK_Undeclared), IsCompleteDefinition(false) {}
 
 VarTemplateSpecializationDecl::VarTemplateSpecializationDecl(Kind DK,
                                                              ASTContext &C)
-    : VarDecl(DK, C, nullptr, SourceLocation(), SourceLocation(), nullptr,
+    : VarDecl(DK, C, nullptr, SourceLocation(),
+              SourceLocation(), DeclarationName(),
               QualType(), nullptr, SC_None),
       SpecializationKind(TSK_Undeclared), IsCompleteDefinition(false) {}
 

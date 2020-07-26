@@ -4936,7 +4936,7 @@ QualType CodeGenModule::getObjCFastEnumerationStateType() {
       FieldDecl *Field = FieldDecl::Create(Context,
                                            D,
                                            SourceLocation(),
-                                           SourceLocation(), nullptr,
+                                           SourceLocation(), DeclarationName(),
                                            FieldTypes[i], /*TInfo=*/nullptr,
                                            /*BitWidth=*/nullptr,
                                            /*Mutable=*/false,
@@ -5147,7 +5147,8 @@ ConstantAddress CodeGenModule::GetAddrOfGlobalTemporary(
 
   // Try evaluating it now, it might have a constant initializer.
   Expr::EvalResult EvalResult;
-  if (!Value && Init->EvaluateAsRValue(EvalResult, getContext()) &&
+  Expr::EvalContext EvalCtx(getContext(), nullptr);
+  if (!Value && Init->EvaluateAsRValue(EvalResult, EvalCtx) &&
       !EvalResult.hasSideEffects())
     Value = &EvalResult.Val;
 
@@ -5418,6 +5419,10 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
     break;
 
   case Decl::StaticAssert:
+  case Decl::CXXMetaprogram:
+  case Decl::CXXInjection:
+  case Decl::CXXRequiredType:
+  case Decl::CXXRequiredDeclarator:
     // Nothing to do.
     break;
 

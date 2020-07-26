@@ -44,9 +44,11 @@
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/CurrentSourceLocExprScope.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/LocInfoType.h"
 #include "clang/AST/OSLog.h"
 #include "clang/AST/OptionalDiagnostic.h"
 #include "clang/AST/RecordLayout.h"
+#include "clang/AST/Reflection.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/AST/TypeLoc.h"
 #include "clang/Basic/Builtins.h"
@@ -747,7 +749,9 @@ namespace {
   /// certain things in certain situations.
   class EvalInfo : public interp::State {
   public:
-    ASTContext &Ctx;
+    Expr::EvalContext Ctx;
+
+    ASTContext &ASTCtx = Ctx.ASTCtx;
 
     /// EvalStatus - Contains information about the evaluation.
     Expr::EvalStatus &EvalStatus;
@@ -921,11 +925,11 @@ namespace {
       return CheckingForUndefinedBehavior;
     }
 
-    EvalInfo(const ASTContext &C, Expr::EvalStatus &S, EvaluationMode Mode)
-        : Ctx(const_cast<ASTContext &>(C)), EvalStatus(S), CurrentCall(nullptr),
+    EvalInfo(const Expr::EvalContext &C, Expr::EvalStatus &S, EvaluationMode Mode)
+        : Ctx(C), EvalStatus(S), CurrentCall(nullptr),
           CallStackDepth(0), NextCallIndex(1),
-          StepsLeft(C.getLangOpts().ConstexprStepLimit),
-          EnableNewConstInterp(C.getLangOpts().EnableNewConstInterp),
+          StepsLeft(getLangOpts().ConstexprStepLimit),
+          EnableNewConstInterp(getLangOpts().EnableNewConstInterp),
           BottomFrame(*this, SourceLocation(), nullptr, nullptr, nullptr),
           EvaluatingDecl((const ValueDecl *)nullptr),
           EvaluatingDeclValue(nullptr), HasActiveDiagnostic(false),
@@ -942,6 +946,8 @@ namespace {
       IsEvaluatingDecl = EDK;
       EvaluatingDeclValue = &Value;
     }
+
+    const LangOptions &getLangOpts() const { return ASTCtx.getLangOpts(); }
 
     bool CheckCallLimit(SourceLocation Loc) {
       // Don't perform any constexpr calls (other than the call we're checking)
@@ -1063,7 +1069,7 @@ namespace {
 
     Expr::EvalStatus &getEvalStatus() const override { return EvalStatus; }
 
-    ASTContext &getCtx() const override { return Ctx; }
+    ASTContext &getCtx() const override { return ASTCtx; }
 
     // If we have a prior diagnostic, it will be noting that the expression
     // isn't a constant expression. This diagnostic is more important,
@@ -1841,7 +1847,7 @@ void CallStackFrame::describe(raw_ostream &Out) {
   if (This && IsMemberCall) {
     APValue Val;
     This->moveInto(Val);
-    Val.printPretty(Out, Info.Ctx,
+    Val.printPretty(Out, Info.ASTCtx,
                     This->Designator.MostDerivedType);
     // FIXME: Add parens around Val if needed.
     Out << "->" << *Callee << '(';
@@ -1855,7 +1861,7 @@ void CallStackFrame::describe(raw_ostream &Out) {
 
     const ParmVarDecl *Param = *I;
     const APValue &Arg = Arguments[ArgIndex];
-    Arg.printPretty(Out, Info.Ctx, Param->getType());
+    Arg.printPretty(Out, Info.ASTCtx, Param->getType());
 
     if (ArgIndex == 0 && IsMemberCall)
       Out << "->" << *Callee << '(';
@@ -2035,7 +2041,7 @@ static bool CheckLValueConstantExpression(EvalInfo &Info, SourceLocation Loc,
   APValue::LValueBase Base = LVal.getLValueBase();
   const SubobjectDesignator &Designator = LVal.getLValueDesignator();
 
-  if (auto *VD = LVal.getLValueBase().dyn_cast<const ValueDecl *>()) {
+  if (auto *VD = Base.dyn_cast<const ValueDecl *>()) {
     if (auto *FD = dyn_cast<FunctionDecl>(VD)) {
       if (FD->isConsteval()) {
         Info.FFDiag(Loc, diag::note_consteval_address_accessible)
@@ -2155,11 +2161,13 @@ static bool CheckMemberPointerConstantExpression(EvalInfo &Info,
   const auto *FD = dyn_cast_or_null<CXXMethodDecl>(Member);
   if (!FD)
     return true;
+
   if (FD->isConsteval()) {
     Info.FFDiag(Loc, diag::note_consteval_address_accessible) << /*pointer*/ 0;
     Info.Note(FD->getLocation(), diag::note_declared_at);
     return false;
   }
+
   return Usage == Expr::EvaluateForMangling || FD->isVirtual() ||
          !FD->hasAttr<DLLImportAttr>();
 }
@@ -2168,7 +2176,7 @@ static bool CheckMemberPointerConstantExpression(EvalInfo &Info,
 /// produce an appropriate diagnostic.
 static bool CheckLiteralType(EvalInfo &Info, const Expr *E,
                              const LValue *This = nullptr) {
-  if (!E->isRValue() || E->getType()->isLiteralType(Info.Ctx))
+  if (!E->isRValue() || E->getType()->isLiteralType(Info.ASTCtx))
     return true;
 
   // C++1y: A constant initializer for an object o [...] may also invoke
@@ -2203,6 +2211,9 @@ static bool CheckEvaluationResult(CheckEvaluationResultKind CERK,
                                   SourceLocation SubobjectLoc,
                                   CheckedTemporaries &CheckedTemps) {
   if (!Value.hasValue()) {
+    if (Type->isVoidType())
+      return true;
+
     Info.FFDiag(DiagLoc, diag::note_constexpr_uninitialized)
       << true << Type;
     if (SubobjectLoc.isValid())
@@ -2264,7 +2275,7 @@ static bool CheckEvaluationResult(CheckEvaluationResultKind CERK,
   if (Value.isLValue() &&
       CERK == CheckEvaluationResultKind::ConstantExpression) {
     LValue LVal;
-    LVal.setFrom(Info.Ctx, Value);
+    LVal.setFrom(Info.ASTCtx, Value);
     return CheckLValueConstantExpression(Info, DiagLoc, Type, LVal, Usage,
                                          CheckedTemps);
   }
@@ -2356,6 +2367,10 @@ static bool HandleConversionToBool(const APValue &Val, bool &Result) {
   case APValue::MemberPointer:
     Result = Val.getMemberPointerDecl();
     return true;
+  case APValue::Reflection:
+  case APValue::Fragment:
+    Result = !Val.isInvalidReflection();
+    return true;
   case APValue::Vector:
   case APValue::Array:
   case APValue::Struct:
@@ -2387,7 +2402,7 @@ static bool HandleOverflow(EvalInfo &Info, const Expr *E,
 static bool HandleFloatToIntCast(EvalInfo &Info, const Expr *E,
                                  QualType SrcType, const APFloat &Value,
                                  QualType DestType, APSInt &Result) {
-  unsigned DestWidth = Info.Ctx.getIntWidth(DestType);
+  unsigned DestWidth = Info.ASTCtx.getIntWidth(DestType);
   // Determine whether we are converting to unsigned or signed.
   bool DestSigned = DestType->isSignedIntegerOrEnumerationType();
 
@@ -2404,7 +2419,7 @@ static bool HandleFloatToFloatCast(EvalInfo &Info, const Expr *E,
                                    APFloat &Result) {
   APFloat Value = Result;
   bool ignored;
-  Result.convert(Info.Ctx.getFloatTypeSemantics(DestType),
+  Result.convert(Info.ASTCtx.getFloatTypeSemantics(DestType),
                  APFloat::rmNearestTiesToEven, &ignored);
   return true;
 }
@@ -2412,7 +2427,7 @@ static bool HandleFloatToFloatCast(EvalInfo &Info, const Expr *E,
 static APSInt HandleIntToIntCast(EvalInfo &Info, const Expr *E,
                                  QualType DestType, QualType SrcType,
                                  const APSInt &Value) {
-  unsigned DestWidth = Info.Ctx.getIntWidth(DestType);
+  unsigned DestWidth = Info.ASTCtx.getIntWidth(DestType);
   // Figure out if this is a truncate, extend or noop cast.
   // If the input is signed, do a sign extend, noop, or truncate.
   APSInt Result = Value.extOrTrunc(DestWidth);
@@ -2425,7 +2440,7 @@ static APSInt HandleIntToIntCast(EvalInfo &Info, const Expr *E,
 static bool HandleIntToFloatCast(EvalInfo &Info, const Expr *E,
                                  QualType SrcType, const APSInt &Value,
                                  QualType DestType, APFloat &Result) {
-  Result = APFloat(Info.Ctx.getFloatTypeSemantics(DestType), 1);
+  Result = APFloat(Info.ASTCtx.getFloatTypeSemantics(DestType), 1);
   Result.convertFromAPInt(Value, Value.isSigned(),
                           APFloat::rmNearestTiesToEven);
   return true;
@@ -2446,7 +2461,7 @@ static bool truncateBitfieldValue(EvalInfo &Info, const Expr *E,
 
   APSInt &Int = Value.getInt();
   unsigned OldBitWidth = Int.getBitWidth();
-  unsigned NewBitWidth = FD->getBitWidthValue(Info.Ctx);
+  unsigned NewBitWidth = FD->getBitWidthValue(Info.ASTCtx);
   if (NewBitWidth < OldBitWidth)
     Int = Int.trunc(NewBitWidth).extend(OldBitWidth);
   return true;
@@ -2467,10 +2482,10 @@ static bool EvalAndBitcastToAPInt(EvalInfo &Info, const Expr *E,
   }
   if (SVal.isVector()) {
     QualType VecTy = E->getType();
-    unsigned VecSize = Info.Ctx.getTypeSize(VecTy);
+    unsigned VecSize = Info.ASTCtx.getTypeSize(VecTy);
     QualType EltTy = VecTy->castAs<VectorType>()->getElementType();
-    unsigned EltSize = Info.Ctx.getTypeSize(EltTy);
-    bool BigEndian = Info.Ctx.getTargetInfo().isBigEndian();
+    unsigned EltSize = Info.ASTCtx.getTypeSize(EltTy);
+    bool BigEndian = Info.ASTCtx.getTargetInfo().isBigEndian();
     Res = llvm::APInt::getNullValue(VecSize);
     for (unsigned i = 0; i < SVal.getVectorLength(); i++) {
       APValue &Elt = SVal.getVectorElt(i);
@@ -2516,7 +2531,7 @@ static bool CheckedIntArithmetic(EvalInfo &Info, const Expr *E,
   Result = Value.trunc(LHS.getBitWidth());
   if (Result.extend(BitWidth) != Value) {
     if (Info.checkingForUndefinedBehavior())
-      Info.Ctx.getDiagnostics().Report(E->getExprLoc(),
+      Info.ASTCtx.getDiagnostics().Report(E->getExprLoc(),
                                        diag::warn_integer_constant_overflow)
           << Result.toString(10) << E->getType();
     else
@@ -2775,7 +2790,7 @@ static bool handleVectorVectorBinOp(EvalInfo &Info, const Expr *E,
     APValue RHSElt = RHSValue.getVectorElt(EltNum);
 
     if (EltTy->isIntegerType()) {
-      APSInt EltResult{Info.Ctx.getIntWidth(EltTy),
+      APSInt EltResult{Info.ASTCtx.getIntWidth(EltTy),
                        EltTy->isUnsignedIntegerType()};
       bool Success = true;
 
@@ -2832,7 +2847,7 @@ static bool CastToDerivedClass(EvalInfo &Info, const Expr *E, LValue &Result,
   const RecordDecl *RD = TruncatedType;
   for (unsigned I = TruncatedElements, N = D.Entries.size(); I != N; ++I) {
     if (RD->isInvalidDecl()) return false;
-    const ASTRecordLayout &Layout = Info.Ctx.getASTRecordLayout(RD);
+    const ASTRecordLayout &Layout = Info.ASTCtx.getASTRecordLayout(RD);
     const CXXRecordDecl *Base = getAsBaseClass(D.Entries[I]);
     if (isVirtualBaseClass(D.Entries[I]))
       Result.Offset -= Layout.getVBaseClassOffset(Base);
@@ -2850,7 +2865,7 @@ static bool HandleLValueDirectBase(EvalInfo &Info, const Expr *E, LValue &Obj,
                                    const ASTRecordLayout *RL = nullptr) {
   if (!RL) {
     if (Derived->isInvalidDecl()) return false;
-    RL = &Info.Ctx.getASTRecordLayout(Derived);
+    RL = &Info.ASTCtx.getASTRecordLayout(Derived);
   }
 
   Obj.getLValueOffset() += RL->getBaseClassOffset(Base);
@@ -2877,7 +2892,7 @@ static bool HandleLValueBase(EvalInfo &Info, const Expr *E, LValue &Obj,
 
   // Find the virtual base class.
   if (DerivedDecl->isInvalidDecl()) return false;
-  const ASTRecordLayout &Layout = Info.Ctx.getASTRecordLayout(DerivedDecl);
+  const ASTRecordLayout &Layout = Info.ASTCtx.getASTRecordLayout(DerivedDecl);
   Obj.getLValueOffset() += Layout.getVBaseClassOffset(BaseDecl);
   Obj.addDecl(Info, E, BaseDecl, /*Virtual*/ true);
   return true;
@@ -2918,11 +2933,11 @@ static bool HandleLValueMember(EvalInfo &Info, const Expr *E, LValue &LVal,
                                const ASTRecordLayout *RL = nullptr) {
   if (!RL) {
     if (FD->getParent()->isInvalidDecl()) return false;
-    RL = &Info.Ctx.getASTRecordLayout(FD->getParent());
+    RL = &Info.ASTCtx.getASTRecordLayout(FD->getParent());
   }
 
   unsigned I = FD->getFieldIndex();
-  LVal.adjustOffset(Info.Ctx.toCharUnitsFromBits(RL->getFieldOffset(I)));
+  LVal.adjustOffset(Info.ASTCtx.toCharUnitsFromBits(RL->getFieldOffset(I)));
   LVal.addDecl(Info, E, FD);
   return true;
 }
@@ -2959,7 +2974,7 @@ static bool HandleSizeof(EvalInfo &Info, SourceLocation Loc,
     return false;
   }
 
-  Size = Info.Ctx.getTypeSizeInChars(Type);
+  Size = Info.ASTCtx.getTypeSizeInChars(Type);
   return true;
 }
 
@@ -3076,7 +3091,7 @@ static bool evaluateVarDeclInit(EvalInfo &Info, const Expr *E,
     // constant-folding cases, where the variable is not actually of a suitable
     // type for use in a constant expression (otherwise the DeclRefExpr would
     // have been value-dependent too), so diagnose that.
-    assert(!VD->mightBeUsableInConstantExpressions(Info.Ctx));
+    assert(!VD->mightBeUsableInConstantExpressions(Info.ASTCtx));
     if (!Info.checkingPotentialConstantExpression()) {
       Info.FFDiag(E, Info.getLangOpts().CPlusPlus11
                          ? diag::note_constexpr_ltor_non_constexpr
@@ -3154,7 +3169,7 @@ static APSInt extractStringLiteralCharacter(EvalInfo &Info, const Expr *Lit,
   // FIXME: Support MakeStringConstant
   if (const auto *ObjCEnc = dyn_cast<ObjCEncodeExpr>(Lit)) {
     std::string Str;
-    Info.Ctx.getObjCEncodingForType(ObjCEnc->getEncodedType(), Str);
+    Info.ASTCtx.getObjCEncodingForType(ObjCEnc->getEncodedType(), Str);
     assert(Index <= Str.size() && "Index too large");
     return APSInt::getUnsigned(Str.c_str()[Index]);
   }
@@ -3163,12 +3178,12 @@ static APSInt extractStringLiteralCharacter(EvalInfo &Info, const Expr *Lit,
     Lit = PE->getFunctionName();
   const StringLiteral *S = cast<StringLiteral>(Lit);
   const ConstantArrayType *CAT =
-      Info.Ctx.getAsConstantArrayType(S->getType());
+      Info.ASTCtx.getAsConstantArrayType(S->getType());
   assert(CAT && "string literal isn't an array");
   QualType CharType = CAT->getElementType();
   assert(CharType->isIntegerType() && "unexpected character type");
 
-  APSInt Value(S->getCharByteWidth() * Info.Ctx.getCharWidth(),
+  APSInt Value(S->getCharByteWidth() * Info.ASTCtx.getCharWidth(),
                CharType->isUnsignedIntegerType());
   if (Index < S->getLength())
     Value = S->getCodeUnit(Index);
@@ -3182,7 +3197,7 @@ static APSInt extractStringLiteralCharacter(EvalInfo &Info, const Expr *Lit,
 static void expandStringLiteral(EvalInfo &Info, const StringLiteral *S,
                                 APValue &Result,
                                 QualType AllocType = QualType()) {
-  const ConstantArrayType *CAT = Info.Ctx.getAsConstantArrayType(
+  const ConstantArrayType *CAT = Info.ASTCtx.getAsConstantArrayType(
       AllocType.isNull() ? S->getType() : AllocType);
   assert(CAT && "string literal isn't an array");
   QualType CharType = CAT->getElementType();
@@ -3191,7 +3206,7 @@ static void expandStringLiteral(EvalInfo &Info, const StringLiteral *S,
   unsigned Elts = CAT->getSize().getZExtValue();
   Result = APValue(APValue::UninitArray(),
                    std::min(S->getLength(), Elts), Elts);
-  APSInt Value(S->getCharByteWidth() * Info.Ctx.getCharWidth(),
+  APSInt Value(S->getCharByteWidth() * Info.ASTCtx.getCharWidth(),
                CharType->isUnsignedIntegerType());
   if (Result.hasArrayFiller())
     Result.getArrayFiller() = APValue(Value);
@@ -3430,7 +3445,7 @@ findSubobject(EvalInfo &Info, const Expr *E, const CompleteObject &Obj,
             Obj.Base, llvm::makeArrayRef(Sub.Entries.begin(),
                                          Sub.Entries.begin() + I)) !=
                           ConstructionPhase::None) {
-      ObjType = Info.Ctx.getCanonicalType(ObjType);
+      ObjType = Info.ASTCtx.getCanonicalType(ObjType);
       ObjType.removeLocalConst();
       ObjType.removeLocalVolatile();
     }
@@ -3491,7 +3506,7 @@ findSubobject(EvalInfo &Info, const Expr *E, const CompleteObject &Obj,
     LastField = nullptr;
     if (ObjType->isArrayType()) {
       // Next subobject is an array element.
-      const ConstantArrayType *CAT = Info.Ctx.getAsConstantArrayType(ObjType);
+      const ConstantArrayType *CAT = Info.ASTCtx.getAsConstantArrayType(ObjType);
       assert(CAT && "vla in literal type?");
       uint64_t Index = Sub.Entries[I].getAsArrayIndex();
       if (CAT->getSize().ule(Index)) {
@@ -3580,7 +3595,7 @@ findSubobject(EvalInfo &Info, const Expr *E, const CompleteObject &Obj,
       const CXXRecordDecl *Base = getAsBaseClass(Sub.Entries[I]);
       O = &O->getStructBase(getBaseIndex(Derived, Base));
 
-      ObjType = getSubobjectType(ObjType, Info.Ctx.getRecordType(Base));
+      ObjType = getSubobjectType(ObjType, Info.ASTCtx.getRecordType(Base));
     }
   }
 }
@@ -3815,7 +3830,7 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
     // In C, such things can also be folded, although they are not ICEs.
     const VarDecl *VD = dyn_cast<VarDecl>(D);
     if (VD) {
-      if (const VarDecl *VDef = VD->getDefinition(Info.Ctx))
+      if (const VarDecl *VDef = VD->getDefinition(Info.ASTCtx))
         VD = VDef;
     }
     if (!VD || VD->isInvalidDecl()) {
@@ -3859,7 +3874,7 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
       } else if (!IsAccess) {
         return CompleteObject(LVal.getLValueBase(), nullptr, BaseType);
       } else if (IsConstant && Info.checkingPotentialConstantExpression() &&
-                 BaseType->isLiteralType(Info.Ctx) && !VD->hasDefinition()) {
+                 BaseType->isLiteralType(Info.ASTCtx) && !VD->hasDefinition()) {
         // This variable might end up being constexpr. Don't diagnose it yet.
       } else if (IsConstant) {
         // Keep evaluating to see what we can do. In particular, we support
@@ -3946,8 +3961,8 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
         LVal.moveInto(Val);
         Info.FFDiag(E, diag::note_constexpr_access_unreadable_object)
             << AK
-            << Val.getAsString(Info.Ctx,
-                               Info.Ctx.getLValueReferenceType(LValType));
+            << Val.getAsString(Info.ASTCtx,
+                               Info.ASTCtx.getLValueReferenceType(LValType));
         NoteLValueLocation(Info, LVal.Base);
         return CompleteObject();
       }
@@ -4166,7 +4181,7 @@ struct CompoundAssignSubobjectHandler {
       negateAsSigned(Offset);
 
     LValue LVal;
-    LVal.setFrom(Info.Ctx, Subobj);
+    LVal.setFrom(Info.ASTCtx, Subobj);
     if (!HandleLValueArrayAdjustment(Info, E, LVal, PointeeType, Offset))
       return false;
     LVal.moveInto(Subobj);
@@ -4313,7 +4328,7 @@ struct IncDecSubobjectHandler {
     }
 
     LValue LVal;
-    LVal.setFrom(Info.Ctx, Subobj);
+    LVal.setFrom(Info.ASTCtx, Subobj);
     if (!HandleLValueArrayAdjustment(Info, E, LVal, PointeeType,
                                      AccessKind == AK_Increment ? 1 : -1))
       return false;
@@ -4349,7 +4364,7 @@ static bool EvaluateObjectArgument(EvalInfo &Info, const Expr *Object,
   if (Object->isGLValue())
     return EvaluateLValue(Object, This, Info);
 
-  if (Object->getType()->isLiteralType(Info.Ctx))
+  if (Object->getType()->isLiteralType(Info.ASTCtx))
     return EvaluateTemporary(Object, This, Info);
 
   Info.FFDiag(Object, diag::note_constexpr_nonliteral) << Object->getType();
@@ -4746,7 +4761,7 @@ static EvalStmtResult EvaluateSwitch(StmtResult &Result, EvalInfo &Info,
 
 // Evaluate a statement.
 static EvalStmtResult EvaluateStmt(StmtResult &Result, EvalInfo &Info,
-                                   const Stmt *S, const SwitchCase *Case) {
+                                  const Stmt *S, const SwitchCase *Case) {
   if (!Info.nextStep(S))
     return ESR_Failed;
 
@@ -5109,6 +5124,117 @@ static EvalStmtResult EvaluateStmt(StmtResult &Result, EvalInfo &Info,
     return Scope.destroy() ? ESR_Succeeded : ESR_Failed;
   }
 
+  case Stmt::CXXCompositeExpansionStmtClass: {
+    const CXXCompositeExpansionStmt *ES = cast<CXXCompositeExpansionStmt>(S);
+    BlockScopeRAII Scope(Info);
+
+    EvalStmtResult ESR = EvaluateStmt(Result, Info, ES->getRangeVarStmt());
+    if (ESR != ESR_Succeeded)
+      return ESR;
+
+    // Create the __begin and __end iterators if they exist.
+    if (ES->getBeginStmt()) {
+      ESR = EvaluateStmt(Result, Info, ES->getBeginStmt());
+      if (ESR != ESR_Succeeded)
+        return ESR;
+    }
+    if (ES->getEndStmt()) {
+      ESR = EvaluateStmt(Result, Info, ES->getEndStmt());
+      if (ESR != ESR_Succeeded)
+        return ESR;
+    }
+
+    for (Stmt *SubStmt : ES->getInstantiatedStatements()) {
+      BlockScopeRAII InnerScope(Info);
+
+      ESR = EvaluateStmt(Result, Info, SubStmt);
+      if (ESR != ESR_Succeeded)
+        return ESR;
+    }
+
+    return ESR_Succeeded;
+  }
+
+  case Stmt::CXXPackExpansionStmtClass: {
+    const CXXPackExpansionStmt *ES = cast<CXXPackExpansionStmt>(S);
+    BlockScopeRAII Scope(Info);
+
+    EvalStmtResult ESR = EvaluateStmt(Result, Info, ES->getRangeExprStmt());
+    if (ESR != ESR_Succeeded)
+      return ESR;
+
+    for (Stmt *SubStmt : ES->getInstantiatedStatements()) {
+      BlockScopeRAII InnerScope(Info);
+
+      ESR = EvaluateStmt(Result, Info, SubStmt);
+      if (ESR != ESR_Succeeded)
+        return ESR;
+    }
+    return ESR_Succeeded;
+  }
+
+  case Stmt::CXXInjectionStmtClass: {
+    if (Info.checkingPotentialConstantExpression())
+      return ESR_Succeeded;
+
+    if (!Info.EvalStatus.InjectionEffects) {
+      // Only metapgrams can produce injection results.
+      Info.CCEDiag(S->getBeginLoc(), diag::note_injection_outside_constexpr_decl);
+      return ESR_Failed;
+    }
+
+    // Compute the value of the injected reflection and its modifications.
+    const CXXInjectionStmt *IS = cast<CXXInjectionStmt>(S);
+    Expr *Operand = IS->getOperand();
+    APValue OperandValue;
+    if (!::EvaluateAsRValue(Info, Operand, OperandValue))
+      return ESR_Failed;
+
+    // If we are injecting a reflection, as apposed to a fragment.
+    // We need to verify that it's actually a reflection of a declaration.
+    if (OperandValue.isReflection()) {
+      Reflection R(Info.Ctx.ASTCtx, OperandValue);
+      if (R.isInvalid()) {
+        return ESR_Failed;
+      }
+
+      if (!R.getAsReachableDeclaration()) {
+        Info.CCEDiag(S->getBeginLoc(), diag::err_injecting_non_decl_reflection);
+        return ESR_Failed;
+      }
+    }
+
+    CXXInjectionContextSpecifier &&ContextSpecifier = IS->getContextSpecifier();
+
+    // Queue the injection as a side effect.
+    Info.EvalStatus.InjectionEffects->emplace_back(OperandValue,
+                                                   ContextSpecifier);
+    return ESR_Succeeded;
+  }
+
+  case Stmt::CXXBaseInjectionStmtClass: {
+    if (Info.checkingPotentialConstantExpression())
+      return ESR_Succeeded;
+
+    if (!Info.EvalStatus.InjectionEffects) {
+      // Only metapgrams can produce injection results.
+      Info.CCEDiag(S->getBeginLoc(), diag::note_injection_outside_constexpr_decl);
+      return ESR_Failed;
+    }
+
+    // Compute the value of the injected reflection and its modifications.
+    const CXXBaseInjectionStmt *IS = cast<CXXBaseInjectionStmt>(S);
+    for (CXXBaseSpecifier *BS : IS->getBaseSpecifiers()) {
+      APValue OperandValue = APValue(RK_base_specifier, BS);
+      CXXInjectionContextSpecifier ContextSpecifier;
+
+      Info.EvalStatus.InjectionEffects->emplace_back(
+          OperandValue, ContextSpecifier);
+    }
+
+    return ESR_Succeeded;
+  }
+
   case Stmt::SwitchStmtClass:
     return EvaluateSwitch(Result, Info, cast<SwitchStmt>(S));
 
@@ -5186,7 +5312,7 @@ static bool CheckConstexprFunction(EvalInfo &Info, SourceLocation CallLoc,
   // DR1872: An instantiated virtual constexpr function can't be called in a
   // constant expression (prior to C++20). We can still constant-fold such a
   // call.
-  if (!Info.Ctx.getLangOpts().CPlusPlus20 && isa<CXXMethodDecl>(Declaration) &&
+  if (!Info.ASTCtx.getLangOpts().CPlusPlus20 && isa<CXXMethodDecl>(Declaration) &&
       cast<CXXMethodDecl>(Declaration)->isVirtual())
     Info.CCEDiag(CallLoc, diag::note_constexpr_virtual_call);
 
@@ -5274,9 +5400,9 @@ static bool checkDynamicType(EvalInfo &Info, const Expr *E, const LValue &This,
       APValue Val;
       This.moveInto(Val);
       QualType StarThisType =
-          Info.Ctx.getLValueReferenceType(This.Designator.getType(Info.Ctx));
+          Info.ASTCtx.getLValueReferenceType(This.Designator.getType(Info.ASTCtx));
       Info.FFDiag(E, diag::note_constexpr_polymorphic_unknown_dynamic_type)
-          << AK << Val.getAsString(Info.Ctx, StarThisType);
+          << AK << Val.getAsString(Info.ASTCtx, StarThisType);
       return false;
     }
     return true;
@@ -5405,8 +5531,8 @@ static const CXXMethodDecl *HandleVirtualDispatch(
 
   // If necessary, walk the rest of the path to determine the sequence of
   // covariant adjustment steps to apply.
-  if (!Info.Ctx.hasSameUnqualifiedType(Callee->getReturnType(),
-                                       Found->getReturnType())) {
+  if (!Info.ASTCtx.hasSameUnqualifiedType(Callee->getReturnType(),
+                                          Found->getReturnType())) {
     CovariantAdjustmentPath.push_back(Callee->getReturnType());
     for (unsigned CovariantPathLength = PathLength + 1;
          CovariantPathLength != This.Designator.Entries.size();
@@ -5415,12 +5541,12 @@ static const CXXMethodDecl *HandleVirtualDispatch(
           getBaseClassType(This.Designator, CovariantPathLength);
       const CXXMethodDecl *Next =
           Found->getCorrespondingMethodDeclaredInClass(NextClass, false);
-      if (Next && !Info.Ctx.hasSameUnqualifiedType(
+      if (Next && !Info.ASTCtx.hasSameUnqualifiedType(
                       Next->getReturnType(), CovariantAdjustmentPath.back()))
         CovariantAdjustmentPath.push_back(Next->getReturnType());
     }
-    if (!Info.Ctx.hasSameUnqualifiedType(Found->getReturnType(),
-                                         CovariantAdjustmentPath.back()))
+    if (!Info.ASTCtx.hasSameUnqualifiedType(Found->getReturnType(),
+                                            CovariantAdjustmentPath.back()))
       CovariantAdjustmentPath.push_back(Found->getReturnType());
   }
 
@@ -5443,7 +5569,7 @@ static bool HandleCovariantReturnAdjustment(EvalInfo &Info, const Expr *E,
     return true;
 
   LValue LVal;
-  LVal.setFrom(Info.Ctx, Result);
+  LVal.setFrom(Info.ASTCtx, Result);
 
   const CXXRecordDecl *OldClass = Path[0]->getPointeeCXXRecordDecl();
   for (unsigned I = 1; I != Path.size(); ++I) {
@@ -5503,14 +5629,14 @@ static bool HandleDynamicCast(EvalInfo &Info, const ExplicitCastExpr *E,
 
   const CXXRecordDecl *C = E->getTypeAsWritten()->getPointeeCXXRecordDecl();
   assert(C && "dynamic_cast target is not void pointer nor class");
-  CanQualType CQT = Info.Ctx.getCanonicalType(Info.Ctx.getRecordType(C));
+  CanQualType CQT = Info.ASTCtx.getCanonicalType(Info.ASTCtx.getRecordType(C));
 
   auto RuntimeCheckFailed = [&] (CXXBasePaths *Paths) {
     // C++ [expr.dynamic.cast]p9:
     if (!E->isGLValue()) {
       //   The value of a failed cast to pointer type is the null pointer value
       //   of the required result type.
-      Ptr.setNull(Info.Ctx, E->getType());
+      Ptr.setNull(Info.ASTCtx, E->getType());
       return true;
     }
 
@@ -5528,8 +5654,8 @@ static bool HandleDynamicCast(EvalInfo &Info, const ExplicitCastExpr *E,
       DiagKind = 3;
     }
     Info.FFDiag(E, diag::note_constexpr_dynamic_cast_to_reference_failed)
-        << DiagKind << Ptr.Designator.getType(Info.Ctx)
-        << Info.Ctx.getRecordType(DynType->Type)
+        << DiagKind << Ptr.Designator.getType(Info.ASTCtx)
+        << Info.ASTCtx.getRecordType(DynType->Type)
         << E->getType().getUnqualifiedType();
     return false;
   };
@@ -5706,7 +5832,7 @@ static bool HandleUnionActiveMemberChange(EvalInfo &Info, const Expr *LHSExpr,
            llvm::reverse(UnionPathLengths)) {
     // Form a designator for the union object.
     SubobjectDesignator D = LHS.Designator;
-    D.truncate(Info.Ctx, LHS.Base, LengthAndField.first);
+    D.truncate(Info.ASTCtx, LHS.Base, LengthAndField.first);
 
     bool DuringInit = Info.isEvaluatingCtorDtor(LHS.Base, D.Entries) ==
                       ConstructionPhase::AfterBases;
@@ -5794,7 +5920,7 @@ static bool HandleFunctionCall(SourceLocation CallLoc,
     assert(This &&
            (MD->isCopyAssignmentOperator() || MD->isMoveAssignmentOperator()));
     LValue RHS;
-    RHS.setFrom(Info.Ctx, ArgValues[0]);
+    RHS.setFrom(Info.ASTCtx, ArgValues[0]);
     APValue RHSValue;
     if (!handleLValueToRValueConversion(Info, Args[0], Args[0]->getType(), RHS,
                                         RHSValue, MD->getParent()->isUnion()))
@@ -5880,7 +6006,7 @@ static bool HandleConstructorCall(const Expr *E, const LValue &This,
        (Definition->isTrivial() &&
         isReadByLvalueToRvalueConversion(Definition->getParent())))) {
     LValue RHS;
-    RHS.setFrom(Info.Ctx, ArgValues[0]);
+    RHS.setFrom(Info.ASTCtx, ArgValues[0]);
     return handleLValueToRValueConversion(
         Info, E, Definition->getParamDecl(0)->getType().getNonReferenceType(),
         RHS, Result, Definition->getParent()->isUnion());
@@ -5897,7 +6023,7 @@ static bool HandleConstructorCall(const Expr *E, const LValue &This,
   }
 
   if (RD->isInvalidDecl()) return false;
-  const ASTRecordLayout &Layout = Info.Ctx.getASTRecordLayout(RD);
+  const ASTRecordLayout &Layout = Info.ASTCtx.getASTRecordLayout(RD);
 
   // A scope for temporaries lifetime-extended by reference members.
   BlockScopeRAII LifetimeExtendedScope(Info);
@@ -5940,7 +6066,7 @@ static bool HandleConstructorCall(const Expr *E, const LValue &This,
       // Non-virtual base classes are initialized in the order in the class
       // definition. We have already checked for virtual base classes.
       assert(!BaseIt->isVirtual() && "virtual base for literal type");
-      assert(Info.Ctx.hasSameType(BaseIt->getType(), BaseType) &&
+      assert(Info.ASTCtx.hasSameType(BaseIt->getType(), BaseType) &&
              "base class initializers not in expected order");
       ++BaseIt;
 #endif
@@ -5978,7 +6104,7 @@ static bool HandleConstructorCall(const Expr *E, const LValue &This,
             // FIXME: This immediately starts the lifetime of all members of
             // an anonymous struct. It would be preferable to strictly start
             // member lifetime in initialization order.
-            Success &= getDefaultInitValue(Info.Ctx.getRecordType(CD), *Value);
+            Success &= getDefaultInitValue(Info.ASTCtx.getRecordType(CD), *Value);
         }
         // Store Subobject as its parent before updating it for the last element
         // in the chain.
@@ -6061,16 +6187,16 @@ static bool HandleDestructionImpl(EvalInfo &Info, SourceLocation CallLoc,
     APValue Printable;
     This.moveInto(Printable);
     Info.FFDiag(CallLoc, diag::note_constexpr_destroy_out_of_lifetime)
-      << Printable.getAsString(Info.Ctx, Info.Ctx.getLValueReferenceType(T));
+      << Printable.getAsString(Info.ASTCtx, Info.ASTCtx.getLValueReferenceType(T));
     return false;
   }
 
   // Invent an expression for location purposes.
   // FIXME: We shouldn't need to do this.
-  OpaqueValueExpr LocE(CallLoc, Info.Ctx.IntTy, VK_RValue);
+  OpaqueValueExpr LocE(CallLoc, Info.ASTCtx.IntTy, VK_RValue);
 
   // For arrays, destroy elements right-to-left.
-  if (const ConstantArrayType *CAT = Info.Ctx.getAsConstantArrayType(T)) {
+  if (const ConstantArrayType *CAT = Info.ASTCtx.getAsConstantArrayType(T)) {
     uint64_t Size = CAT->getSize().getZExtValue();
     QualType ElemT = CAT->getElementType();
 
@@ -6172,7 +6298,7 @@ static bool HandleDestructionImpl(EvalInfo &Info, SourceLocation CallLoc,
   if (RD->isUnion())
     return true;
 
-  const ASTRecordLayout &Layout = Info.Ctx.getASTRecordLayout(RD);
+  const ASTRecordLayout &Layout = Info.ASTCtx.getASTRecordLayout(RD);
 
   // We don't have a good way to iterate fields in reverse, so collect all the
   // fields first and then walk them backwards.
@@ -6309,9 +6435,9 @@ static bool HandleOperatorNewCall(EvalInfo &Info, const CallExpr *E,
     return false;
   }
 
-  if (ByteSize.getActiveBits() > ConstantArrayType::getMaxSizeBits(Info.Ctx)) {
+  if (ByteSize.getActiveBits() > ConstantArrayType::getMaxSizeBits(Info.ASTCtx)) {
     if (IsNothrow) {
-      Result.setNull(Info.Ctx, E->getType());
+      Result.setNull(Info.ASTCtx, E->getType());
       return true;
     }
 
@@ -6319,8 +6445,8 @@ static bool HandleOperatorNewCall(EvalInfo &Info, const CallExpr *E,
     return false;
   }
 
-  QualType AllocType = Info.Ctx.getConstantArrayType(ElemType, Size, nullptr,
-                                                     ArrayType::Normal, 0);
+  QualType AllocType = Info.ASTCtx.getConstantArrayType(ElemType, Size, nullptr,
+                                                        ArrayType::Normal, 0);
   APValue *Val = Info.createHeapAlloc(E, AllocType, Result);
   *Val = APValue(APValue::UninitArray(), 0, Size.getZExtValue());
   Result.addArray(Info, E, cast<ConstantArrayType>(AllocType));
@@ -6350,7 +6476,7 @@ static Optional<DynAlloc *> CheckDeleteKind(EvalInfo &Info, const Expr *E,
                                             const LValue &Pointer,
                                             DynAlloc::Kind DeallocKind) {
   auto PointerAsString = [&] {
-    return Pointer.toString(Info.Ctx, Info.Ctx.VoidPtrTy);
+    return Pointer.toString(Info.ASTCtx, Info.ASTCtx.VoidPtrTy);
   };
 
   DynamicAllocLValue DA = Pointer.Base.dyn_cast<DynamicAllocLValue>();
@@ -6425,6 +6551,29 @@ bool HandleOperatorDeleteCall(EvalInfo &Info, const CallExpr *E) {
   return true;
 }
 
+// Creates a c-string of type const char *.
+//
+// This is morally equivalent to creating a global string.
+// During codegen, that's exactly how this is interpreted.
+static Expr *
+MakeConstCharPointer(ASTContext& Ctx, StringRef Str, SourceLocation Loc) {
+  QualType StrLitTy = Ctx.getConstantArrayType(Ctx.CharTy.withConst(),
+                                               llvm::APInt(32, Str.size() + 1),
+                                               nullptr,
+                                               ArrayType::Normal, 0);
+
+  // Create a string literal of type const char [L] where L
+  // is the number of characters in the StringRef.
+  StringLiteral *StrLit = StringLiteral::Create(Ctx, Str, StringLiteral::Ascii,
+                                                false, StrLitTy, Loc);
+
+  // Create an implicit cast expr so that we convert our const char [L]
+  // into an actual const char * for proper evaluation.
+  QualType StrTy = Ctx.getPointerType(Ctx.getConstType(Ctx.CharTy));
+  return ImplicitCastExpr::Create(Ctx, StrTy, CK_ArrayToPointerDecay, StrLit,
+                                  /*BasePath=*/nullptr, VK_RValue);
+}
+
 //===----------------------------------------------------------------------===//
 // Generic Evaluation
 //===----------------------------------------------------------------------===//
@@ -6488,7 +6637,7 @@ class APValueToBufferConverter {
   APValueToBufferConverter(EvalInfo &Info, CharUnits ObjectWidth,
                            const CastExpr *BCE)
       : Info(Info),
-        Buffer(ObjectWidth, Info.Ctx.getTargetInfo().isLittleEndian()),
+        Buffer(ObjectWidth, Info.ASTCtx.getTargetInfo().isLittleEndian()),
         BCE(BCE) {}
 
   bool visit(const APValue &Val, QualType Ty) {
@@ -6524,6 +6673,8 @@ class APValueToBufferConverter {
     case APValue::FixedPoint:
       // FIXME: We should support these.
 
+    case APValue::Reflection:
+    case APValue::Fragment:
     case APValue::Union:
     case APValue::MemberPointer:
     case APValue::AddrLabelDiff: {
@@ -6541,7 +6692,7 @@ class APValueToBufferConverter {
 
   bool visitRecord(const APValue &Val, QualType Ty, CharUnits Offset) {
     const RecordDecl *RD = Ty->getAsRecordDecl();
-    const ASTRecordLayout &Layout = Info.Ctx.getASTRecordLayout(RD);
+    const ASTRecordLayout &Layout = Info.ASTCtx.getASTRecordLayout(RD);
 
     // Visit the base classes.
     if (auto *CXXRD = dyn_cast<CXXRecordDecl>(RD)) {
@@ -6566,10 +6717,10 @@ class APValueToBufferConverter {
 
       uint64_t FieldOffsetBits = Layout.getFieldOffset(FieldIdx);
 
-      assert(FieldOffsetBits % Info.Ctx.getCharWidth() == 0 &&
+      assert(FieldOffsetBits % Info.ASTCtx.getCharWidth() == 0 &&
              "only bit-fields can have sub-char alignment");
       CharUnits FieldOffset =
-          Info.Ctx.toCharUnitsFromBits(FieldOffsetBits) + Offset;
+          Info.ASTCtx.toCharUnitsFromBits(FieldOffsetBits) + Offset;
       QualType FieldTy = FD->getType();
       if (!visit(Val.getStructField(FieldIdx), FieldTy, FieldOffset))
         return false;
@@ -6585,7 +6736,7 @@ class APValueToBufferConverter {
     if (!CAT)
       return false;
 
-    CharUnits ElemWidth = Info.Ctx.getTypeSizeInChars(CAT->getElementType());
+    CharUnits ElemWidth = Info.ASTCtx.getTypeSizeInChars(CAT->getElementType());
     unsigned NumInitializedElts = Val.getArrayInitializedElts();
     unsigned ArraySize = Val.getArraySize();
     // First, initialize the initialized elements.
@@ -6608,7 +6759,7 @@ class APValueToBufferConverter {
   }
 
   bool visitInt(const APSInt &Val, QualType Ty, CharUnits Offset) {
-    CharUnits Width = Info.Ctx.getTypeSizeInChars(Ty);
+    CharUnits Width = Info.ASTCtx.getTypeSizeInChars(Ty);
     SmallVector<unsigned char, 8> Bytes(Width.getQuantity());
     llvm::StoreIntToMemory(Val, &*Bytes.begin(), Width.getQuantity());
     Buffer.writeObject(Offset, Bytes);
@@ -6623,7 +6774,7 @@ class APValueToBufferConverter {
 public:
   static Optional<BitCastBuffer> convert(EvalInfo &Info, const APValue &Src,
                                          const CastExpr *BCE) {
-    CharUnits DstSize = Info.Ctx.getTypeSizeInChars(BCE->getType());
+    CharUnits DstSize = Info.ASTCtx.getTypeSizeInChars(BCE->getType());
     APValueToBufferConverter Converter(Info, DstSize, BCE);
     if (!Converter.visit(Src, BCE->getSubExpr()->getType()))
       return None;
@@ -6654,13 +6805,13 @@ class BufferToAPValueConverter {
   Optional<APValue> visit(const BuiltinType *T, CharUnits Offset,
                           const EnumType *EnumSugar = nullptr) {
     if (T->isNullPtrType()) {
-      uint64_t NullValue = Info.Ctx.getTargetNullPointerValue(QualType(T, 0));
+      uint64_t NullValue = Info.ASTCtx.getTargetNullPointerValue(QualType(T, 0));
       return APValue((Expr *)nullptr,
                      /*Offset=*/CharUnits::fromQuantity(NullValue),
                      APValue::NoLValuePath{}, /*IsNullPtr=*/true);
     }
 
-    CharUnits SizeOf = Info.Ctx.getTypeSizeInChars(T);
+    CharUnits SizeOf = Info.ASTCtx.getTypeSizeInChars(T);
     SmallVector<uint8_t, 8> Bytes;
     if (!Buffer.readObject(Offset, SizeOf, Bytes)) {
       // If this is std::byte or unsigned char, then its okay to store an
@@ -6673,14 +6824,14 @@ class BufferToAPValueConverter {
         QualType DisplayType(EnumSugar ? (const Type *)EnumSugar : T, 0);
         Info.FFDiag(BCE->getExprLoc(),
                     diag::note_constexpr_bit_cast_indet_dest)
-            << DisplayType << Info.Ctx.getLangOpts().CharIsSigned;
+            << DisplayType << Info.ASTCtx.getLangOpts().CharIsSigned;
         return None;
       }
 
       return APValue::IndeterminateValue();
     }
 
-    APSInt Val(SizeOf.getQuantity() * Info.Ctx.getCharWidth(), true);
+    APSInt Val(SizeOf.getQuantity() * Info.ASTCtx.getCharWidth(), true);
     llvm::LoadIntFromMemory(Val, &*Bytes.begin(), Bytes.size());
 
     if (T->isIntegralOrEnumerationType()) {
@@ -6690,7 +6841,7 @@ class BufferToAPValueConverter {
 
     if (T->isRealFloatingType()) {
       const llvm::fltSemantics &Semantics =
-          Info.Ctx.getFloatTypeSemantics(QualType(T, 0));
+          Info.ASTCtx.getFloatTypeSemantics(QualType(T, 0));
       return APValue(APFloat(Semantics, Val));
     }
 
@@ -6699,7 +6850,7 @@ class BufferToAPValueConverter {
 
   Optional<APValue> visit(const RecordType *RTy, CharUnits Offset) {
     const RecordDecl *RD = RTy->getAsRecordDecl();
-    const ASTRecordLayout &Layout = Info.Ctx.getASTRecordLayout(RD);
+    const ASTRecordLayout &Layout = Info.ASTCtx.getASTRecordLayout(RD);
 
     unsigned NumBases = 0;
     if (auto *CXXRD = dyn_cast<CXXRecordDecl>(RD))
@@ -6714,7 +6865,7 @@ class BufferToAPValueConverter {
         const CXXBaseSpecifier &BS = CXXRD->bases_begin()[I];
         CXXRecordDecl *BaseDecl = BS.getType()->getAsCXXRecordDecl();
         if (BaseDecl->isEmpty() ||
-            Info.Ctx.getASTRecordLayout(BaseDecl).getNonVirtualSize().isZero())
+            Info.ASTCtx.getASTRecordLayout(BaseDecl).getNonVirtualSize().isZero())
           continue;
 
         Optional<APValue> SubObj = visitType(
@@ -6737,10 +6888,10 @@ class BufferToAPValueConverter {
       }
 
       uint64_t FieldOffsetBits = Layout.getFieldOffset(FieldIdx);
-      assert(FieldOffsetBits % Info.Ctx.getCharWidth() == 0);
+      assert(FieldOffsetBits % Info.ASTCtx.getCharWidth() == 0);
 
       CharUnits FieldOffset =
-          CharUnits::fromQuantity(FieldOffsetBits / Info.Ctx.getCharWidth()) +
+          CharUnits::fromQuantity(FieldOffsetBits / Info.ASTCtx.getCharWidth()) +
           Offset;
       QualType FieldTy = FD->getType();
       Optional<APValue> SubObj = visitType(FieldTy, FieldOffset);
@@ -6766,7 +6917,7 @@ class BufferToAPValueConverter {
 
   Optional<APValue> visit(const ConstantArrayType *Ty, CharUnits Offset) {
     size_t Size = Ty->getSize().getLimitedValue();
-    CharUnits ElementWidth = Info.Ctx.getTypeSizeInChars(Ty->getElementType());
+    CharUnits ElementWidth = Info.ASTCtx.getTypeSizeInChars(Ty->getElementType());
 
     APValue ArrayValue(APValue::UninitArray(), Size, Size);
     for (size_t I = 0; I != Size; ++I) {
@@ -6882,17 +7033,17 @@ static bool checkBitCastConstexprEligibility(EvalInfo *Info,
 static bool handleLValueToRValueBitCast(EvalInfo &Info, APValue &DestValue,
                                         APValue &SourceValue,
                                         const CastExpr *BCE) {
-  assert(CHAR_BIT == 8 && Info.Ctx.getTargetInfo().getCharWidth() == 8 &&
+  assert(CHAR_BIT == 8 && Info.ASTCtx.getTargetInfo().getCharWidth() == 8 &&
          "no host or target supports non 8-bit chars");
   assert(SourceValue.isLValue() &&
          "LValueToRValueBitcast requires an lvalue operand!");
 
-  if (!checkBitCastConstexprEligibility(&Info, Info.Ctx, BCE))
+  if (!checkBitCastConstexprEligibility(&Info, Info.ASTCtx, BCE))
     return false;
 
   LValue SourceLValue;
   APValue SourceRValue;
-  SourceLValue.setFrom(Info.Ctx, SourceValue);
+  SourceLValue.setFrom(Info.ASTCtx, SourceValue);
   if (!handleLValueToRValueConversion(
           Info, BCE, BCE->getSubExpr()->getType().withConst(), SourceLValue,
           SourceRValue, /*WantObjectRepresentation=*/true))
@@ -7055,7 +7206,7 @@ public:
     return static_cast<Derived*>(this)->VisitCastExpr(E);
   }
   bool VisitCXXDynamicCastExpr(const CXXDynamicCastExpr *E) {
-    if (!Info.Ctx.getLangOpts().CPlusPlus20)
+    if (!Info.ASTCtx.getLangOpts().CPlusPlus20)
       CCEDiag(E, diag::note_constexpr_invalid_cast) << 1;
     return static_cast<Derived*>(this)->VisitCastExpr(E);
   }
@@ -7095,7 +7246,7 @@ public:
     LValue CommonLV;
     if (!Evaluate(Info.CurrentCall->createTemporary(
                       E->getOpaqueValue(),
-                      getStorageType(Info.Ctx, E->getOpaqueValue()), false,
+                      getStorageType(Info.ASTCtx, E->getOpaqueValue()), false,
                       CommonLV),
                   Info, E->getCommon()))
       return false;
@@ -7160,7 +7311,7 @@ public:
 
         LValue LV;
         if (!Evaluate(Info.CurrentCall->createTemporary(
-                          OVE, getStorageType(Info.Ctx, OVE), false, LV),
+                          OVE, getStorageType(Info.ASTCtx, OVE), false, LV),
                       Info, OVE->getSourceExpr()))
           return false;
       } else if (SemE == E->getResultExpr()) {
@@ -7234,7 +7385,7 @@ public:
         return Error(Callee);
       // Don't call function pointers which have been cast to some other type.
       // Per DR (no number yet), the caller and callee can differ in noexcept.
-      if (!Info.Ctx.hasSameFunctionTypeIgnoringExceptionSpec(
+      if (!Info.ASTCtx.hasSameFunctionTypeIgnoringExceptionSpec(
         CalleeType->getPointeeType(), FD->getType())) {
         return Error(E);
       }
@@ -7323,7 +7474,7 @@ public:
     if (auto *DD = dyn_cast<CXXDestructorDecl>(FD)) {
       assert(This && "no 'this' pointer for destructor call");
       return HandleDestruction(Info, E, *This,
-                               Info.Ctx.getRecordType(DD->getParent()));
+                               Info.ASTCtx.getRecordType(DD->getParent()));
     }
 
     const FunctionDecl *Definition = nullptr;
@@ -7364,7 +7515,7 @@ public:
 
   /// A member expression where the object is a prvalue is itself a prvalue.
   bool VisitMemberExpr(const MemberExpr *E) {
-    assert(!Info.Ctx.getLangOpts().CPlusPlus11 &&
+    assert(!Info.ASTCtx.getLangOpts().CPlusPlus11 &&
            "missing temporary materialization conversion");
     assert(!E->isArrow() && "missing call to bound member function?");
 
@@ -7528,6 +7679,64 @@ public:
     llvm_unreachable("Return from function from the loop above.");
   }
 
+  bool VisitCXXInvalidReflectionExpr(const CXXInvalidReflectionExpr *E);
+
+  bool VisitCXXReflectionReadQueryExpr(const CXXReflectionReadQueryExpr *E);
+  bool VisitCXXReflectionWriteQueryExpr(const CXXReflectionWriteQueryExpr *E);
+
+  bool VisitCXXConcatenateExpr(const CXXConcatenateExpr *E) {
+    SmallString<256> Buf;
+    llvm::raw_svector_ostream OS(Buf);
+    SmallVector<APValue, 4> Args;
+    for (Stmt const *S : E->children()) {
+      Expr const* P = cast<Expr>(S);
+
+      // Evaluate the expression.
+      Args.emplace_back();
+      APValue &Part = Args.back();
+      if (!Evaluate(Part, Info, P))
+        return false;
+
+      if (Part.isLValue()) {
+        assert(P->getType().isCXXStringLiteralType());
+
+        const Expr *BaseExpr = Part.getLValueBase().get<const Expr *>();
+        const StringLiteral *Str = cast<StringLiteral>(BaseExpr);
+
+        // Strip quotes from the literal.
+        SmallString<256> StrBuf;
+        llvm::raw_svector_ostream StrOS(StrBuf);
+        Str->outputString(StrOS);
+        std::string NonQuote(StrBuf.c_str(), 1, StrBuf.size() - 2);
+        OS << NonQuote;
+      } else if (Part.isInt()) {
+        // FIXME: respect the signedness of the type.
+        OS << Part.getInt();
+      }
+    }
+
+    Expr *Str = MakeConstCharPointer(Info.ASTCtx, Buf, E->getBeginLoc());
+    APValue Val;
+    if (!Evaluate(Val, Info, Str))
+      return false;
+    return DerivedSuccess(Val, E);
+  }
+
+  bool VisitCXXFragmentExpr(const CXXFragmentExpr *E) {
+    if (Info.checkingPotentialConstantExpression())
+      return false;
+
+    unsigned NumCaptures = E->getNumCaptures();
+
+    SmallVector<APValue, 10> Captures(NumCaptures);
+    for (unsigned I = 0; I < NumCaptures; ++I) {
+      if (!::EvaluateAsRValue(Info, E->getCapture(I), Captures[I]))
+        return false;
+    }
+
+    return DerivedSuccess(APValue(E, Captures), E);
+  }
+
   /// Visit a value which is evaluated, but whose value is ignored.
   void VisitIgnoredValue(const Expr *E) {
     EvaluateIgnoredValue(Info, E);
@@ -7542,6 +7751,256 @@ public:
     VisitIgnoredValue(E);
   }
 };
+
+static bool PrintTypeDefinition(EvalInfo &Info, const TypeDecl *TD) {
+  // Create a modified version of the current printing policy,
+  // which includes the definition.
+  PrintingPolicy PP = Info.ASTCtx.getPrintingPolicy();
+  PP.IncludeTagDefinition = true;
+
+  QualType QT(TD->getTypeForDecl(), 0);
+  QT.print(llvm::errs(), PP);
+
+  // FIXME: This may be a bit of a hack, a more proper solution might be using
+  // the type printer with an elaborated type. However, recovery of said
+  // type information is difficult at this point. Simply appending a simi-colon
+  // seems to be a viable workaround to get us what we need.
+  llvm::errs() << ';';
+  return true;
+}
+
+static bool Print(EvalInfo &Info, const Expr *PE, const APValue& EV) {
+  QualType T = Info.ASTCtx.getCanonicalType(PE->getType());
+  if (T->isIntegralOrEnumerationType()) {
+    llvm::errs() << EV.getInt().getExtValue();
+    return true;
+  } else if (T.isCXXStringLiteralType()) {
+    assert(EV.isLValue() && "Expected lvalue");
+    APValue::LValueBase Base = EV.getLValueBase();
+    assert(Base.is<const Expr *>() && "Expected a string literal initializer");
+    const StringLiteral *Message
+        = cast<StringLiteral>(Base.get<const Expr *>());
+
+    // Evaluate the message so that we can transform it into a string.
+    SmallString<256> Buf;
+    llvm::raw_svector_ostream OS(Buf);
+    Message->outputString(OS);
+    std::string NonQuote(Buf.c_str(), 1, Buf.size() - 2);
+    llvm::errs() << NonQuote;
+    return true;
+  } else if (const BuiltinType *Ty = T->getAs<BuiltinType>()) {
+    assert(Ty->getKind() == BuiltinType::MetaInfo && "Must be reflection");
+
+    switch(EV.getReflectionKind()) {
+    case RK_invalid: {
+      llvm::errs() << "<invalid>";
+      return true;
+    }
+
+    case RK_declaration: {
+      const Decl *D = EV.getReflectedDeclaration();
+
+      if (const TypeDecl *TD = dyn_cast<TypeDecl>(D))
+        return PrintTypeDefinition(Info, TD);
+
+      D->print(llvm::errs(), Info.ASTCtx.getPrintingPolicy());
+      return true;
+    }
+
+    case RK_type: {
+      QualType QT = EV.getReflectedType();
+
+      while (const LocInfoType *LIT = dyn_cast<LocInfoType>(QT))
+        QT = LIT->getType();
+
+      QT.print(llvm::errs(), Info.ASTCtx.getPrintingPolicy());
+      return true;
+    }
+
+    case RK_expression: {
+      const Expr *E = EV.getReflectedExpression();
+      E->printPretty(llvm::errs(), nullptr, Info.ASTCtx.getPrintingPolicy());
+      return true;
+    }
+
+    default:
+      break;
+    }
+
+    // TODO We should be able to handle all types of reflections
+    llvm_unreachable("unhandled reflection");
+  }
+
+  llvm_unreachable("unhandled expression type");
+}
+
+static void CompletePrint() {
+  llvm::errs() << '\n';
+}
+
+static bool Dump(EvalInfo &Info, const Expr *PE, const APValue& EV) {
+  QualType T = Info.ASTCtx.getCanonicalType(PE->getType());
+  if (const BuiltinType *Ty = T->getAs<BuiltinType>()) {
+    assert(Ty->getKind() == BuiltinType::MetaInfo && "Must be reflection");
+
+    switch(EV.getReflectionKind()) {
+    case RK_invalid: {
+      llvm::errs() << "<invalid>";
+      CompletePrint();
+      return true;
+    }
+
+    case RK_declaration: {
+      const Decl *D = EV.getReflectedDeclaration();
+      D->dump();
+      return true;
+    }
+
+    case RK_type: {
+      QualType QT = EV.getReflectedType();
+      QT.dump();
+      return true;
+    }
+
+    case RK_expression: {
+      const Expr *E = EV.getReflectedExpression();
+      if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
+        DRE->getDecl()->dump();
+        return true;
+      } else {
+        E->dump();
+        return true;
+      }
+    }
+
+    default:
+      break;
+    }
+
+    // TODO We should be able to handle all types of reflections
+    llvm_unreachable("unhandled reflection");
+  }
+
+  llvm_unreachable("unhandled expression type");
+}
+
+template<typename Derived>
+bool ExprEvaluatorBase<Derived>::VisitCXXInvalidReflectionExpr(
+                                            const CXXInvalidReflectionExpr *E) {
+  // This never produces a value.
+  //
+  // FIXME: We probably want to evaluate the sub-expression for potential
+  // errors before stopping at these conditions.
+  if (Info.checkingPotentialConstantExpression())
+    return false;
+  if (Info.checkingForUndefinedBehavior())
+    return false;
+
+  /// Evaluate the message.
+  APValue MessageAPValue;
+  if (!Evaluate(MessageAPValue, Info, E->getMessage()))
+    return Error(E->getMessage(), diag::note_invalid_subexpr_in_const_expr);
+
+  const Expr *Message = MessageAPValue.getLValueBase().get<const Expr *>();
+  APValue Result(RK_invalid, new (Info.ASTCtx) InvalidReflection{
+      Message
+  });
+
+  return DerivedSuccess(Result, E);
+}
+
+template<typename Derived>
+bool ExprEvaluatorBase<Derived>::VisitCXXReflectionReadQueryExpr(
+                                          const CXXReflectionReadQueryExpr *E) {
+  const int QUERY_ARG_INDEX             = 0;
+  const int REFLECTION_ARG_INDEX        = 1;
+
+  SmallVector<APValue, 2> Args(E->getNumArgs());
+  for (std::size_t I = 0; I < Args.size(); ++I) {
+    const Expr *Arg = E->getArg(I);
+    if (!Evaluate(Args[I], Info, Arg))
+      return false;
+  }
+
+  // This should be equal in integer value to Args[0].
+  ReflectionQuery Query = E->getQuery();
+
+  // Build the reflection.
+  Reflection R(Info.Ctx.ASTCtx, Args[REFLECTION_ARG_INDEX],
+               E, Info.EvalStatus.Diag);
+
+  ReflectionCallback *CB = Info.Ctx.CB;
+  APValue Result;
+  bool Ok;
+  if (isPredicateQuery(Query)) {
+    ReflectionQueryEvaluator QueryEval(
+        Info.Ctx.ASTCtx, CB, Query, E, Info.EvalStatus.Diag);
+    Ok = QueryEval.EvaluatePredicate(Args, Result);
+  } else if (isAssociatedReflectionQuery(Query))
+    Ok = R.GetAssociatedReflection(Query, Result);
+  else if (isNameQuery(Query))
+    Ok = R.GetName(Query, Result);
+  else
+    return Error(E->getArg(QUERY_ARG_INDEX));
+
+  if (!Ok)
+    return Error(E);
+
+  return DerivedSuccess(Result, E);
+}
+
+template<typename Derived>
+bool ExprEvaluatorBase<Derived>::VisitCXXReflectionWriteQueryExpr(
+                                         const CXXReflectionWriteQueryExpr *E) {
+  const int QUERY_ARG_INDEX             = 0;
+  const int REFLECTION_ARG_INDEX        = 1;
+  const int CONTEXTUAL_ARGS_BEGIN_INDEX = 2;
+
+  SmallVector<APValue, 2> Args(E->getNumArgs());
+  for (std::size_t I = 0; I < Args.size(); ++I) {
+    if (I == REFLECTION_ARG_INDEX)
+      continue;
+
+    const Expr *Arg = E->getArg(I);
+    if (!Evaluate(Args[I], Info, Arg))
+      return false;
+  }
+
+  // This should be equal in integer value to Args[0].
+  ReflectionQuery Query = E->getQuery();
+
+  // Get the reflection's LValue.
+  LValue ReflLVal;
+  if (!EvaluateLValue(E->getArg(REFLECTION_ARG_INDEX), ReflLVal, Info))
+    return false;
+
+  // Get the reflection as an RValue.
+  APValue ReflRVal;
+  if (!handleLValueToRValueConversion(Info, E, E->getType(), ReflLVal,
+                                      ReflRVal))
+    return false;
+
+  // Build the reflection.
+  Reflection R(Info.Ctx.ASTCtx, ReflRVal, E, Info.EvalStatus.Diag);
+
+  APValue Result;
+  bool Ok;
+  if (isModifierUpdateQuery(Query)) {
+    ArrayRef<APValue> ContextualArgs(Args.begin() + CONTEXTUAL_ARGS_BEGIN_INDEX,
+                                     Args.end());
+    Ok = R.UpdateModifier(Query, ContextualArgs, Result);
+  } else
+    return Error(E->getArg(QUERY_ARG_INDEX));
+
+  if (!Ok)
+    return Error(E);
+
+  // Update the reflection's LValue with the new RValue.
+  if (!handleAssignment(Info, E, ReflLVal, E->getType(), Result))
+    return false;
+
+  return true;
+}
 
 } // namespace
 
@@ -7573,7 +8032,7 @@ public:
         InvalidBaseOK(InvalidBaseOK) {}
 
   bool Success(const APValue &V, const Expr *E) {
-    Result.setFrom(this->Info.Ctx, V);
+    Result.setFrom(this->Info.ASTCtx, V);
     return true;
   }
 
@@ -7705,6 +8164,8 @@ public:
   bool VisitCXXTypeidExpr(const CXXTypeidExpr *E);
   bool VisitCXXUuidofExpr(const CXXUuidofExpr *E);
   bool VisitArraySubscriptExpr(const ArraySubscriptExpr *E);
+  bool VisitCXXSelectMemberExpr(const CXXSelectMemberExpr *E);
+  bool VisitCXXSelectPackExpr(const CXXSelectPackExpr *E);
   bool VisitUnaryDeref(const UnaryOperator *E);
   bool VisitUnaryReal(const UnaryOperator *E);
   bool VisitUnaryImag(const UnaryOperator *E);
@@ -7769,7 +8230,6 @@ bool LValueExprEvaluator::VisitDeclRefExpr(const DeclRefExpr *E) {
 
 
 bool LValueExprEvaluator::VisitVarDecl(const Expr *E, const VarDecl *VD) {
-
   // If we are within a lambda's call operator, check whether the 'VD' referred
   // to within 'E' actually represents a lambda-capture that maps to a
   // data-member/field within the closure object, and if so, evaluate to the
@@ -7798,7 +8258,7 @@ bool LValueExprEvaluator::VisitVarDecl(const Expr *E, const VarDecl *VD) {
         if (!handleLValueToRValueConversion(Info, E, FD->getType(), Result,
                                             RVal))
           return false;
-        Result.setFrom(Info.Ctx, RVal);
+        Result.setFrom(Info.ASTCtx, RVal);
       }
       return true;
     }
@@ -7916,11 +8376,11 @@ bool LValueExprEvaluator::VisitCXXTypeidExpr(const CXXTypeidExpr *E) {
 
   if (!E->isPotentiallyEvaluated()) {
     if (E->isTypeOperand())
-      TypeInfo = TypeInfoLValue(E->getTypeOperand(Info.Ctx).getTypePtr());
+      TypeInfo = TypeInfoLValue(E->getTypeOperand(Info.ASTCtx).getTypePtr());
     else
       TypeInfo = TypeInfoLValue(E->getExprOperand()->getType().getTypePtr());
   } else {
-    if (!Info.Ctx.getLangOpts().CPlusPlus20) {
+    if (!Info.ASTCtx.getLangOpts().CPlusPlus20) {
       Info.CCEDiag(E, diag::note_constexpr_typeid_polymorphic)
         << E->getExprOperand()->getType()
         << E->getExprOperand()->getSourceRange();
@@ -7935,7 +8395,7 @@ bool LValueExprEvaluator::VisitCXXTypeidExpr(const CXXTypeidExpr *E) {
       return false;
 
     TypeInfo =
-        TypeInfoLValue(Info.Ctx.getRecordType(DynType->Type).getTypePtr());
+        TypeInfoLValue(Info.ASTCtx.getRecordType(DynType->Type).getTypePtr());
   }
 
   return Success(APValue::LValueBase::getTypeInfo(TypeInfo, E->getType()));
@@ -7982,6 +8442,21 @@ bool LValueExprEvaluator::VisitArraySubscriptExpr(const ArraySubscriptExpr *E) {
 
   return Success &&
          HandleLValueArrayAdjustment(Info, E, Result, E->getType(), Index);
+}
+
+bool
+LValueExprEvaluator::VisitCXXSelectMemberExpr(const CXXSelectMemberExpr *E) {
+  const MemberExpr *Member = dyn_cast<MemberExpr>(E->getValue());
+  if (!Member)
+    return false;
+  return VisitMemberExpr(Member);
+}
+
+bool LValueExprEvaluator::VisitCXXSelectPackExpr(const CXXSelectPackExpr *E) {
+  const Expr *Expansion = E->getValue();
+  if (!Expansion)
+    return false;
+  return VisitExpr(Expansion);
 }
 
 bool LValueExprEvaluator::VisitUnaryDeref(const UnaryOperator *E) {
@@ -8074,14 +8549,14 @@ bool LValueExprEvaluator::VisitBinAssign(const BinaryOperator *E) {
 ///
 /// This expects the given CallExpr to be a call to a function with an
 /// alloc_size attribute.
-static bool getBytesReturnedByAllocSizeCall(const ASTContext &Ctx,
+static bool getBytesReturnedByAllocSizeCall(const Expr::EvalContext &Ctx,
                                             const CallExpr *Call,
                                             llvm::APInt &Result) {
   const AllocSizeAttr *AllocSize = getAllocSizeAttr(Call);
 
   assert(AllocSize && AllocSize->getElemSizeParam().isValid());
   unsigned SizeArgNo = AllocSize->getElemSizeParam().getASTIndex();
-  unsigned BitsInSizeT = Ctx.getTypeSize(Ctx.getSizeType());
+  unsigned BitsInSizeT = Ctx.ASTCtx.getTypeSize(Ctx.ASTCtx.getSizeType());
   if (Call->getNumArgs() <= SizeArgNo)
     return false;
 
@@ -8121,7 +8596,7 @@ static bool getBytesReturnedByAllocSizeCall(const ASTContext &Ctx,
 
 /// Convenience function. LVal's base must be a call to an alloc_size
 /// function.
-static bool getBytesReturnedByAllocSizeCall(const ASTContext &Ctx,
+static bool getBytesReturnedByAllocSizeCall(const Expr::EvalContext &Ctx,
                                             const LValue &LVal,
                                             llvm::APInt &Result) {
   assert(isBaseAnAllocSizeCall(LVal.getLValueBase()) &&
@@ -8194,11 +8669,11 @@ public:
         InvalidBaseOK(InvalidBaseOK) {}
 
   bool Success(const APValue &V, const Expr *E) {
-    Result.setFrom(Info.Ctx, V);
+    Result.setFrom(Info.ASTCtx, V);
     return true;
   }
   bool ZeroInitialization(const Expr *E) {
-    Result.setNull(Info.Ctx, E->getType());
+    Result.setNull(Info.ASTCtx, E->getType());
     return true;
   }
 
@@ -8258,7 +8733,7 @@ public:
                                             RVal))
           return false;
 
-        Result.setFrom(Info.Ctx, RVal);
+        Result.setFrom(Info.ASTCtx, RVal);
       }
     }
     return true;
@@ -8269,8 +8744,8 @@ public:
   bool VisitSourceLocExpr(const SourceLocExpr *E) {
     assert(E->isStringType() && "SourceLocExpr isn't a pointer type?");
     APValue LValResult = E->EvaluateInContext(
-        Info.Ctx, Info.CurrentCall->CurSourceLocExprScope.getDefaultExpr());
-    Result.setFrom(Info.Ctx, LValResult);
+        Info.ASTCtx, Info.CurrentCall->CurSourceLocExprScope.getDefaultExpr());
+    Result.setFrom(Info.ASTCtx, LValResult);
     return true;
   }
 
@@ -8332,8 +8807,9 @@ bool PointerExprEvaluator::VisitCastExpr(const CastExpr *E) {
     if (!E->getType()->isVoidPointerType()) {
       if (!Result.InvalidBase && !Result.Designator.Invalid &&
           !Result.IsNullPtr &&
-          Info.Ctx.hasSameUnqualifiedType(Result.Designator.getType(Info.Ctx),
-                                          E->getType()->getPointeeType()) &&
+          Info.ASTCtx.hasSameUnqualifiedType(
+              Result.Designator.getType(Info.ASTCtx),
+              E->getType()->getPointeeType()) &&
           Info.getStdAllocatorCaller("allocate")) {
         // Inside a call to std::allocator::allocate and friends, we permit
         // casting from void* back to cv1 T* for a pointer that points to a
@@ -8388,7 +8864,7 @@ bool PointerExprEvaluator::VisitCastExpr(const CastExpr *E) {
       break;
 
     if (Value.isInt()) {
-      unsigned Size = Info.Ctx.getTypeSize(E->getType());
+      unsigned Size = Info.ASTCtx.getTypeSize(E->getType());
       uint64_t N = Value.getInt().extOrTrunc(Size).getZExtValue();
       Result.Base = (Expr*)nullptr;
       Result.InvalidBase = false;
@@ -8398,7 +8874,7 @@ bool PointerExprEvaluator::VisitCastExpr(const CastExpr *E) {
       return true;
     } else {
       // Cast is of an lvalue, no need to change value.
-      Result.setFrom(Info.Ctx, Value);
+      Result.setFrom(Info.ASTCtx, Value);
       return true;
     }
   }
@@ -8414,7 +8890,7 @@ bool PointerExprEvaluator::VisitCastExpr(const CastExpr *E) {
         return false;
     }
     // The result is a pointer to the first element of the array.
-    auto *AT = Info.Ctx.getAsArrayType(SubExpr->getType());
+    auto *AT = Info.ASTCtx.getAsArrayType(SubExpr->getType());
     if (auto *CAT = dyn_cast<ConstantArrayType>(AT))
       Result.addArray(Info, E, CAT);
     else
@@ -8455,17 +8931,17 @@ static CharUnits GetAlignOfType(EvalInfo &Info, QualType T,
     return CharUnits::One();
 
   const bool AlignOfReturnsPreferred =
-      Info.Ctx.getLangOpts().getClangABICompat() <= LangOptions::ClangABI::Ver7;
+      Info.ASTCtx.getLangOpts().getClangABICompat() <= LangOptions::ClangABI::Ver7;
 
   // __alignof is defined to return the preferred alignment.
   // Before 8, clang returned the preferred alignment for alignof and _Alignof
   // as well.
   if (ExprKind == UETT_PreferredAlignOf || AlignOfReturnsPreferred)
-    return Info.Ctx.toCharUnitsFromBits(
-      Info.Ctx.getPreferredTypeAlign(T.getTypePtr()));
+    return Info.ASTCtx.toCharUnitsFromBits(
+      Info.ASTCtx.getPreferredTypeAlign(T.getTypePtr()));
   // alignof and _Alignof are defined to return the ABI alignment.
   else if (ExprKind == UETT_AlignOf)
-    return Info.Ctx.getTypeAlignInChars(T.getTypePtr());
+    return Info.ASTCtx.getTypeAlignInChars(T.getTypePtr());
   else
     llvm_unreachable("GetAlignOfType on a non-alignment ExprKind");
 }
@@ -8481,19 +8957,19 @@ static CharUnits GetAlignOfExpr(EvalInfo &Info, const Expr *E,
   // alignof decl is always accepted, even if it doesn't make sense: we default
   // to 1 in those cases.
   if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E))
-    return Info.Ctx.getDeclAlign(DRE->getDecl(),
-                                 /*RefAsPointee*/true);
+    return Info.ASTCtx.getDeclAlign(DRE->getDecl(),
+                                    /*RefAsPointee*/true);
 
   if (const MemberExpr *ME = dyn_cast<MemberExpr>(E))
-    return Info.Ctx.getDeclAlign(ME->getMemberDecl(),
-                                 /*RefAsPointee*/true);
+    return Info.ASTCtx.getDeclAlign(ME->getMemberDecl(),
+                                    /*RefAsPointee*/true);
 
   return GetAlignOfType(Info, E->getType(), ExprKind);
 }
 
 static CharUnits getBaseAlignment(EvalInfo &Info, const LValue &Value) {
   if (const auto *VD = Value.Base.dyn_cast<const ValueDecl *>())
-    return Info.Ctx.getDeclAlign(VD);
+    return Info.Ctx.ASTCtx.getDeclAlign(VD);
   if (const auto *E = Value.Base.dyn_cast<const Expr *>())
     return GetAlignOfExpr(Info, E, UETT_AlignOf);
   return GetAlignOfType(Info, Value.Base.getTypeInfoType(), UETT_AlignOf);
@@ -8509,7 +8985,7 @@ static bool getAlignmentArgument(const Expr *E, QualType ForType,
     Info.FFDiag(E, diag::note_constexpr_invalid_alignment) << Alignment;
     return false;
   }
-  unsigned SrcWidth = Info.Ctx.getIntWidth(ForType);
+  unsigned SrcWidth = Info.Ctx.ASTCtx.getIntWidth(ForType);
   APSInt MaxValue(APInt::getOneBitSet(SrcWidth, SrcWidth - 1));
   if (APSInt::compareValues(Alignment, MaxValue) > 0) {
     Info.FFDiag(E, diag::note_constexpr_alignment_too_big)
@@ -8664,7 +9140,8 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     if (Info.getLangOpts().CPlusPlus11)
       Info.CCEDiag(E, diag::note_constexpr_invalid_function)
         << /*isConstexpr*/0 << /*isConstructor*/0
-        << (std::string("'") + Info.Ctx.BuiltinInfo.getName(BuiltinOp) + "'");
+        << (std::string("'") +
+            Info.ASTCtx.BuiltinInfo.getName(BuiltinOp) + "'");
     else
       Info.CCEDiag(E, diag::note_invalid_subexpr_in_const_expr);
     LLVM_FALLTHROUGH;
@@ -8694,11 +9171,11 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     if (!Result.checkNullPointerForFoldAccess(Info, E, AK_Read) ||
         Result.Designator.Invalid)
       return false;
-    QualType CharTy = Result.Designator.getType(Info.Ctx);
+    QualType CharTy = Result.Designator.getType(Info.ASTCtx);
     bool IsRawByte = BuiltinOp == Builtin::BImemchr ||
                      BuiltinOp == Builtin::BI__builtin_memchr;
     assert(IsRawByte ||
-           Info.Ctx.hasSameUnqualifiedType(
+           Info.ASTCtx.hasSameUnqualifiedType(
                CharTy, E->getArg(0)->getType()->getPointeeType()));
     // Pointers to const void may point to objects of incomplete type.
     if (IsRawByte && CharTy->isIncompleteType()) {
@@ -8709,7 +9186,7 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     // FIXME: We can compare the bytes in the correct order.
     if (IsRawByte && !isOneByteCharacterType(CharTy)) {
       Info.FFDiag(E, diag::note_constexpr_memchr_unsupported)
-          << (std::string("'") + Info.Ctx.BuiltinInfo.getName(BuiltinOp) + "'")
+          << (std::string("'") + Info.ASTCtx.BuiltinInfo.getName(BuiltinOp) + "'")
           << CharTy;
       return false;
     }
@@ -8735,7 +9212,7 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
       // memchr compares by converting both sides to unsigned char. That's also
       // correct for strchr if we get this far (to cope with plain char being
       // unsigned in the strchr case).
-      DesiredVal = Desired.trunc(Info.Ctx.getCharWidth()).getZExtValue();
+      DesiredVal = Desired.trunc(Info.ASTCtx.getCharWidth()).getZExtValue();
       break;
 
     case Builtin::BIwcschr:
@@ -8772,7 +9249,8 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     if (Info.getLangOpts().CPlusPlus11)
       Info.CCEDiag(E, diag::note_constexpr_invalid_function)
         << /*isConstexpr*/0 << /*isConstructor*/0
-        << (std::string("'") + Info.Ctx.BuiltinInfo.getName(BuiltinOp) + "'");
+        << (std::string("'") +
+            Info.ASTCtx.BuiltinInfo.getName(BuiltinOp) + "'");
     else
       Info.CCEDiag(E, diag::note_invalid_subexpr_in_const_expr);
     LLVM_FALLTHROUGH;
@@ -8816,7 +9294,7 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
       (!Src.Base ? Src : Dest).moveInto(Val);
       Info.FFDiag(E, diag::note_constexpr_memcpy_null)
           << Move << WChar << !!Src.Base
-          << Val.getAsString(Info.Ctx, E->getArg(0)->getType());
+          << Val.getAsString(Info.ASTCtx, E->getArg(0)->getType());
       return false;
     }
     if (Src.Designator.Invalid || Dest.Designator.Invalid)
@@ -8825,9 +9303,9 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     // We require that Src and Dest are both pointers to arrays of
     // trivially-copyable type. (For the wide version, the designator will be
     // invalid if the designated object is not a wchar_t.)
-    QualType T = Dest.Designator.getType(Info.Ctx);
-    QualType SrcT = Src.Designator.getType(Info.Ctx);
-    if (!Info.Ctx.hasSameUnqualifiedType(T, SrcT)) {
+    QualType T = Dest.Designator.getType(Info.ASTCtx);
+    QualType SrcT = Src.Designator.getType(Info.ASTCtx);
+    if (!Info.ASTCtx.hasSameUnqualifiedType(T, SrcT)) {
       // FIXME: Consider using our bit_cast implementation to support this.
       Info.FFDiag(E, diag::note_constexpr_memcpy_type_pun) << Move << SrcT << T;
       return false;
@@ -8836,13 +9314,13 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
       Info.FFDiag(E, diag::note_constexpr_memcpy_incomplete_type) << Move << T;
       return false;
     }
-    if (!T.isTriviallyCopyableType(Info.Ctx)) {
+    if (!T.isTriviallyCopyableType(Info.ASTCtx)) {
       Info.FFDiag(E, diag::note_constexpr_memcpy_nontrivial) << Move << T;
       return false;
     }
 
     // Figure out how many T's we're copying.
-    uint64_t TSize = Info.Ctx.getTypeSizeInChars(T).getQuantity();
+    uint64_t TSize = Info.ASTCtx.getTypeSizeInChars(T).getQuantity();
     if (!WChar) {
       uint64_t Remainder;
       llvm::APInt OrigN = N;
@@ -9003,9 +9481,9 @@ bool PointerExprEvaluator::VisitCXXNewExpr(const CXXNewExpr *E) {
 
     //   -- its value is such that the size of the allocated object would
     //      exceed the implementation-defined limit
-    if (ConstantArrayType::getNumAddressingBits(Info.Ctx, AllocType,
+    if (ConstantArrayType::getNumAddressingBits(Info.ASTCtx, AllocType,
                                                 ArrayBound) >
-        ConstantArrayType::getMaxSizeBits(Info.Ctx)) {
+        ConstantArrayType::getMaxSizeBits(Info.ASTCtx)) {
       if (IsNothrow)
         return ZeroInitialization(E);
 
@@ -9018,7 +9496,7 @@ bool PointerExprEvaluator::VisitCXXNewExpr(const CXXNewExpr *E) {
     //      array elements for which initializers are provided [...]
     //      exceeds the number of elements to initialize
     if (Init && !isa<CXXConstructExpr>(Init)) {
-      auto *CAT = Info.Ctx.getAsConstantArrayType(Init->getType());
+      auto *CAT = Info.ASTCtx.getAsConstantArrayType(Init->getType());
       assert(CAT && "unexpected type for array initializer");
 
       unsigned Bits =
@@ -9044,8 +9522,8 @@ bool PointerExprEvaluator::VisitCXXNewExpr(const CXXNewExpr *E) {
       ResizedArrayCCE = cast<CXXConstructExpr>(Init);
     }
 
-    AllocType = Info.Ctx.getConstantArrayType(AllocType, ArrayBound, nullptr,
-                                              ArrayType::Normal, 0);
+    AllocType = Info.ASTCtx.getConstantArrayType(AllocType, ArrayBound, nullptr,
+                                                 ArrayType::Normal, 0);
   } else {
     assert(!AllocType->isArrayType() &&
            "array allocation with non-array new");
@@ -9066,7 +9544,7 @@ bool PointerExprEvaluator::VisitCXXNewExpr(const CXXNewExpr *E) {
       bool found(APValue &Subobj, QualType SubobjType) {
         // FIXME: Reject the cases where [basic.life]p8 would not permit the
         // old name of the object to be used to name the new object.
-        if (!Info.Ctx.hasSameUnqualifiedType(SubobjType, AllocType)) {
+        if (!Info.ASTCtx.hasSameUnqualifiedType(SubobjType, AllocType)) {
           Info.FFDiag(E, diag::note_constexpr_placement_new_wrong_type) <<
             SubobjType << AllocType;
           return false;
@@ -9267,7 +9745,7 @@ static bool HandleClassZeroInitialization(EvalInfo &Info, const Expr *E,
                    std::distance(RD->field_begin(), RD->field_end()));
 
   if (RD->isInvalidDecl()) return false;
-  const ASTRecordLayout &Layout = Info.Ctx.getASTRecordLayout(RD);
+  const ASTRecordLayout &Layout = Info.ASTCtx.getASTRecordLayout(RD);
 
   if (CD) {
     unsigned Index = 0;
@@ -9367,7 +9845,7 @@ bool RecordExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
 
   const RecordDecl *RD = E->getType()->castAs<RecordType>()->getDecl();
   if (RD->isInvalidDecl()) return false;
-  const ASTRecordLayout &Layout = Info.Ctx.getASTRecordLayout(RD);
+  const ASTRecordLayout &Layout = Info.ASTCtx.getASTRecordLayout(RD);
   auto *CXXRD = dyn_cast<CXXRecordDecl>(RD);
 
   EvalInfo::EvaluatingConstructorRAII EvalObj(
@@ -9447,7 +9925,7 @@ bool RecordExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
 
     // Perform an implicit value-initialization for members beyond the end of
     // the initializer list.
-    ImplicitValueInitExpr VIE(HaveInit ? Info.Ctx.IntTy : Field->getType());
+    ImplicitValueInitExpr VIE(HaveInit ? Info.ASTCtx.IntTy : Field->getType());
     const Expr *Init = HaveInit ? E->getInit(ElementNo++) : &VIE;
 
     // Temporarily override This, in case there's a CXXDefaultInitExpr in here.
@@ -9534,7 +10012,7 @@ bool RecordExprEvaluator::VisitCXXInheritedCtorInitExpr(
 bool RecordExprEvaluator::VisitCXXStdInitializerListExpr(
     const CXXStdInitializerListExpr *E) {
   const ConstantArrayType *ArrayType =
-      Info.Ctx.getAsConstantArrayType(E->getSubExpr()->getType());
+      Info.ASTCtx.getAsConstantArrayType(E->getSubExpr()->getType());
 
   LValue Array;
   if (!EvaluateLValue(E->getSubExpr(), Array, Info))
@@ -9557,7 +10035,7 @@ bool RecordExprEvaluator::VisitCXXStdInitializerListExpr(
 
   // Start pointer.
   if (!Field->getType()->isPointerType() ||
-      !Info.Ctx.hasSameType(Field->getType()->getPointeeType(),
+      !Info.ASTCtx.hasSameType(Field->getType()->getPointeeType(),
                             ArrayType->getElementType()))
     return InvalidType();
 
@@ -9569,7 +10047,7 @@ bool RecordExprEvaluator::VisitCXXStdInitializerListExpr(
     return InvalidType();
 
   if (Field->getType()->isPointerType() &&
-      Info.Ctx.hasSameType(Field->getType()->getPointeeType(),
+      Info.ASTCtx.hasSameType(Field->getType()->getPointeeType(),
                            ArrayType->getElementType())) {
     // End pointer.
     if (!HandleLValueArrayAdjustment(Info, E, Array,
@@ -9577,7 +10055,7 @@ bool RecordExprEvaluator::VisitCXXStdInitializerListExpr(
                                      ArrayType->getSize().getZExtValue()))
       return false;
     Array.moveInto(Result.getStructField(1));
-  } else if (Info.Ctx.hasSameType(Field->getType(), Info.Ctx.getSizeType()))
+  } else if (Info.ASTCtx.hasSameType(Field->getType(), Info.ASTCtx.getSizeType()))
     // Length.
     Result.getStructField(1) = APValue(APSInt(ArrayType->getSize()));
   else
@@ -9767,11 +10245,11 @@ bool VectorExprEvaluator::VisitCastExpr(const CastExpr *E) {
       return false;
     // Extract the elements
     QualType EltTy = VTy->getElementType();
-    unsigned EltSize = Info.Ctx.getTypeSize(EltTy);
-    bool BigEndian = Info.Ctx.getTargetInfo().isBigEndian();
+    unsigned EltSize = Info.ASTCtx.getTypeSize(EltTy);
+    bool BigEndian = Info.ASTCtx.getTargetInfo().isBigEndian();
     SmallVector<APValue, 4> Elts;
     if (EltTy->isRealFloatingType()) {
-      const llvm::fltSemantics &Sem = Info.Ctx.getFloatTypeSemantics(EltTy);
+      const llvm::fltSemantics &Sem = Info.ASTCtx.getFloatTypeSemantics(EltTy);
       unsigned FloatEltSize = EltSize;
       if (&Sem == &APFloat::x87DoubleExtended())
         FloatEltSize = 80;
@@ -9833,7 +10311,7 @@ VectorExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
         if (!EvaluateInteger(E->getInit(CountInits), sInt, Info))
           return false;
       } else // trailing integer zero.
-        sInt = Info.Ctx.MakeIntValue(0, EltTy);
+        sInt = Info.ASTCtx.MakeIntValue(0, EltTy);
       Elements.push_back(APValue(sInt));
       CountElts++;
     } else {
@@ -9842,7 +10320,7 @@ VectorExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
         if (!EvaluateFloat(E->getInit(CountInits), f, Info))
           return false;
       } else // trailing float zero.
-        f = APFloat::getZero(Info.Ctx.getFloatTypeSemantics(EltTy));
+        f = APFloat::getZero(Info.ASTCtx.getFloatTypeSemantics(EltTy));
       Elements.push_back(APValue(f));
       CountElts++;
     }
@@ -9857,10 +10335,10 @@ VectorExprEvaluator::ZeroInitialization(const Expr *E) {
   QualType EltTy = VT->getElementType();
   APValue ZeroElement;
   if (EltTy->isIntegerType())
-    ZeroElement = APValue(Info.Ctx.MakeIntValue(0, EltTy));
+    ZeroElement = APValue(Info.ASTCtx.MakeIntValue(0, EltTy));
   else
     ZeroElement =
-        APValue(APFloat::getZero(Info.Ctx.getFloatTypeSemantics(EltTy)));
+        APValue(APFloat::getZero(Info.ASTCtx.getFloatTypeSemantics(EltTy)));
 
   SmallVector<APValue, 4> Elements(VT->getNumElements(), ZeroElement);
   return Success(Elements, E);
@@ -9928,7 +10406,7 @@ namespace {
 
     bool ZeroInitialization(const Expr *E) {
       const ConstantArrayType *CAT =
-          Info.Ctx.getAsConstantArrayType(E->getType());
+          Info.ASTCtx.getAsConstantArrayType(E->getType());
       if (!CAT) {
         if (E->getType()->isIncompleteArrayType()) {
           // We can be asked to zero-initialize a flexible array member; this
@@ -10013,7 +10491,7 @@ static bool MaybeElementDependentArrayFiller(const Expr *FillerExpr) {
 
 bool ArrayExprEvaluator::VisitInitListExpr(const InitListExpr *E,
                                            QualType AllocType) {
-  const ConstantArrayType *CAT = Info.Ctx.getAsConstantArrayType(
+  const ConstantArrayType *CAT = Info.ASTCtx.getAsConstantArrayType(
       AllocType.isNull() ? E->getType() : AllocType);
   if (!CAT)
     return Error(E);
@@ -10090,7 +10568,7 @@ bool ArrayExprEvaluator::VisitArrayInitLoopExpr(const ArrayInitLoopExpr *E) {
   if (E->getCommonExpr() &&
       !Evaluate(Info.CurrentCall->createTemporary(
                     E->getCommonExpr(),
-                    getStorageType(Info.Ctx, E->getCommonExpr()), false,
+                    getStorageType(Info.ASTCtx, E->getCommonExpr()), false,
                     CommonLV),
                 Info, E->getCommonExpr()->getSourceExpr()))
     return false;
@@ -10128,7 +10606,7 @@ bool ArrayExprEvaluator::VisitCXXConstructExpr(const CXXConstructExpr *E,
                                                QualType Type) {
   bool HadZeroInit = Value->hasValue();
 
-  if (const ConstantArrayType *CAT = Info.Ctx.getAsConstantArrayType(Type)) {
+  if (const ConstantArrayType *CAT = Info.ASTCtx.getAsConstantArrayType(Type)) {
     unsigned N = CAT->getSize().getZExtValue();
 
     // Preserve the array filler if we had prior zero-initialization.
@@ -10183,7 +10661,7 @@ public:
            "Invalid evaluation result.");
     assert(SI.isSigned() == E->getType()->isSignedIntegerOrEnumerationType() &&
            "Invalid evaluation result.");
-    assert(SI.getBitWidth() == Info.Ctx.getIntWidth(E->getType()) &&
+    assert(SI.getBitWidth() == Info.ASTCtx.getIntWidth(E->getType()) &&
            "Invalid evaluation result.");
     Result = APValue(SI);
     return true;
@@ -10195,7 +10673,7 @@ public:
   bool Success(const llvm::APInt &I, const Expr *E, APValue &Result) {
     assert(E->getType()->isIntegralOrEnumerationType() &&
            "Invalid evaluation result.");
-    assert(I.getBitWidth() == Info.Ctx.getIntWidth(E->getType()) &&
+    assert(I.getBitWidth() == Info.ASTCtx.getIntWidth(E->getType()) &&
            "Invalid evaluation result.");
     Result = APValue(APSInt(I));
     Result.getInt().setIsUnsigned(
@@ -10209,7 +10687,7 @@ public:
   bool Success(uint64_t Value, const Expr *E, APValue &Result) {
     assert(E->getType()->isIntegralOrEnumerationType() &&
            "Invalid evaluation result.");
-    Result = APValue(Info.Ctx.MakeIntValue(Value, E->getType()));
+    Result = APValue(Info.ASTCtx.MakeIntValue(Value, E->getType()));
     return true;
   }
   bool Success(uint64_t Value, const Expr *E) {
@@ -10221,7 +10699,8 @@ public:
   }
 
   bool Success(const APValue &V, const Expr *E) {
-    if (V.isLValue() || V.isAddrLabelDiff() || V.isIndeterminate()) {
+    if (V.isLValue() || V.isAddrLabelDiff() ||
+        V.isIndeterminate() || V.isReflection()) {
       Result = V;
       return true;
     }
@@ -10306,9 +10785,16 @@ public:
 
   bool VisitCXXNoexceptExpr(const CXXNoexceptExpr *E);
   bool VisitSizeOfPackExpr(const SizeOfPackExpr *E);
+
   bool VisitSourceLocExpr(const SourceLocExpr *E);
   bool VisitConceptSpecializationExpr(const ConceptSpecializationExpr *E);
+
   bool VisitRequiresExpr(const RequiresExpr *E);
+
+  bool VisitCXXReflectPrintLiteralExpr(const CXXReflectPrintLiteralExpr *E);
+  bool VisitCXXReflectPrintReflectionExpr(
+                                        const CXXReflectPrintReflectionExpr *E);
+  bool VisitCXXReflectDumpReflectionExpr(const CXXReflectDumpReflectionExpr *E);
   // FIXME: Missing: array subscript of vector, member of vector
 };
 
@@ -10322,12 +10808,12 @@ class FixedPointExprEvaluator
 
   bool Success(const llvm::APInt &I, const Expr *E) {
     return Success(
-        APFixedPoint(I, Info.Ctx.getFixedPointSemantics(E->getType())), E);
+        APFixedPoint(I, Info.ASTCtx.getFixedPointSemantics(E->getType())), E);
   }
 
   bool Success(uint64_t Value, const Expr *E) {
     return Success(
-        APFixedPoint(Value, Info.Ctx.getFixedPointSemantics(E->getType())), E);
+        APFixedPoint(Value, Info.ASTCtx.getFixedPointSemantics(E->getType())), E);
   }
 
   bool Success(const APValue &V, const Expr *E) {
@@ -10336,7 +10822,7 @@ class FixedPointExprEvaluator
 
   bool Success(const APFixedPoint &V, const Expr *E) {
     assert(E->getType()->isFixedPointType() && "Invalid evaluation result.");
-    assert(V.getWidth() == Info.Ctx.getIntWidth(E->getType()) &&
+    assert(V.getWidth() == Info.ASTCtx.getIntWidth(E->getType()) &&
            "Invalid evaluation result.");
     Result = APValue(V);
     return true;
@@ -10386,7 +10872,7 @@ static bool EvaluateInteger(const Expr *E, APSInt &Result, EvalInfo &Info) {
 
 bool IntExprEvaluator::VisitSourceLocExpr(const SourceLocExpr *E) {
   APValue Evaluated = E->EvaluateInContext(
-      Info.Ctx, Info.CurrentCall->CurSourceLocExprScope.getDefaultExpr());
+      Info.ASTCtx, Info.CurrentCall->CurSourceLocExprScope.getDefaultExpr());
   return Success(Evaluated, E);
 }
 
@@ -10408,7 +10894,7 @@ static bool EvaluateFixedPoint(const Expr *E, APFixedPoint &Result,
 static bool EvaluateFixedPointOrInteger(const Expr *E, APFixedPoint &Result,
                                         EvalInfo &Info) {
   if (E->getType()->isIntegerType()) {
-    auto FXSema = Info.Ctx.getFixedPointSemantics(E->getType());
+    auto FXSema = Info.ASTCtx.getFixedPointSemantics(E->getType());
     APSInt Val;
     if (!EvaluateInteger(E, Val, Info))
       return false;
@@ -10430,7 +10916,7 @@ bool IntExprEvaluator::CheckReferencedDecl(const Expr* E, const Decl* D) {
     bool SameSign = (ECD->getInitVal().isSigned()
                      == E->getType()->isSignedIntegerOrEnumerationType());
     bool SameWidth = (ECD->getInitVal().getBitWidth()
-                      == Info.Ctx.getIntWidth(E->getType()));
+                      == Info.ASTCtx.getIntWidth(E->getType()));
     if (SameSign && SameWidth)
       return Success(ECD->getInitVal(), E);
     else {
@@ -10440,7 +10926,7 @@ bool IntExprEvaluator::CheckReferencedDecl(const Expr* E, const Decl* D) {
       if (!SameSign)
         Val.setIsSigned(!ECD->getInitVal().isSigned());
       if (!SameWidth)
-        Val = Val.extOrTrunc(Info.Ctx.getIntWidth(E->getType()));
+        Val = Val.extOrTrunc(Info.ASTCtx.getIntWidth(E->getType()));
       return Success(Val, E);
     }
   }
@@ -10523,6 +11009,7 @@ EvaluateBuiltinClassifyType(QualType T, const LangOptions &LangOpts) {
     case BuiltinType::ULong:
     case BuiltinType::ULongLong:
     case BuiltinType::UInt128:
+    case BuiltinType::MetaInfo:
       return GCCTypeClass::Integer;
 
     case BuiltinType::UShortAccum:
@@ -10931,7 +11418,7 @@ static bool determineEndOffset(EvalInfo &Info, SourceLocation ExprLoc,
   // strcpy(&F->c[0], Bar);
   //
   // In order to not break too much legacy code, we need to support it.
-  if (isUserWritingOffTheEnd(Info.Ctx, LVal)) {
+  if (isUserWritingOffTheEnd(Info.ASTCtx, LVal)) {
     // If we can resolve this to an alloc_size call, we can hand that back,
     // because we know for certain how many bytes there are to write to.
     llvm::APInt APEndOffset;
@@ -10989,7 +11476,7 @@ static bool tryEvaluateBuiltinObjectSize(const Expr *E, unsigned Type,
       APValue RVal;
       if (!EvaluateAsRValue(Info, E, RVal))
         return false;
-      LVal.setFrom(Info.Ctx, RVal);
+      LVal.setFrom(Info.ASTCtx, RVal);
     } else if (!EvaluatePointer(ignorePointerCastsAndParens(E), LVal, Info,
                                 /*InvalidBaseOK=*/true))
       return false;
@@ -11087,7 +11574,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
 
   case Builtin::BI__builtin_os_log_format_buffer_size: {
     analyze_os_log::OSLogBufferLayout Layout;
-    analyze_os_log::computeOSLogBufferLayout(Info.Ctx, E, Layout);
+    analyze_os_log::computeOSLogBufferLayout(Info.ASTCtx, E, Layout);
     return Success(Layout.size().getQuantity(), E);
   }
 
@@ -11099,7 +11586,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     if (Src.isLValue()) {
       // If we evaluated a pointer, check the minimum known alignment.
       LValue Ptr;
-      Ptr.setFrom(Info.Ctx, Src);
+      Ptr.setFrom(Info.Ctx.ASTCtx, Src);
       CharUnits BaseAlignment = getBaseAlignment(Info, Ptr);
       CharUnits PtrAlign = BaseAlignment.alignmentAtOffset(Ptr.Offset);
       // We can return true if the known alignment at the computed offset is
@@ -11235,7 +11722,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
 
   case Builtin::BI__builtin_eh_return_data_regno: {
     int Operand = E->getArg(0)->EvaluateKnownConstInt(Info.Ctx).getZExtValue();
-    Operand = Info.Ctx.getTargetInfo().getEHDataRegisterNumber(Operand);
+    Operand = Info.ASTCtx.getTargetInfo().getEHDataRegisterNumber(Operand);
     return Success(Operand, E);
   }
 
@@ -11324,7 +11811,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     if (Info.getLangOpts().CPlusPlus11)
       Info.CCEDiag(E, diag::note_constexpr_invalid_function)
         << /*isConstexpr*/0 << /*isConstructor*/0
-        << (std::string("'") + Info.Ctx.BuiltinInfo.getName(BuiltinOp) + "'");
+        << (std::string("'") + Info.ASTCtx.BuiltinInfo.getName(BuiltinOp) + "'");
     else
       Info.CCEDiag(E, diag::note_invalid_subexpr_in_const_expr);
     LLVM_FALLTHROUGH;
@@ -11348,7 +11835,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
       if (Off >= 0 && (uint64_t)Off <= (uint64_t)Str.size() &&
           S->getCharByteWidth() == 1 &&
           // FIXME: Add fast-path for wchar_t too.
-          Info.Ctx.hasSameUnqualifiedType(CharTy, Info.Ctx.CharTy)) {
+          Info.ASTCtx.hasSameUnqualifiedType(CharTy, Info.ASTCtx.CharTy)) {
         Str = Str.substr(Off);
 
         StringRef::size_type Pos = Str.find(0);
@@ -11385,7 +11872,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     if (Info.getLangOpts().CPlusPlus11)
       Info.CCEDiag(E, diag::note_constexpr_invalid_function)
         << /*isConstexpr*/0 << /*isConstructor*/0
-        << (std::string("'") + Info.Ctx.BuiltinInfo.getName(BuiltinOp) + "'");
+        << (std::string("'") + Info.ASTCtx.BuiltinInfo.getName(BuiltinOp) + "'");
     else
       Info.CCEDiag(E, diag::note_invalid_subexpr_in_const_expr);
     LLVM_FALLTHROUGH;
@@ -11421,8 +11908,8 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
         String1.Designator.Invalid || String2.Designator.Invalid)
       return false;
 
-    QualType CharTy1 = String1.Designator.getType(Info.Ctx);
-    QualType CharTy2 = String2.Designator.getType(Info.Ctx);
+    QualType CharTy1 = String1.Designator.getType(Info.ASTCtx);
+    QualType CharTy2 = String2.Designator.getType(Info.ASTCtx);
 
     bool IsRawByte = BuiltinOp == Builtin::BImemcmp ||
                      BuiltinOp == Builtin::BIbcmp ||
@@ -11430,9 +11917,9 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
                      BuiltinOp == Builtin::BI__builtin_bcmp;
 
     assert(IsRawByte ||
-           (Info.Ctx.hasSameUnqualifiedType(
+           (Info.ASTCtx.hasSameUnqualifiedType(
                 CharTy1, E->getArg(0)->getType()->getPointeeType()) &&
-            Info.Ctx.hasSameUnqualifiedType(CharTy1, CharTy2)));
+            Info.ASTCtx.hasSameUnqualifiedType(CharTy1, CharTy2)));
 
     // For memcmp, allow comparing any arrays of '[[un]signed] char' or
     // 'char8_t', but no other types.
@@ -11440,7 +11927,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
         !(isOneByteCharacterType(CharTy1) && isOneByteCharacterType(CharTy2))) {
       // FIXME: Consider using our bit_cast implementation to support this.
       Info.FFDiag(E, diag::note_constexpr_memcmp_unsupported)
-          << (std::string("'") + Info.Ctx.BuiltinInfo.getName(BuiltinOp) + "'")
+          << (std::string("'") + Info.ASTCtx.BuiltinInfo.getName(BuiltinOp) + "'")
           << CharTy1 << CharTy2;
       return false;
     }
@@ -11509,11 +11996,11 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     if (Size.isPowerOfTwo()) {
       // Check against inlining width.
       unsigned InlineWidthBits =
-          Info.Ctx.getTargetInfo().getMaxAtomicInlineWidth();
-      if (Size <= Info.Ctx.toCharUnitsFromBits(InlineWidthBits)) {
+          Info.ASTCtx.getTargetInfo().getMaxAtomicInlineWidth();
+      if (Size <= Info.ASTCtx.toCharUnitsFromBits(InlineWidthBits)) {
         if (BuiltinOp == Builtin::BI__c11_atomic_is_lock_free ||
             Size == CharUnits::One() ||
-            E->getArg(1)->isNullPointerConstant(Info.Ctx,
+            E->getArg(1)->isNullPointerConstant(Info.ASTCtx,
                                                 Expr::NPC_NeverValueDependent))
           // OK, we will inline appropriately-aligned operations of this size,
           // and _Atomic(T) is appropriately-aligned.
@@ -11522,7 +12009,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
         QualType PointeeType = E->getArg(1)->IgnoreImpCasts()->getType()->
           castAs<PointerType>()->getPointeeType();
         if (!PointeeType->isIncompleteType() &&
-            Info.Ctx.getTypeAlignInChars(PointeeType) >= Size) {
+            Info.ASTCtx.getTypeAlignInChars(PointeeType) >= Size) {
           // OK, we will inline operations on this object.
           return Success(1, E);
         }
@@ -11578,7 +12065,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
                       ResultType->isSignedIntegerOrEnumerationType();
       uint64_t LHSSize = LHS.getBitWidth();
       uint64_t RHSSize = RHS.getBitWidth();
-      uint64_t ResultSize = Info.Ctx.getTypeSize(ResultType);
+      uint64_t ResultSize = Info.ASTCtx.getTypeSize(ResultType);
       uint64_t MaxBits = std::max(std::max(LHSSize, RHSSize), ResultSize);
 
       // Add an additional bit if the signedness isn't uniformly agreed to. We
@@ -11639,7 +12126,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
       // its parameter <= its size.  We previously set Result to be at least the
       // type-size of the result, so getTypeSize(ResultType) <= Result.BitWidth
       // will work exactly like TruncOrSelf.
-      APSInt Temp = Result.extOrTrunc(Info.Ctx.getTypeSize(ResultType));
+      APSInt Temp = Result.extOrTrunc(Info.ASTCtx.getTypeSize(ResultType));
       Temp.setIsSigned(ResultType->isSignedIntegerOrEnumerationType());
 
       if (!APSInt::isSameValue(Temp, Result))
@@ -11939,7 +12426,7 @@ bool DataRecursiveIntBinOpEvaluator::
   // Set up the width and signedness manually, in case it can't be deduced
   // from the operation we're performing.
   // FIXME: Don't do this in the cases where we can deduce it.
-  APSInt Value(Info.Ctx.getIntWidth(E->getType()),
+  APSInt Value(Info.ASTCtx.getIntWidth(E->getType()),
                E->getType()->isUnsignedIntegerOrEnumerationType());
   if (!handleIntIntBinOp(Info, E, LHSVal.getInt(), E->getOpcode(),
                          RHSVal.getInt(), Value))
@@ -12057,8 +12544,8 @@ EvaluateComparisonBinaryOperator(EvalInfo &Info, const BinaryOperator *E,
   }
 
   if (LHSTy->isFixedPointType() || RHSTy->isFixedPointType()) {
-    APFixedPoint LHSFX(Info.Ctx.getFixedPointSemantics(LHSTy));
-    APFixedPoint RHSFX(Info.Ctx.getFixedPointSemantics(RHSTy));
+    APFixedPoint LHSFX(Info.ASTCtx.getFixedPointSemantics(LHSTy));
+    APFixedPoint RHSFX(Info.ASTCtx.getFixedPointSemantics(RHSTy));
 
     bool LHSOK = EvaluateFixedPointOrInteger(E->getLHS(), LHSFX, Info);
     if (!LHSOK && !Info.noteFailure())
@@ -12139,6 +12626,7 @@ EvaluateComparisonBinaryOperator(EvalInfo &Info, const BinaryOperator *E,
       }
       llvm_unreachable("Unrecognised APFloat::cmpResult enum");
     };
+
     return Success(GetCmpRes(), E);
   }
 
@@ -12181,9 +12669,9 @@ EvaluateComparisonBinaryOperator(EvalInfo &Info, const BinaryOperator *E,
       // We can't compare the address of the start of one object with the
       // past-the-end address of another object, per C++ DR1652.
       if ((LHSValue.Base && LHSValue.Offset.isZero() &&
-           isOnePastTheEndOfCompleteObject(Info.Ctx, RHSValue)) ||
+           isOnePastTheEndOfCompleteObject(Info.ASTCtx, RHSValue)) ||
           (RHSValue.Base && RHSValue.Offset.isZero() &&
-           isOnePastTheEndOfCompleteObject(Info.Ctx, LHSValue)))
+           isOnePastTheEndOfCompleteObject(Info.ASTCtx, LHSValue)))
         return Error(E);
       // We can't tell whether an object is at the same address as another
       // zero sized object.
@@ -12252,7 +12740,7 @@ EvaluateComparisonBinaryOperator(EvalInfo &Info, const BinaryOperator *E,
 
     // The comparison here must be unsigned, and performed with the same
     // width as the pointer.
-    unsigned PtrSize = Info.Ctx.getTypeSize(LHSTy);
+    unsigned PtrSize = Info.ASTCtx.getTypeSize(LHSTy);
     uint64_t CompareLHS = LHSOffset.getQuantity();
     uint64_t CompareRHS = RHSOffset.getQuantity();
     assert(PtrSize <= 64 && "Unexpected pointer width");
@@ -12267,7 +12755,7 @@ EvaluateComparisonBinaryOperator(EvalInfo &Info, const BinaryOperator *E,
       QualType BaseTy = getType(LHSValue.Base);
       if (BaseTy->isIncompleteType())
         return Error(E);
-      CharUnits Size = Info.Ctx.getTypeSizeInChars(BaseTy);
+      CharUnits Size = Info.ASTCtx.getTypeSizeInChars(BaseTy);
       uint64_t OffsetLimit = Size.getQuantity();
       if (CompareLHS > OffsetLimit || CompareRHS > OffsetLimit)
         return Error(E);
@@ -12327,6 +12815,19 @@ EvaluateComparisonBinaryOperator(EvalInfo &Info, const BinaryOperator *E,
     return Success(CmpResult::Equal, E);
   }
 
+  if (LHSTy->isReflectionType() && RHSTy->isReflectionType()) {
+    APValue LHSValue, RHSValue;
+    if (!Evaluate(LHSValue, Info, E->getLHS()))
+      return false;
+    if (!Evaluate(RHSValue, Info, E->getRHS()))
+      return false;
+
+    if (Reflection::Equal(Info.ASTCtx, LHSValue, RHSValue))
+      return Success(CmpResult::Equal, E);
+    else
+      return Success(CmpResult::Unequal, E);
+  }
+
   return DoAfter();
 }
 
@@ -12355,7 +12856,7 @@ bool RecordExprEvaluator::VisitBinCmp(const BinaryOperator *E) {
     // Evaluation succeeded. Lookup the information for the comparison category
     // type and fetch the VarDecl for the result.
     const ComparisonCategoryInfo &CmpInfo =
-        Info.Ctx.CompCategories.getInfoForType(E->getType());
+        Info.ASTCtx.CompCategories.getInfoForType(E->getType());
     const VarDecl *VD = CmpInfo.getValueInfo(CmpInfo.makeWeakResult(CCR))->VD;
     // Check and evaluate the result as a constant expression.
     LValue LV;
@@ -12492,7 +12993,7 @@ bool IntExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
     APSInt ElemSize(llvm::APInt(65, (int64_t)ElementSize.getQuantity(), true),
                     false);
     APSInt TrueResult = (LHS - RHS) / ElemSize;
-    APSInt Result = TrueResult.trunc(Info.Ctx.getIntWidth(E->getType()));
+    APSInt Result = TrueResult.trunc(Info.ASTCtx.getIntWidth(E->getType()));
 
     if (Result.extend(65) != TrueResult &&
         !HandleOverflow(Info, E, TrueResult, E->getType()))
@@ -12549,8 +13050,8 @@ bool IntExprEvaluator::VisitUnaryExprOrTypeTraitExpr(
   case UETT_OpenMPRequiredSimdAlign:
     assert(E->isArgumentType());
     return Success(
-        Info.Ctx.toCharUnitsFromBits(
-                    Info.Ctx.getOpenMPDefaultSimdAlign(E->getArgumentType()))
+        Info.ASTCtx.toCharUnitsFromBits(
+                    Info.ASTCtx.getOpenMPDefaultSimdAlign(E->getArgumentType()))
             .getQuantity(),
         E);
   }
@@ -12572,11 +13073,11 @@ bool IntExprEvaluator::VisitOffsetOfExpr(const OffsetOfExpr *OOE) {
       APSInt IdxResult;
       if (!EvaluateInteger(Idx, IdxResult, Info))
         return false;
-      const ArrayType *AT = Info.Ctx.getAsArrayType(CurrentType);
+      const ArrayType *AT = Info.ASTCtx.getAsArrayType(CurrentType);
       if (!AT)
         return Error(OOE);
       CurrentType = AT->getElementType();
-      CharUnits ElementSize = Info.Ctx.getTypeSizeInChars(CurrentType);
+      CharUnits ElementSize = Info.ASTCtx.getTypeSizeInChars(CurrentType);
       Result += IdxResult.getSExtValue() * ElementSize;
       break;
     }
@@ -12588,10 +13089,10 @@ bool IntExprEvaluator::VisitOffsetOfExpr(const OffsetOfExpr *OOE) {
         return Error(OOE);
       RecordDecl *RD = RT->getDecl();
       if (RD->isInvalidDecl()) return false;
-      const ASTRecordLayout &RL = Info.Ctx.getASTRecordLayout(RD);
+      const ASTRecordLayout &RL = Info.ASTCtx.getASTRecordLayout(RD);
       unsigned i = MemberDecl->getFieldIndex();
       assert(i < RL.getFieldCount() && "offsetof field in wrong type");
-      Result += Info.Ctx.toCharUnitsFromBits(RL.getFieldOffset(i));
+      Result += Info.ASTCtx.toCharUnitsFromBits(RL.getFieldOffset(i));
       CurrentType = MemberDecl->getType().getNonReferenceType();
       break;
     }
@@ -12610,7 +13111,7 @@ bool IntExprEvaluator::VisitOffsetOfExpr(const OffsetOfExpr *OOE) {
         return Error(OOE);
       RecordDecl *RD = RT->getDecl();
       if (RD->isInvalidDecl()) return false;
-      const ASTRecordLayout &RL = Info.Ctx.getASTRecordLayout(RD);
+      const ASTRecordLayout &RL = Info.ASTCtx.getASTRecordLayout(RD);
 
       // Find the base class itself.
       CurrentType = BaseSpec->getType();
@@ -12735,7 +13236,8 @@ bool IntExprEvaluator::VisitCastExpr(const CastExpr *E) {
   case CK_FloatingToBoolean:
   case CK_BooleanToSignedIntegral:
   case CK_FloatingComplexToBoolean:
-  case CK_IntegralComplexToBoolean: {
+  case CK_IntegralComplexToBoolean:
+  case CK_ReflectionToBoolean: {
     bool BoolResult;
     if (!EvaluateAsBooleanCondition(SubExpr, BoolResult, Info))
       return false;
@@ -12746,12 +13248,12 @@ bool IntExprEvaluator::VisitCastExpr(const CastExpr *E) {
   }
 
   case CK_FixedPointToIntegral: {
-    APFixedPoint Src(Info.Ctx.getFixedPointSemantics(SrcType));
+    APFixedPoint Src(Info.ASTCtx.getFixedPointSemantics(SrcType));
     if (!EvaluateFixedPoint(SubExpr, Src, Info))
       return false;
     bool Overflowed;
     llvm::APSInt Result = Src.convertToInt(
-        Info.Ctx.getIntWidth(DestType),
+        Info.ASTCtx.getIntWidth(DestType),
         DestType->isSignedIntegerOrEnumerationType(), &Overflowed);
     if (Overflowed && !HandleOverflow(Info, E, Result, DestType))
       return false;
@@ -12777,9 +13279,9 @@ bool IntExprEvaluator::VisitCastExpr(const CastExpr *E) {
       // to detect here.  We let it through on the assumption the user knows
       // what they are doing.)
       if (Result.isAddrLabelDiff())
-        return Info.Ctx.getTypeSize(DestType) <= Info.Ctx.getTypeSize(SrcType);
+        return Info.ASTCtx.getTypeSize(DestType) <= Info.ASTCtx.getTypeSize(SrcType);
       // Only allow casts of lvalues if they are lossless.
-      return Info.Ctx.getTypeSize(DestType) == Info.Ctx.getTypeSize(SrcType);
+      return Info.ASTCtx.getTypeSize(DestType) == Info.ASTCtx.getTypeSize(SrcType);
     }
 
     return Success(HandleIntToIntCast(Info, E, DestType, SrcType,
@@ -12798,7 +13300,7 @@ bool IntExprEvaluator::VisitCastExpr(const CastExpr *E) {
       // FIXME: Allow a larger integer size than the pointer size, and allow
       // narrowing back down to pointer width in subsequent integral casts.
       // FIXME: Check integer type's active bits, not its type size.
-      if (Info.Ctx.getTypeSize(DestType) != Info.Ctx.getTypeSize(SrcType))
+      if (Info.ASTCtx.getTypeSize(DestType) != Info.ASTCtx.getTypeSize(SrcType))
         return Error(E);
 
       LV.Designator.setInvalid();
@@ -12809,7 +13311,7 @@ bool IntExprEvaluator::VisitCastExpr(const CastExpr *E) {
     APSInt AsInt;
     APValue V;
     LV.moveInto(V);
-    if (!V.toIntegralConstant(AsInt, SrcType, Info.Ctx))
+    if (!V.toIntegralConstant(AsInt, SrcType, Info.ASTCtx))
       llvm_unreachable("Can't cast this!");
 
     return Success(HandleIntToIntCast(Info, E, DestType, SrcType, AsInt), E);
@@ -12881,6 +13383,63 @@ bool IntExprEvaluator::VisitRequiresExpr(const RequiresExpr *E) {
   return Success(E->isSatisfied(), E);
 }
 
+static bool ShouldIgnoreReflectPrintingRequest(const EvalInfo &Info) {
+  return Info.checkingPotentialConstantExpression()
+      || Info.checkingForUndefinedBehavior();
+}
+
+bool IntExprEvaluator::VisitCXXReflectPrintLiteralExpr(
+                                          const CXXReflectPrintLiteralExpr *E) {
+  if (ShouldIgnoreReflectPrintingRequest(Info))
+    return false;
+
+  for (std::size_t I = 0; I < E->getNumArgs(); ++I) {
+    const Expr *PE = E->getArg(I);
+    APValue EV;
+
+    if (!Evaluate(EV, Info, PE))
+      return false;
+
+    ::Print(Info, PE, EV);
+  }
+  ::CompletePrint();
+
+  return Success(0, E);
+}
+
+bool IntExprEvaluator::VisitCXXReflectPrintReflectionExpr(
+                                    const CXXReflectPrintReflectionExpr *E) {
+  if (ShouldIgnoreReflectPrintingRequest(Info))
+    return false;
+
+  const Expr *PE = E->getReflection();
+  APValue EV;
+
+  if (!Evaluate(EV, Info, PE))
+    return false;
+
+  ::Print(Info, PE, EV);
+  ::CompletePrint();
+
+  return Success(0, E);
+}
+
+bool IntExprEvaluator::VisitCXXReflectDumpReflectionExpr(
+                                        const CXXReflectDumpReflectionExpr *E) {
+  if (ShouldIgnoreReflectPrintingRequest(Info))
+    return false;
+
+  const Expr *PE = E->getReflection();
+  APValue EV;
+
+  if (!Evaluate(EV, Info, PE))
+    return false;
+
+  ::Dump(Info, PE, EV);
+
+  return Success(0, E);
+}
+
 bool FixedPointExprEvaluator::VisitUnaryOperator(const UnaryOperator *E) {
   switch (E->getOpcode()) {
     default:
@@ -12913,19 +13472,19 @@ bool FixedPointExprEvaluator::VisitCastExpr(const CastExpr *E) {
   QualType DestType = E->getType();
   assert(DestType->isFixedPointType() &&
          "Expected destination type to be a fixed point type");
-  auto DestFXSema = Info.Ctx.getFixedPointSemantics(DestType);
+  auto DestFXSema = Info.ASTCtx.getFixedPointSemantics(DestType);
 
   switch (E->getCastKind()) {
   case CK_FixedPointCast: {
-    APFixedPoint Src(Info.Ctx.getFixedPointSemantics(SubExpr->getType()));
+    APFixedPoint Src(Info.ASTCtx.getFixedPointSemantics(SubExpr->getType()));
     if (!EvaluateFixedPoint(SubExpr, Src, Info))
       return false;
     bool Overflowed;
     APFixedPoint Result = Src.convert(DestFXSema, &Overflowed);
     if (Overflowed) {
       if (Info.checkingForUndefinedBehavior())
-        Info.Ctx.getDiagnostics().Report(E->getExprLoc(),
-                                         diag::warn_fixedpoint_constant_overflow)
+        Info.ASTCtx.getDiagnostics().Report(
+            E->getExprLoc(), diag::warn_fixedpoint_constant_overflow)
           << Result.toString() << E->getType();
       else if (!HandleOverflow(Info, E, Result, E->getType()))
         return false;
@@ -12939,12 +13498,12 @@ bool FixedPointExprEvaluator::VisitCastExpr(const CastExpr *E) {
 
     bool Overflowed;
     APFixedPoint IntResult = APFixedPoint::getFromIntValue(
-        Src, Info.Ctx.getFixedPointSemantics(DestType), &Overflowed);
+        Src, Info.ASTCtx.getFixedPointSemantics(DestType), &Overflowed);
 
     if (Overflowed) {
       if (Info.checkingForUndefinedBehavior())
-        Info.Ctx.getDiagnostics().Report(E->getExprLoc(),
-                                         diag::warn_fixedpoint_constant_overflow)
+        Info.ASTCtx.getDiagnostics().Report(
+            E->getExprLoc(), diag::warn_fixedpoint_constant_overflow)
           << IntResult.toString() << E->getType();
       else if (!HandleOverflow(Info, E, IntResult, E->getType()))
         return false;
@@ -12967,12 +13526,12 @@ bool FixedPointExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
   const Expr *LHS = E->getLHS();
   const Expr *RHS = E->getRHS();
   FixedPointSemantics ResultFXSema =
-      Info.Ctx.getFixedPointSemantics(E->getType());
+      Info.ASTCtx.getFixedPointSemantics(E->getType());
 
-  APFixedPoint LHSFX(Info.Ctx.getFixedPointSemantics(LHS->getType()));
+  APFixedPoint LHSFX(Info.ASTCtx.getFixedPointSemantics(LHS->getType()));
   if (!EvaluateFixedPointOrInteger(LHS, LHSFX, Info))
     return false;
-  APFixedPoint RHSFX(Info.Ctx.getFixedPointSemantics(RHS->getType()));
+  APFixedPoint RHSFX(Info.ASTCtx.getFixedPointSemantics(RHS->getType()));
   if (!EvaluateFixedPointOrInteger(RHS, RHSFX, Info))
     return false;
 
@@ -13008,8 +13567,8 @@ bool FixedPointExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
   }
   if (OpOverflow || ConversionOverflow) {
     if (Info.checkingForUndefinedBehavior())
-      Info.Ctx.getDiagnostics().Report(E->getExprLoc(),
-                                       diag::warn_fixedpoint_constant_overflow)
+      Info.ASTCtx.getDiagnostics().Report(
+          E->getExprLoc(), diag::warn_fixedpoint_constant_overflow)
         << Result.toString() << E->getType();
     else if (!HandleOverflow(Info, E, Result, E->getType()))
       return false;
@@ -13035,7 +13594,7 @@ public:
   }
 
   bool ZeroInitialization(const Expr *E) {
-    Result = APFloat::getZero(Info.Ctx.getFloatTypeSemantics(E->getType()));
+    Result = APFloat::getZero(Info.ASTCtx.getFloatTypeSemantics(E->getType()));
     return true;
   }
 
@@ -13110,7 +13669,7 @@ bool FloatExprEvaluator::VisitCallExpr(const CallExpr *E) {
   case Builtin::BI__builtin_infl:
   case Builtin::BI__builtin_inff128: {
     const llvm::fltSemantics &Sem =
-      Info.Ctx.getFloatTypeSemantics(E->getType());
+      Info.ASTCtx.getFloatTypeSemantics(E->getType());
     Result = llvm::APFloat::getInf(Sem);
     return true;
   }
@@ -13119,7 +13678,7 @@ bool FloatExprEvaluator::VisitCallExpr(const CallExpr *E) {
   case Builtin::BI__builtin_nansf:
   case Builtin::BI__builtin_nansl:
   case Builtin::BI__builtin_nansf128:
-    if (!TryEvaluateBuiltinNaN(Info.Ctx, E->getType(), E->getArg(0),
+    if (!TryEvaluateBuiltinNaN(Info.ASTCtx, E->getType(), E->getArg(0),
                                true, Result))
       return Error(E);
     return true;
@@ -13130,7 +13689,7 @@ bool FloatExprEvaluator::VisitCallExpr(const CallExpr *E) {
   case Builtin::BI__builtin_nanf128:
     // If this is __builtin_nan() turn this into a nan, otherwise we
     // can't constant fold it.
-    if (!TryEvaluateBuiltinNaN(Info.Ctx, E->getType(), E->getArg(0),
+    if (!TryEvaluateBuiltinNaN(Info.ASTCtx, E->getType(), E->getArg(0),
                                false, Result))
       return Error(E);
     return true;
@@ -13186,7 +13745,7 @@ bool FloatExprEvaluator::VisitUnaryImag(const UnaryOperator *E) {
   }
 
   VisitIgnoredValue(E->getSubExpr());
-  const llvm::fltSemantics &Sem = Info.Ctx.getFloatTypeSemantics(E->getType());
+  const llvm::fltSemantics &Sem = Info.ASTCtx.getFloatTypeSemantics(E->getType());
   Result = llvm::APFloat::getZero(Sem);
   return true;
 }
@@ -13295,12 +13854,12 @@ bool ComplexExprEvaluator::ZeroInitialization(const Expr *E) {
   QualType ElemTy = E->getType()->castAs<ComplexType>()->getElementType();
   if (ElemTy->isRealFloatingType()) {
     Result.makeComplexFloat();
-    APFloat Zero = APFloat::getZero(Info.Ctx.getFloatTypeSemantics(ElemTy));
+    APFloat Zero = APFloat::getZero(Info.ASTCtx.getFloatTypeSemantics(ElemTy));
     Result.FloatReal = Zero;
     Result.FloatImag = Zero;
   } else {
     Result.makeComplexInt();
-    APSInt Zero = Info.Ctx.MakeIntValue(0, ElemTy);
+    APSInt Zero = Info.ASTCtx.MakeIntValue(0, ElemTy);
     Result.IntReal = Zero;
     Result.IntImag = Zero;
   }
@@ -13370,6 +13929,7 @@ bool ComplexExprEvaluator::VisitCastExpr(const CastExpr *E) {
   case CK_FloatingComplexToBoolean:
   case CK_IntegralComplexToReal:
   case CK_IntegralComplexToBoolean:
+  case CK_ReflectionToBoolean:
   case CK_ARCProduceObject:
   case CK_ARCConsumeObject:
   case CK_ARCReclaimReturnedObject:
@@ -13856,8 +14416,9 @@ public:
   }
 
   bool VisitCXXDeleteExpr(const CXXDeleteExpr *E);
+
+  bool VisitCXXCompilerErrorExpr(const CXXCompilerErrorExpr *E);
 };
-} // end anonymous namespace
 
 bool VoidExprEvaluator::VisitCXXDeleteExpr(const CXXDeleteExpr *E) {
   // We cannot speculatively evaluate a delete expression.
@@ -13932,9 +14493,126 @@ bool VoidExprEvaluator::VisitCXXDeleteExpr(const CXXDeleteExpr *E) {
   return true;
 }
 
+bool VoidExprEvaluator::VisitCXXCompilerErrorExpr(
+                                                const CXXCompilerErrorExpr *E) {
+  // This never produces a value.
+  //
+  // FIXME: We probably want to evaluate the sub-expression for potential
+  // errors before stopping at these conditions.
+  if (Info.checkingPotentialConstantExpression())
+    return false;
+  if (Info.checkingForUndefinedBehavior())
+    return false;
+
+  APValue Result;
+  if (!Evaluate(Result, Info, E->getMessage()))
+    return Error(E->getMessage(), diag::note_invalid_subexpr_in_const_expr);
+
+  const Expr *BaseExpr = Result.getLValueBase().get<const Expr *>();
+  const StringLiteral *Message = cast<StringLiteral>(BaseExpr);
+
+  // Evaluate the message so that we can transform it into a string.
+  SmallString<256> Buf;
+  llvm::raw_svector_ostream OS(Buf);
+  Message->outputString(OS);
+  std::string NonQuote(Buf.c_str(), 1, Buf.size() - 2);
+
+  // Evaluating a __compiler_error in a constexpr evaluation context
+  // results in compiler error.
+  Info.FFDiag(E, diag::err_user_defined_error) << NonQuote;
+  return false;
+}
+
+} // end anonymous namespace
+
 static bool EvaluateVoid(const Expr *E, EvalInfo &Info) {
   assert(E->isRValue() && E->getType()->isVoidType());
   return VoidExprEvaluator(Info).Visit(E);
+}
+
+namespace {
+class ReflectionEvaluator
+  : public ExprEvaluatorBase<ReflectionEvaluator> {
+
+  using BaseType = ExprEvaluatorBase<ReflectionEvaluator>;
+
+  APValue &Result;
+public:
+  ReflectionEvaluator(EvalInfo &Info, APValue &Result)
+    : ExprEvaluatorBaseTy(Info), Result(Result) {}
+
+  bool Success(const APValue &V, const Expr *e) {
+    return Success(V);
+  }
+
+  bool Success(const APValue &V) {
+    Result = V;
+    return true;
+  }
+
+  bool VisitCXXReflectExpr(const CXXReflectExpr *E);
+  bool VisitCXXReflectionReadQueryExpr(const CXXReflectionReadQueryExpr *E);
+  bool VisitCXXReflectionWriteQueryExpr(const CXXReflectionWriteQueryExpr *E);
+
+  bool ZeroInitialization(const Expr *E);
+};
+
+bool ReflectionEvaluator::VisitCXXReflectExpr(const CXXReflectExpr *E) {
+  const ReflectionOperand &Ref = E->getOperand();
+  switch (Ref.getKind()) {
+  case ReflectionOperand::Type: {
+    APValue Result(RK_type, Ref.getAsType().getAsOpaquePtr());
+    return Success(Result, E);
+  }
+  case ReflectionOperand::Template: {
+    APValue Result(RK_declaration, Ref.getAsTemplate().getAsTemplateDecl());
+    return Success(Result, E);
+  }
+  case ReflectionOperand::Namespace: {
+    NamespaceName &&NsName = Ref.getAsNamespace();
+    APValue Result(RK_declaration, NsName.getNamespaceAsDecl());
+    return Success(Result, E);
+  }
+  case ReflectionOperand::Expression: {
+    APValue Result(RK_expression, Ref.getAsExpression());
+    return Success(Result, E);
+  }
+  case ReflectionOperand::Declaration: {
+    APValue Result(RK_declaration, Ref.getAsDeclaration());
+    return Success(Result, E);
+  }
+  case ReflectionOperand::BaseSpecifier: {
+    APValue Result(RK_base_specifier, Ref.getAsBaseSpecifier());
+    return Success(Result, E);
+  }
+  case ReflectionOperand::Invalid: {
+    APValue Result(RK_invalid, Ref.getAsInvalidReflection());
+    return Success(Result, E);
+  }
+  }
+  llvm_unreachable("invalid reflection");
+}
+
+bool ReflectionEvaluator::VisitCXXReflectionReadQueryExpr(
+                                          const CXXReflectionReadQueryExpr *E) {
+  return BaseType::VisitCXXReflectionReadQueryExpr(E);
+}
+
+bool ReflectionEvaluator::VisitCXXReflectionWriteQueryExpr(
+                                         const CXXReflectionWriteQueryExpr *E) {
+  return BaseType::VisitCXXReflectionWriteQueryExpr(E);
+}
+
+bool ReflectionEvaluator::ZeroInitialization(const Expr *E) {
+  APValue Result(RK_invalid, nullptr);
+  return Success(Result);
+}
+
+} // end anonymous namespace
+
+static bool EvaluateReflection(const Expr *E, APValue &Result, EvalInfo &Info) {
+  assert(E->isRValue() && E->getType()->isReflectionType());
+  return ReflectionEvaluator(Info, Result).Visit(E);
 }
 
 //===----------------------------------------------------------------------===//
@@ -13955,6 +14633,9 @@ static bool Evaluate(APValue &Result, EvalInfo &Info, const Expr *E) {
       return false;
   } else if (T->isIntegralOrEnumerationType()) {
     if (!IntExprEvaluator(Info, Result).Visit(E))
+      return false;
+  } else if (T->isReflectionType()) {
+    if (!EvaluateReflection(E, Result, Info))
       return false;
   } else if (T->hasPointerRepresentation()) {
     LValue LV;
@@ -14053,7 +14734,7 @@ static bool EvaluateInPlace(APValue &Result, EvalInfo &Info, const LValue &This,
 /// lvalue-to-rvalue cast if it is an lvalue.
 static bool EvaluateAsRValue(EvalInfo &Info, const Expr *E, APValue &Result) {
   if (Info.EnableNewConstInterp) {
-    if (!Info.Ctx.getInterpContext().evaluateAsRValue(Info, E, Result))
+    if (!Info.ASTCtx.getInterpContext().evaluateAsRValue(Info, E, Result))
       return false;
   } else {
     if (E->getType().isNull())
@@ -14067,7 +14748,7 @@ static bool EvaluateAsRValue(EvalInfo &Info, const Expr *E, APValue &Result) {
 
     if (E->isGLValue()) {
       LValue LV;
-      LV.setFrom(Info.Ctx, Result);
+      LV.setFrom(Info.ASTCtx, Result);
       if (!handleLValueToRValueConversion(Info, E, E->getType(), LV, Result))
         return false;
     }
@@ -14079,7 +14760,7 @@ static bool EvaluateAsRValue(EvalInfo &Info, const Expr *E, APValue &Result) {
 }
 
 static bool FastEvaluateAsRValue(const Expr *Exp, Expr::EvalResult &Result,
-                                 const ASTContext &Ctx, bool &IsConst) {
+                                 const Expr::EvalContext &Ctx, bool &IsConst) {
   // Fast-path evaluations of integer literals, since we sometimes see files
   // containing vast quantities of these.
   if (const IntegerLiteral *L = dyn_cast<IntegerLiteral>(Exp)) {
@@ -14100,7 +14781,7 @@ static bool FastEvaluateAsRValue(const Expr *Exp, Expr::EvalResult &Result,
   // performance problems. Only do so in C++11 for now.
   if (Exp->isRValue() && (Exp->getType()->isArrayType() ||
                           Exp->getType()->isRecordType()) &&
-      !Ctx.getLangOpts().CPlusPlus11) {
+      !Ctx.ASTCtx.getLangOpts().CPlusPlus11) {
     IsConst = false;
     return true;
   }
@@ -14114,7 +14795,7 @@ static bool hasUnacceptableSideEffect(Expr::EvalStatus &Result,
 }
 
 static bool EvaluateAsRValue(const Expr *E, Expr::EvalResult &Result,
-                             const ASTContext &Ctx, EvalInfo &Info) {
+                             const Expr::EvalContext &Ctx, EvalInfo &Info) {
   bool IsConst;
   if (FastEvaluateAsRValue(E, Result, Ctx, IsConst))
     return IsConst;
@@ -14123,7 +14804,7 @@ static bool EvaluateAsRValue(const Expr *E, Expr::EvalResult &Result,
 }
 
 static bool EvaluateAsInt(const Expr *E, Expr::EvalResult &ExprResult,
-                          const ASTContext &Ctx,
+                          const Expr::EvalContext &Ctx,
                           Expr::SideEffectsKind AllowSideEffects,
                           EvalInfo &Info) {
   if (!E->getType()->isIntegralOrEnumerationType())
@@ -14138,7 +14819,7 @@ static bool EvaluateAsInt(const Expr *E, Expr::EvalResult &ExprResult,
 }
 
 static bool EvaluateAsFixedPoint(const Expr *E, Expr::EvalResult &ExprResult,
-                                 const ASTContext &Ctx,
+                                 const Expr::EvalContext &Ctx,
                                  Expr::SideEffectsKind AllowSideEffects,
                                  EvalInfo &Info) {
   if (!E->getType()->isFixedPointType())
@@ -14159,7 +14840,7 @@ static bool EvaluateAsFixedPoint(const Expr *E, Expr::EvalResult &ExprResult,
 /// we want to.  If this function returns true, it returns the folded constant
 /// in Result. If this expression is a glvalue, an lvalue-to-rvalue conversion
 /// will be applied to the result.
-bool Expr::EvaluateAsRValue(EvalResult &Result, const ASTContext &Ctx,
+bool Expr::EvaluateAsRValue(EvalResult &Result, const EvalContext &Ctx,
                             bool InConstantContext) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
@@ -14168,7 +14849,7 @@ bool Expr::EvaluateAsRValue(EvalResult &Result, const ASTContext &Ctx,
   return ::EvaluateAsRValue(this, Result, Ctx, Info);
 }
 
-bool Expr::EvaluateAsBooleanCondition(bool &Result, const ASTContext &Ctx,
+bool Expr::EvaluateAsBooleanCondition(bool &Result, const EvalContext &Ctx,
                                       bool InConstantContext) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
@@ -14177,7 +14858,7 @@ bool Expr::EvaluateAsBooleanCondition(bool &Result, const ASTContext &Ctx,
          HandleConversionToBool(Scratch.Val, Result);
 }
 
-bool Expr::EvaluateAsInt(EvalResult &Result, const ASTContext &Ctx,
+bool Expr::EvaluateAsInt(EvalResult &Result, const EvalContext &Ctx,
                          SideEffectsKind AllowSideEffects,
                          bool InConstantContext) const {
   assert(!isValueDependent() &&
@@ -14187,7 +14868,7 @@ bool Expr::EvaluateAsInt(EvalResult &Result, const ASTContext &Ctx,
   return ::EvaluateAsInt(this, Result, Ctx, AllowSideEffects, Info);
 }
 
-bool Expr::EvaluateAsFixedPoint(EvalResult &Result, const ASTContext &Ctx,
+bool Expr::EvaluateAsFixedPoint(EvalResult &Result, const EvalContext &Ctx,
                                 SideEffectsKind AllowSideEffects,
                                 bool InConstantContext) const {
   assert(!isValueDependent() &&
@@ -14197,7 +14878,7 @@ bool Expr::EvaluateAsFixedPoint(EvalResult &Result, const ASTContext &Ctx,
   return ::EvaluateAsFixedPoint(this, Result, Ctx, AllowSideEffects, Info);
 }
 
-bool Expr::EvaluateAsFloat(APFloat &Result, const ASTContext &Ctx,
+bool Expr::EvaluateAsFloat(APFloat &Result, const EvalContext &Ctx,
                            SideEffectsKind AllowSideEffects,
                            bool InConstantContext) const {
   assert(!isValueDependent() &&
@@ -14216,7 +14897,7 @@ bool Expr::EvaluateAsFloat(APFloat &Result, const ASTContext &Ctx,
   return true;
 }
 
-bool Expr::EvaluateAsLValue(EvalResult &Result, const ASTContext &Ctx,
+bool Expr::EvaluateAsLValue(EvalResult &Result, const EvalContext &Ctx,
                             bool InConstantContext) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
@@ -14228,7 +14909,7 @@ bool Expr::EvaluateAsLValue(EvalResult &Result, const ASTContext &Ctx,
   if (!EvaluateLValue(this, LV, Info) || !Info.discardCleanups() ||
       Result.HasSideEffects ||
       !CheckLValueConstantExpression(Info, getExprLoc(),
-                                     Ctx.getLValueReferenceType(getType()), LV,
+                                     Ctx.ASTCtx.getLValueReferenceType(getType()), LV,
                                      Expr::EvaluateForCodeGen, CheckedTemps))
     return false;
 
@@ -14237,7 +14918,7 @@ bool Expr::EvaluateAsLValue(EvalResult &Result, const ASTContext &Ctx,
 }
 
 bool Expr::EvaluateAsConstantExpr(EvalResult &Result, ConstExprUsage Usage,
-                                  const ASTContext &Ctx, bool InPlace) const {
+                                  const EvalContext &Ctx, bool InPlace) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
 
@@ -14258,12 +14939,13 @@ bool Expr::EvaluateAsConstantExpr(EvalResult &Result, ConstExprUsage Usage,
   if (!Info.discardCleanups())
     llvm_unreachable("Unhandled cleanup; missing full expression marker?");
 
-  return CheckConstantExpression(Info, getExprLoc(), getStorageType(Ctx, this),
-                                 Result.Val, Usage) &&
+  auto &&StorageType = getStorageType(Info.ASTCtx, this);
+  return CheckConstantExpression(
+      Info, getExprLoc(), StorageType, Result.Val, Usage) &&
          CheckMemoryLeaks(Info);
 }
 
-bool Expr::EvaluateAsInitializer(APValue &Value, const ASTContext &Ctx,
+bool Expr::EvaluateAsInitializer(APValue &Value, const EvalContext &Ctx,
                                  const VarDecl *VD,
                             SmallVectorImpl<PartialDiagnosticAt> &Notes) const {
   assert(!isValueDependent() &&
@@ -14272,7 +14954,7 @@ bool Expr::EvaluateAsInitializer(APValue &Value, const ASTContext &Ctx,
   // FIXME: Evaluating initializers for large array and record types can cause
   // performance problems. Only do so in C++11 for now.
   if (isRValue() && (getType()->isArrayType() || getType()->isRecordType()) &&
-      !Ctx.getLangOpts().CPlusPlus11)
+      !Ctx.ASTCtx.getLangOpts().CPlusPlus11)
     return false;
 
   Expr::EvalStatus EStatus;
@@ -14288,7 +14970,7 @@ bool Expr::EvaluateAsInitializer(APValue &Value, const ASTContext &Ctx,
   QualType DeclTy = VD->getType();
 
   if (Info.EnableNewConstInterp) {
-    auto &InterpCtx = const_cast<ASTContext &>(Ctx).getInterpContext();
+    auto &InterpCtx = const_cast<ASTContext &>(Ctx.ASTCtx).getInterpContext();
     if (!InterpCtx.evaluateAsInitializer(Info, VD, Value))
       return false;
   } else {
@@ -14325,7 +15007,8 @@ bool VarDecl::evaluateDestruction(
   else if (!getDefaultInitValue(getType(), DestroyedValue))
     return false;
 
-  EvalInfo Info(getASTContext(), EStatus, EvalInfo::EM_ConstantExpression);
+  Expr::EvalContext EvalCtx(getASTContext(), nullptr);
+  EvalInfo Info(EvalCtx, EStatus, EvalInfo::EM_ConstantExpression);
   Info.setEvaluatingDecl(this, DestroyedValue,
                          EvalInfo::EvaluatingDeclKind::Dtor);
   Info.InConstantContext = true;
@@ -14349,7 +15032,7 @@ bool VarDecl::evaluateDestruction(
 
 /// isEvaluatable - Call EvaluateAsRValue to see if this expression can be
 /// constant folded, but discard the result.
-bool Expr::isEvaluatable(const ASTContext &Ctx, SideEffectsKind SEK) const {
+bool Expr::isEvaluatable(const EvalContext &Ctx, SideEffectsKind SEK) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
 
@@ -14358,7 +15041,7 @@ bool Expr::isEvaluatable(const ASTContext &Ctx, SideEffectsKind SEK) const {
          !hasUnacceptableSideEffect(Result, SEK);
 }
 
-APSInt Expr::EvaluateKnownConstInt(const ASTContext &Ctx,
+APSInt Expr::EvaluateKnownConstInt(const EvalContext &Ctx,
                     SmallVectorImpl<PartialDiagnosticAt> *Diag) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
@@ -14377,7 +15060,7 @@ APSInt Expr::EvaluateKnownConstInt(const ASTContext &Ctx,
 }
 
 APSInt Expr::EvaluateKnownConstIntCheckOverflow(
-    const ASTContext &Ctx, SmallVectorImpl<PartialDiagnosticAt> *Diag) const {
+    const EvalContext &Ctx, SmallVectorImpl<PartialDiagnosticAt> *Diag) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
 
@@ -14395,7 +15078,7 @@ APSInt Expr::EvaluateKnownConstIntCheckOverflow(
   return EVResult.Val.getInt();
 }
 
-void Expr::EvaluateForOverflow(const ASTContext &Ctx) const {
+void Expr::EvaluateForOverflow(const EvalContext &Ctx) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
 
@@ -14455,7 +15138,7 @@ static ICEDiag NoDiag() { return ICEDiag(IK_ICE, SourceLocation()); }
 
 static ICEDiag Worst(ICEDiag A, ICEDiag B) { return A.Kind >= B.Kind ? A : B; }
 
-static ICEDiag CheckEvalInICE(const Expr* E, const ASTContext &Ctx) {
+static ICEDiag CheckEvalInICE(const Expr* E, const Expr::EvalContext &Ctx) {
   Expr::EvalResult EVResult;
   Expr::EvalStatus Status;
   EvalInfo Info(Ctx, Status, EvalInfo::EM_ConstantExpression);
@@ -14468,7 +15151,7 @@ static ICEDiag CheckEvalInICE(const Expr* E, const ASTContext &Ctx) {
   return NoDiag();
 }
 
-static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
+static ICEDiag CheckICE(const Expr* E, const Expr::EvalContext &Ctx) {
   assert(!E->isValueDependent() && "Should not see value dependent exprs!");
   if (!E->getType()->isIntegralOrEnumerationType())
     return ICEDiag(IK_NotICE, E->getBeginLoc());
@@ -14560,6 +15243,10 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
   case Expr::CoawaitExprClass:
   case Expr::DependentCoawaitExprClass:
   case Expr::CoyieldExprClass:
+  case Expr::CXXConcatenateExprClass:
+  case Expr::CXXDependentVariadicReifierExprClass:
+  case Expr::CXXFragmentExprClass:
+  case Expr::CXXFragmentCaptureExprClass:
     return ICEDiag(IK_NotICE, E->getBeginLoc());
 
   case Expr::InitListExprClass: {
@@ -14572,6 +15259,11 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
         return CheckICE(cast<InitListExpr>(E)->getInit(0), Ctx);
     return ICEDiag(IK_NotICE, E->getBeginLoc());
   }
+
+  case Expr::CXXSelectMemberExprClass:
+  case Expr::CXXSelectPackExprClass:
+    // This is an ICE if its Base is an ICE
+    return CheckICE(cast<CXXSelectionExpr>(E)->getBase(), Ctx);
 
   case Expr::SizeOfPackExprClass:
   case Expr::GNUNullExprClass:
@@ -14601,7 +15293,20 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
   case Expr::ArrayTypeTraitExprClass:
   case Expr::ExpressionTraitExprClass:
   case Expr::CXXNoexceptExprClass:
+  case Expr::CXXReflectExprClass:
+  case Expr::CXXInvalidReflectionExprClass:
+  case Expr::CXXReflectionReadQueryExprClass:
+  case Expr::CXXReflectionWriteQueryExprClass:
+  case Expr::CXXReflectPrintLiteralExprClass:
+  case Expr::CXXReflectPrintReflectionExprClass:
+  case Expr::CXXReflectDumpReflectionExprClass:
+  case Expr::CXXCompilerErrorExprClass:
+  case Expr::CXXIdExprExprClass:
+  case Expr::CXXMemberIdExprExprClass:
+  case Expr::CXXDependentSpliceIdExprClass:
+  case Expr::CXXValueOfExprClass:
     return NoDiag();
+
   case Expr::CallExprClass:
   case Expr::CXXOperatorCallExprClass: {
     // C99 6.6/3 allows function calls within unevaluated subexpressions of
@@ -14619,7 +15324,7 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
     if (isa<EnumConstantDecl>(cast<DeclRefExpr>(E)->getDecl()))
       return NoDiag();
     const ValueDecl *D = cast<DeclRefExpr>(E)->getDecl();
-    if (Ctx.getLangOpts().CPlusPlus &&
+    if (Ctx.ASTCtx.getLangOpts().CPlusPlus &&
         D && IsConstNonVolatile(D->getType())) {
       // Parameter variables are never constants.  Without this check,
       // getAnyInitializer() can find a default argument, which leads
@@ -14743,7 +15448,7 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
         }
       }
       if (Exp->getOpcode() == BO_Comma) {
-        if (Ctx.getLangOpts().C99) {
+        if (Ctx.ASTCtx.getLangOpts().C99) {
           // C99 6.6p3 introduces a strange edge case: comma can be in an ICE
           // if it isn't evaluated.
           if (LHSResult.Kind == IK_ICE && RHSResult.Kind == IK_ICE)
@@ -14785,7 +15490,7 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
     if (isa<ExplicitCastExpr>(E)) {
       if (const FloatingLiteral *FL
             = dyn_cast<FloatingLiteral>(SubExpr->IgnoreParenImpCasts())) {
-        unsigned DestWidth = Ctx.getIntWidth(E->getType());
+        unsigned DestWidth = Ctx.ASTCtx.getIntWidth(E->getType());
         bool DestSigned = E->getType()->isSignedIntegerOrEnumerationType();
         APSInt IgnoredVal(DestWidth, !DestSigned);
         bool Ignored;
@@ -14862,7 +15567,8 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
     return CheckICE(cast<ChooseExpr>(E)->getChosenSubExpr(), Ctx);
   }
   case Expr::BuiltinBitCastExprClass: {
-    if (!checkBitCastConstexprEligibility(nullptr, Ctx, cast<CastExpr>(E)))
+    if (!checkBitCastConstexprEligibility(nullptr, Ctx.ASTCtx,
+                                          cast<CastExpr>(E)))
       return ICEDiag(IK_NotICE, E->getBeginLoc());
     return CheckICE(cast<CastExpr>(E)->getSubExpr(), Ctx);
   }
@@ -14872,10 +15578,9 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
 }
 
 /// Evaluate an expression as a C++11 integral constant expression.
-static bool EvaluateCPlusPlus11IntegralConstantExpr(const ASTContext &Ctx,
-                                                    const Expr *E,
-                                                    llvm::APSInt *Value,
-                                                    SourceLocation *Loc) {
+static bool EvaluateCPlusPlus11IntegralConstantExpr(
+    const Expr::EvalContext &Ctx, const Expr *E,
+    llvm::APSInt *Value, SourceLocation *Loc) {
   if (!E->getType()->isIntegralOrUnscopedEnumerationType()) {
     if (Loc) *Loc = E->getExprLoc();
     return false;
@@ -14894,12 +15599,12 @@ static bool EvaluateCPlusPlus11IntegralConstantExpr(const ASTContext &Ctx,
   return true;
 }
 
-bool Expr::isIntegerConstantExpr(const ASTContext &Ctx,
+bool Expr::isIntegerConstantExpr(const EvalContext &Ctx,
                                  SourceLocation *Loc) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
 
-  if (Ctx.getLangOpts().CPlusPlus11)
+  if (Ctx.ASTCtx.getLangOpts().CPlusPlus11)
     return EvaluateCPlusPlus11IntegralConstantExpr(Ctx, this, nullptr, Loc);
 
   ICEDiag D = CheckICE(this, Ctx);
@@ -14910,22 +15615,17 @@ bool Expr::isIntegerConstantExpr(const ASTContext &Ctx,
   return true;
 }
 
-Optional<llvm::APSInt> Expr::getIntegerConstantExpr(const ASTContext &Ctx,
-                                                    SourceLocation *Loc,
-                                                    bool isEvaluated) const {
+
+bool Expr::isIntegerConstantExpr(llvm::APSInt &Value, const EvalContext &Ctx,
+                                 SourceLocation *Loc, bool isEvaluated) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
 
-  APSInt Value;
-
-  if (Ctx.getLangOpts().CPlusPlus11) {
-    if (EvaluateCPlusPlus11IntegralConstantExpr(Ctx, this, &Value, Loc))
-      return Value;
-    return None;
-  }
+  if (Ctx.ASTCtx.getLangOpts().CPlusPlus11)
+    return EvaluateCPlusPlus11IntegralConstantExpr(Ctx, this, &Value, Loc);
 
   if (!isIntegerConstantExpr(Ctx, Loc))
-    return None;
+    return false;
 
   // The only possible side-effects here are due to UB discovered in the
   // evaluation (for instance, INT_MAX + 1). In such a case, we are still
@@ -14939,24 +15639,26 @@ Optional<llvm::APSInt> Expr::getIntegerConstantExpr(const ASTContext &Ctx,
   if (!::EvaluateAsInt(this, ExprResult, Ctx, SE_AllowSideEffects, Info))
     llvm_unreachable("ICE cannot be evaluated!");
 
-  return ExprResult.Val.getInt();
+  Value = ExprResult.Val.getInt();
+
+  return true;
 }
 
-bool Expr::isCXX98IntegralConstantExpr(const ASTContext &Ctx) const {
+bool Expr::isCXX98IntegralConstantExpr(const EvalContext &Ctx) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
 
   return CheckICE(this, Ctx).Kind == IK_ICE;
 }
 
-bool Expr::isCXX11ConstantExpr(const ASTContext &Ctx, APValue *Result,
+bool Expr::isCXX11ConstantExpr(const EvalContext &Ctx, APValue *Result,
                                SourceLocation *Loc) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
 
   // We support this checking in C++98 mode in order to diagnose compatibility
   // issues.
-  assert(Ctx.getLangOpts().CPlusPlus);
+  assert(Ctx.ASTCtx.getLangOpts().CPlusPlus);
 
   // Build evaluation settings.
   Expr::EvalStatus Status;
@@ -14982,7 +15684,7 @@ bool Expr::isCXX11ConstantExpr(const ASTContext &Ctx, APValue *Result,
   return IsConstExpr;
 }
 
-bool Expr::EvaluateWithSubstitution(APValue &Value, ASTContext &Ctx,
+bool Expr::EvaluateWithSubstitution(APValue &Value, const EvalContext &Ctx,
                                     const FunctionDecl *Callee,
                                     ArrayRef<const Expr*> Args,
                                     const Expr *This) const {
@@ -15060,13 +15762,14 @@ bool Expr::isPotentialConstantExpr(const FunctionDecl *FD,
   Expr::EvalStatus Status;
   Status.Diag = &Diags;
 
-  EvalInfo Info(FD->getASTContext(), Status, EvalInfo::EM_ConstantExpression);
+  Expr::EvalContext EvalCtx(FD->getASTContext(), nullptr);
+  EvalInfo Info(EvalCtx, Status, EvalInfo::EM_ConstantExpression);
   Info.InConstantContext = true;
   Info.CheckingPotentialConstantExpression = true;
 
   // The constexpr VM attempts to compile all methods to bytecode here.
   if (Info.EnableNewConstInterp) {
-    Info.Ctx.getInterpContext().isPotentialConstantExpr(Info, FD);
+    Info.ASTCtx.getInterpContext().isPotentialConstantExpr(Info, FD);
     return Diags.empty();
   }
 
@@ -15076,7 +15779,7 @@ bool Expr::isPotentialConstantExpr(const FunctionDecl *FD,
   // Fabricate an arbitrary expression on the stack and pretend that it
   // is a temporary being used as the 'this' pointer.
   LValue This;
-  ImplicitValueInitExpr VIE(RD ? Info.Ctx.getRecordType(RD) : Info.Ctx.IntTy);
+  ImplicitValueInitExpr VIE(RD ? Info.ASTCtx.getRecordType(RD) : Info.ASTCtx.IntTy);
   This.set({&VIE, Info.CurrentCall->Index});
 
   ArrayRef<const Expr*> Args;
@@ -15106,7 +15809,8 @@ bool Expr::isPotentialConstantExprUnevaluated(Expr *E,
   Expr::EvalStatus Status;
   Status.Diag = &Diags;
 
-  EvalInfo Info(FD->getASTContext(), Status,
+  Expr::EvalContext EvalCtx(FD->getASTContext(), nullptr);
+  EvalInfo Info(EvalCtx, Status,
                 EvalInfo::EM_ConstantExpressionUnevaluated);
   Info.InConstantContext = true;
   Info.CheckingPotentialConstantExpression = true;
@@ -15125,7 +15829,7 @@ bool Expr::isPotentialConstantExprUnevaluated(Expr *E,
   return Diags.empty();
 }
 
-bool Expr::tryEvaluateObjectSize(uint64_t &Result, ASTContext &Ctx,
+bool Expr::tryEvaluateObjectSize(uint64_t &Result, const EvalContext &Ctx,
                                  unsigned Type) const {
   if (!getType()->isPointerType())
     return false;

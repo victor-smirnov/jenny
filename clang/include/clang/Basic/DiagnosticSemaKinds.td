@@ -2762,6 +2762,117 @@ def err_type_constraint_missing_arguments : Error<
 def err_placeholder_constraints_not_satisfied : Error<
   "deduced type %0 does not satisfy %1">;
 
+// [Meta]
+// FIXME: The err_immediate_tag and err_immediate_no_declarators are dups
+// of constexpr errors. These should be merged.
+def err_incorrect_defaulted_immediate : Error<
+  "defaulted definition of %sub{select_special_member_kind}0 "
+  "is not implicitly constexpr">;
+def err_immediate_tag : Error<
+  "%select{class|struct|interface|union|enum}0 cannot be marked 'consteval'">;
+def err_immediate_no_declarators : Error<
+  "'consteval' can only be used in function definitions">;
+def err_immediate_var : Error<
+  "variable cannot be marked 'consteval'">;
+def err_immediate_dtor : Error<
+  "destructor cannot be marked 'consteval'">;
+def err_cannot_evaluate_immedate : Error<
+  "cannot evaluate call to consteval %select{function|member function}0">;
+def err_immediate_redecl_mismatch : Error<
+  "%select{non-consteval declaration of %0 follows consteval declaration"
+  "|consteval declaration of %0 follows non-consteval declaration}1">;
+def err_invalid_immediate : Error<
+  "function parameter cannot be consteval">;
+
+def err_ambiguous_required_name : Error<
+    "Required %select{type|declarator}0 cannot be ambiguous.">;
+def err_required_name_not_found : Error<
+    "Required %select{type|declarator}0 not found.">;
+def err_required_decl_mismatch : Error<
+    "Required conflicting types %diff{($ vs $) |}0,1">;
+def note_required_bad_conv : Note<
+    "required declarator candidate not viable: "
+    "cannot convert declarator of type %diff{($ to $) |}0,1">;
+def note_required_candidate : Note<
+    "required candidate:">;
+
+// tuple and pack loops
+def note_loop_body_instantiation_here : Note<
+  "in instantiation of loop body expansion">;
+def err_select_index_not_constant : Error<
+  "Index of a __select expression must be a constant expression.">;
+def err_select_index_exceeds_bounds : Error<
+  "A member may not be selected at an out-of-bounds index.">;
+
+// Reflection
+def err_reflect_undeclared_id : Error<"reflection of undeclared identifier %0">;
+def err_reflect_ambiguous_id : Error<"reflection of ambiguous identifier %0">;
+def err_reflect_overloaded_id : Error<"reflection of overloaded identifier %0">;
+def err_reflection_not_named : Error<"reflected entity is not named named">;
+def err_reflection_failed : Error<"reflection failed">;
+
+def err_reflection_query_wrong_type : Error<
+  "query selector does not have type 'int'">;
+def err_reflection_query_not_constant : Error<
+  "query selector is not a constant expression">;
+def err_reflection_query_invalid : Error<
+  "invalid query selector">;
+def err_reflection_wrong_arity : Error<
+  "expected between %0 and %1 arguments, %2 given">;
+
+def err_expression_not_reflection : Error<
+  "expression is not a reflection">;
+def err_expression_not_type_reflection : Error<
+  "expression does not reflect a type">;
+def err_expression_not_value_reflection : Error<
+  "expression does not reflect a value">;
+def err_reflection_not_constant_expression : Error<
+  "reflection is not a constant expression">;
+def err_reflection_reflects_non_constant_expression : Error<
+  "reflection reflects an expression which is not constexpr">;
+def err_reflection_not_parm_var_decl : Error<
+  "reflection does not reflect a parameter">;
+def err_reflection_not_known : Error<
+  "expression does not reflect a construct">;
+def err_empty_type_reflection : Error<
+  "cannot project a type for an empty reflection">;
+def err_reflection_not_member : Error<
+  "expression does not reflect a data member or member function">;
+def err_cannot_project_value : Error<
+  "cannot project a value for a %select{constructor|destructor}0">;
+def err_reflect_print_literal_wrong_operand_type : Error<
+  "expected either integer or string operand">;
+def err_invalid_reflection_wrong_operand_type : Error<
+  "expected a string operand">;
+def err_reify_invalid_reflection : Error<
+  "cannot reify invalid reflection">;
+def note_user_defined_note : Note<
+  "%0">;
+def err_compiler_error_wrong_operand_type : Error<
+  "expected a string operand">;
+def err_concatenate_wrong_operand_type : Error<
+  "expected either integer or string operand">;
+
+def err_constexpr_range_iteration_failed : Error<
+  "constexpr range iteration failed">;
+
+def err_meta_type_constexpr : Error<"meta type variables must be constexpr">;
+
+// variadic reifiers
+def err_namespace_as_variadic_reifier : Error<
+  "'namespace' cannot be used as a variadic reifier.">;
+def err_invalid_reifier_context : Error<
+  "cannot use %select{valueof|idexpr|unqualid|typename}0 as "
+   "reifier in this context: %select{expression|typename}1 expected.">;
+
+// declaration names
+def err_reflected_id_with_integer_prefix : Error<
+  "declaration name begins with an integer">;
+def err_reflected_id_invalid_operand_type : Error<
+  "cannot include expression of type %0 in a declaration name">;
+def err_reflected_id_not_an_identifer : Error<
+  "declaration name %0 is not an identifier">;
+
 // C++11 char16_t/char32_t
 def warn_cxx98_compat_unicode_type : Warning<
   "'%0' type specifier is incompatible with C++98">,
@@ -3538,6 +3649,58 @@ def warn_param_return_typestate_mismatch : Warning<
 def warn_param_typestate_mismatch : Warning<
   "argument not in expected state; expected '%0', observed '%1'">,
   InGroup<Consumed>, DefaultIgnore;
+
+// LifetimeAnalysis
+def warn_pset_of_global : Warning<"the pset of '%0' must be a subset of {(static), (null)}, but is {%1}">,
+  InGroup<LifetimeGlobal>, DefaultIgnore;
+def warn_deref_nullptr : Warning<"dereferencing a%select{| possibly}0 null pointer">,
+  InGroup<LifetimeNull>, DefaultIgnore;
+def warn_assign_nullptr : Warning<"assigning a%select{| possibly}0 null pointer to a non-null object">,
+  InGroup<LifetimeNull>, DefaultIgnore;
+def warn_deref_dangling : Warning<"dereferencing a%select{| possibly}0 dangling pointer">,
+  InGroup<LifetimeAnalysis>, DefaultIgnore;
+def warn_dangling : Warning<"%select{passing|returning|returning}0 a%select{| possibly}2 dangling pointer%select{ as argument|| as output value '%1'}0">,
+  InGroup<LifetimeAnalysis>, DefaultIgnore;
+def warn_null : Warning<"%select{passing|returning|returning}0 a%select{| possibly}2 null pointer%select{ as argument|| as output value '%1'}0 where a non-null pointer is expected">,
+  InGroup<LifetimeNull>, DefaultIgnore;
+def warn_wrong_pset : Warning<"%select{passing|returning|returning}0 a pointer%select{ as argument|| as output value '%1'}0 with points-to set %2 where points-to set %3 is expected">,
+  InGroup<LifetimeAnalysis>, DefaultIgnore;
+def warn_non_static_throw : Warning<"throwing a pointer with points-to set %0 where points-to set ((static)) is expected">,
+  InGroup<LifetimeAnalysis>, DefaultIgnore;
+def warn_lifetime_pointer_arithmetic : Warning<"pointer arithmetic disables lifetime analysis">,
+  InGroup<LifetimeDisabled>, DefaultIgnore;
+def warn_lifetime_unsafe_cast : Warning<"unsafe cast disables lifetime analysis">,
+  InGroup<LifetimeDisabled>, DefaultIgnore;
+def warn_unsupported_expression : Warning<"this pre/postcondition is not supported">,
+  InGroup<LifetimeAnalysis>, DefaultIgnore;
+
+def warn_lifetime_category : Warning<"%0 could be annotate as %1">, InGroup<LifetimeCategory>, DefaultIgnore;
+
+def warn_lifetime_filtered : Warning<"TODO: this is just a placeholder, never actually emitted.">, InGroup<LifetimeFiltered>, DefaultIgnore;
+
+def note_never_initialized : Note<"it was never initialized here">;
+def note_pointee_left_scope : Note<"pointee '%0' left the scope here">;
+def note_temporary_destroyed: Note<"temporary was destroyed at the end of the full expression">;
+def note_pointer_arithmetic: Note<"pointer arithmetic is not allowed">;
+def note_dereferenced: Note<"was dereferenced here">;
+def note_null_here: Note<"became nullptr here">;
+def note_null_reason_parameter: Note<"the parameter is assumed to be potentially null. Consider using gsl::not_null<>, a reference instead of a pointer or an assert() to explicitly remove null">;
+def note_null_reason_default_construct: Note<"default-constructed pointers are assumed to be null">;
+def note_null_reason_compared_to_null: Note<"is compared to null here">;
+def note_forbidden_cast: Note<"used a forbidden cast here">;
+def note_modified: Note<"modified here">;
+def note_deleted: Note<"deleted here">;
+def note_assigned: Note<"assigned here">;
+def note_here: Note<"here">;
+
+
+// LifetimeAnalysis debug
+def warn_pset : Warning<"pset(%0) = %1">,
+  InGroup<LifetimeDebug>, DefaultIgnore;
+def warn_deref_unknown : Warning<"dereferencing a unknown pointer">,
+  InGroup<LifetimeDebug>, DefaultIgnore;
+def warn_lifetime_type_category : Warning<"lifetime type category is %select{Owner|Pointer|Aggregate|Value}0 %select{|with pointee %2}1">,
+  InGroup<LifetimeDebug>, DefaultIgnore;
 
 // no_sanitize attribute
 def warn_unknown_sanitizer_ignored : Warning<
@@ -10572,6 +10735,41 @@ def note_coroutine_function_declare_noexcept : Note<
   "must be declared with 'noexcept'"
 >;
 } // end of coroutines issue category
+
+let CategoryName = "Injection Issue" in {
+def err_requires_manifest_constevaluation : Error<
+  "%select{meta type variables|injection statements}0 may only appear in manifestly constant evaluated contexts">;
+def err_invalid_injection_operand : Error<
+  "invalid operand of type %0; expected a reflection or fragment">;
+def err_invalid_injection : Error<
+  "injecting %select{statements|member statements|class members|enum members|namespace members}0 into "
+  "%select{a free function|a member function|a class|an enum|a namespace}1">;
+def err_injecting_local_into_invalid_scope : Error<
+  "cannot inject a local variable into %select{namespace|class}0 scope">;
+def err_injecting_into_parent_of_global_namespace : Error<
+  "cannot inject into the parent namespace of the global namespace">;
+def err_modify_virtual_constructor : Error<
+  "cannot make a constructor virtual">;
+def err_modify_constexpr_field : Error<
+  "cannot make a non-static data member constexpr">;
+def err_invalid_type_transformer_operand : Error<
+  "invalid operand of type %0; expected a reflection">;
+def err_invalid_unquote_operator : Error<
+  "the unquote operator can only appear inside of a fragment">;
+def err_invalid_fragment_capture : Error<
+  "invalid deduced capture; %0 cannot be captured by a fragment">;
+def warn_deprecated_fragment : Warning<
+  "the implicit capture '__fragment' is deprecated please move "
+  "to explicit capture 'fragment'">, InGroup<DeprecatedFragment>;
+} // end of injection issue category
+
+let CategoryName = "Non-Standard Warning" in {
+def warn_skipping_consteval : Warning<
+ "The standard madates immediate functions be evaluated, even when part of an unevaluated operand. "
+ "This evaluation has failed. However, we are ignoring the result of this evaluation. "
+ "If you have a motivating use case, that's triggering this warning, please contact us.">,
+ InGroup<FutureCompat>;
+} // end of non-standard warning category
 
 let CategoryName = "Documentation Issue" in {
 def warn_not_a_doxygen_trailing_member_comment : Warning<

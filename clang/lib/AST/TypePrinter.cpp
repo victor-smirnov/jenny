@@ -207,10 +207,12 @@ bool TypePrinter::canPrefixQualifiers(const Type *T,
     case Type::Builtin:
     case Type::Complex:
     case Type::UnresolvedUsing:
+    case Type::CXXRequiredType:
     case Type::Typedef:
     case Type::TypeOfExpr:
     case Type::TypeOf:
     case Type::Decltype:
+    case Type::Reflected:
     case Type::UnaryTransform:
     case Type::Record:
     case Type::Enum:
@@ -264,6 +266,7 @@ bool TypePrinter::canPrefixQualifiers(const Type *T,
     case Type::PackExpansion:
     case Type::SubstTemplateTypeParm:
     case Type::MacroQualified:
+    case Type::CXXDependentVariadicReifier:
       CanPrefixQualifiers = false;
       break;
 
@@ -1000,6 +1003,14 @@ void TypePrinter::printUnresolvedUsingBefore(const UnresolvedUsingType *T,
 void TypePrinter::printUnresolvedUsingAfter(const UnresolvedUsingType *T,
                                             raw_ostream &OS) {}
 
+void TypePrinter::printCXXRequiredTypeBefore(const CXXRequiredTypeType *T,
+                                             raw_ostream &OS) {
+  printTypeSpec(T->getDecl(), OS);
+}
+
+void TypePrinter::printCXXRequiredTypeAfter(const CXXRequiredTypeType *T,
+                                             raw_ostream &OS) {}
+
 void TypePrinter::printTypedefBefore(const TypedefType *T, raw_ostream &OS) {
   printTypeSpec(T->getDecl(), OS);
 }
@@ -1050,6 +1061,21 @@ void TypePrinter::printDecltypeBefore(const DecltypeType *T, raw_ostream &OS) {
 }
 
 void TypePrinter::printDecltypeAfter(const DecltypeType *T, raw_ostream &OS) {}
+
+void TypePrinter::printReflectedBefore(const ReflectedType *T,
+                                       raw_ostream &OS) {
+  if (T->isDependentType()) {
+    OS << "typename(";
+    if (T->getReflection())
+      T->getReflection()->printPretty(OS, nullptr, Policy);
+    OS << ')';
+  } else {
+    print(T->getUnderlyingType(), OS, StringRef());
+  }
+  spaceBeforePlaceHolder(OS);
+}
+void TypePrinter::printReflectedAfter(const ReflectedType *T,
+                                      raw_ostream &OS) { }
 
 void TypePrinter::printUnaryTransformBefore(const UnaryTransformType *T,
                                             raw_ostream &OS) {
@@ -1239,6 +1265,9 @@ void TypePrinter::printTag(TagDecl *D, raw_ostream &OS) {
 
     if (isa<CXXRecordDecl>(D) && cast<CXXRecordDecl>(D)->isLambda()) {
       OS << "lambda";
+      HasKindDecoration = true;
+    } else if (isa<CXXRecordDecl>(D) && cast<CXXRecordDecl>(D)->isFragment()) {
+      OS << "fragment";
       HasKindDecoration = true;
     } else {
       OS << "anonymous";
@@ -1467,6 +1496,17 @@ void TypePrinter::printPackExpansionBefore(const PackExpansionType *T,
 void TypePrinter::printPackExpansionAfter(const PackExpansionType *T,
                                           raw_ostream &OS) {
   printAfter(T->getPattern(), OS);
+  OS << "...";
+}
+
+void TypePrinter::printCXXDependentVariadicReifierBefore(
+  const CXXDependentVariadicReifierType *T, raw_ostream &OS) {
+  printBefore(T->getRange()->getType(), OS);
+}
+
+void TypePrinter::printCXXDependentVariadicReifierAfter(
+  const CXXDependentVariadicReifierType *T, raw_ostream &OS) {
+  printAfter(T->getRange()->getType(), OS);
   OS << "...";
 }
 

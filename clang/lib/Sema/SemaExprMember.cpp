@@ -70,6 +70,10 @@ enum IMAKind {
   // unevaluated.
   IMA_Field_Uneval_Context,
 
+  // We have no idea where this really refers to,
+  // because we've yet to inject it.
+  IMA_PendingInjection,
+
   /// All possible referrents are instance members and the current
   /// context is not an instance method.
   IMA_Error_StaticContext,
@@ -88,21 +92,21 @@ enum IMAKind {
 static IMAKind ClassifyImplicitMemberAccess(Sema &SemaRef,
                                             const LookupResult &R) {
   assert(!R.empty() && (*R.begin())->isCXXClassMember());
-
   DeclContext *DC = SemaRef.getFunctionLevelDeclContext();
+
+  if (isa<CXXStmtFragmentDecl>(DC))
+    return IMA_PendingInjection;
 
   bool isStaticContext = SemaRef.CXXThisTypeOverride.isNull() &&
     (!isa<CXXMethodDecl>(DC) || cast<CXXMethodDecl>(DC)->isStatic());
 
   if (R.isUnresolvableResult())
     return isStaticContext ? IMA_Unresolved_StaticContext : IMA_Unresolved;
-
   // Collect all the declaring classes of instance members we find.
   bool hasNonInstance = false;
   bool isField = false;
   BaseSet Classes;
   for (NamedDecl *D : R) {
-    // Look through any using decls.
     D = D->getUnderlyingDecl();
 
     if (D->isCXXInstanceMember()) {
@@ -114,7 +118,6 @@ static IMAKind ClassifyImplicitMemberAccess(Sema &SemaRef,
     } else
       hasNonInstance = true;
   }
-
   // If we didn't find any instance members, it can't be an implicit
   // member reference.
   if (Classes.empty())
@@ -152,13 +155,12 @@ static IMAKind ClassifyImplicitMemberAccess(Sema &SemaRef,
   // If the current context is not an instance method, it can't be
   // an implicit member reference.
   if (isStaticContext) {
-    if (hasNonInstance)
+    if (hasNonInstance) {
       return IMA_Mixed_StaticContext;
-
+    }
     return AbstractInstanceResult ? AbstractInstanceResult
                                   : IMA_Error_StaticContext;
   }
-
   CXXRecordDecl *contextClass;
   if (CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(DC))
     contextClass = MD->getParent()->getCanonicalDecl();
@@ -255,6 +257,7 @@ Sema::BuildPossibleImplicitMemberExpr(const CXXScopeSpec &SS,
   case IMA_Abstract:
   case IMA_Mixed_StaticContext:
   case IMA_Unresolved_StaticContext:
+  case IMA_PendingInjection:
     if (TemplateArgs || TemplateKWLoc.isValid())
       return BuildTemplateIdExpr(SS, TemplateKWLoc, R, false, TemplateArgs);
     return BuildDeclarationNameExpr(SS, R, false);

@@ -13,6 +13,8 @@
 #include "clang/AST/StmtCXX.h"
 
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/DeclTemplate.h"
+#include "clang/Lex/Token.h"
 
 using namespace clang;
 
@@ -83,6 +85,32 @@ const VarDecl *CXXForRangeStmt::getLoopVariable() const {
   return const_cast<CXXForRangeStmt *>(this)->getLoopVariable();
 }
 
+VarDecl *CXXCompositeExpansionStmt::getRangeVariable() {
+  Decl *RV = cast<DeclStmt>(getRangeVarStmt())->getSingleDecl();
+  assert(RV && "No range variable in CXXExpansionStmt");
+  return cast<VarDecl>(RV);
+}
+
+Expr *CXXPackExpansionStmt::getRangeExpr() const {
+  assert(isa<Expr>(getRangeExprStmt()) && "Range is not an expression.");
+  Expr *RangeExpr = cast<Expr>(getRangeExprStmt());
+  return RangeExpr;
+}
+
+VarDecl *CXXExpansionStmt::getLoopVariable() {
+  Decl *LV = cast<DeclStmt>(getLoopVarStmt())->getSingleDecl();
+  assert(LV && "No loop variable in CXXExpansionStmt");
+  return cast<VarDecl>(LV);
+}
+
+const VarDecl *CXXExpansionStmt::getLoopVariable() const {
+  return const_cast<CXXExpansionStmt *>(this)->getLoopVariable();
+}
+
+NonTypeTemplateParmDecl *CXXExpansionStmt::getInductionVariable() {
+  return cast<NonTypeTemplateParmDecl>(Parms->getParam(0));
+}
+
 CoroutineBodyStmt *CoroutineBodyStmt::Create(
     const ASTContext &C, CoroutineBodyStmt::CtorArgs const &Args) {
   std::size_t Size = totalSizeToAlloc<Stmt *>(
@@ -124,4 +152,32 @@ CoroutineBodyStmt::CoroutineBodyStmt(CoroutineBodyStmt::CtorArgs const &Args)
       Args.ReturnStmtOnAllocFailure;
   std::copy(Args.ParamMoves.begin(), Args.ParamMoves.end(),
             const_cast<Stmt **>(getParamMoves().data()));
+}
+
+CXXBaseInjectionStmt::CXXBaseInjectionStmt(
+    SourceLocation IntroLoc, SourceLocation LParenLoc,
+    CXXBaseSpecifier **BaseSpecifiers, unsigned NumBaseSpecifiers,
+    SourceLocation RParenLoc)
+    : Stmt(CXXBaseInjectionStmtClass), IntroLoc(IntroLoc),
+      LParenLoc(LParenLoc), RParenLoc(RParenLoc),
+      Bases(BaseSpecifiers), NumBaseSpecifiers(NumBaseSpecifiers) {
+}
+
+CXXBaseInjectionStmt::CXXBaseInjectionStmt(EmptyShell Empty)
+    : Stmt(CXXBaseInjectionStmtClass), IntroLoc(),
+      LParenLoc(), RParenLoc(), Bases(nullptr), NumBaseSpecifiers(0) {
+}
+
+CXXBaseInjectionStmt *CXXBaseInjectionStmt::Create(
+    ASTContext &C, SourceLocation IntroLoc, SourceLocation LParenLoc,
+    ArrayRef<CXXBaseSpecifier *> BaseSpecifiers, SourceLocation RParenLoc) {
+  CXXBaseSpecifier **Bases = new (C) CXXBaseSpecifier *[BaseSpecifiers.size()];
+  std::copy(BaseSpecifiers.begin(), BaseSpecifiers.end(), Bases);
+  return new (C) CXXBaseInjectionStmt(IntroLoc, LParenLoc, Bases,
+                                      BaseSpecifiers.size(), RParenLoc);
+}
+
+CXXBaseInjectionStmt *
+CXXBaseInjectionStmt::CreateEmpty(ASTContext &C) {
+  return new (C) CXXBaseInjectionStmt(EmptyShell());
 }

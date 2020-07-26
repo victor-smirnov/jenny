@@ -49,6 +49,11 @@ def ObjCAutoreleasePoolStmt : StmtNode<Stmt>;
 def CXXCatchStmt : StmtNode<Stmt>;
 def CXXTryStmt : StmtNode<Stmt>;
 def CXXForRangeStmt : StmtNode<Stmt>;
+def CXXExpansionStmt : StmtNode<Stmt, 1>;
+def CXXCompositeExpansionStmt : StmtNode<CXXExpansionStmt>;
+def CXXPackExpansionStmt : StmtNode<CXXExpansionStmt>;
+def CXXInjectionStmt : StmtNode<Stmt>;
+def CXXBaseInjectionStmt : StmtNode<Stmt>;
 
 // C++ Coroutines TS statements
 def CoroutineBodyStmt : StmtNode<Stmt>;
@@ -152,6 +157,9 @@ def UnresolvedLookupExpr : StmtNode<OverloadExpr>;
 def UnresolvedMemberExpr : StmtNode<OverloadExpr>;
 def CXXNoexceptExpr : StmtNode<Expr>;
 def PackExpansionExpr : StmtNode<Expr>;
+def CXXSelectionExpr : StmtNode<Expr, 1>;
+def CXXSelectMemberExpr : StmtNode<CXXSelectionExpr>;
+def CXXSelectPackExpr : StmtNode<CXXSelectionExpr>;
 def SizeOfPackExpr : StmtNode<Expr>;
 def SubstNonTypeTemplateParmExpr : StmtNode<Expr>;
 def SubstNonTypeTemplateParmPackExpr : StmtNode<Expr>;
@@ -159,6 +167,8 @@ def FunctionParmPackExpr : StmtNode<Expr>;
 def MaterializeTemporaryExpr : StmtNode<Expr>;
 def LambdaExpr : StmtNode<Expr>;
 def CXXFoldExpr : StmtNode<Expr>;
+def CXXFragmentExpr : StmtNode<Expr>;
+def CXXFragmentCaptureExpr : StmtNode<Expr>;
 
 // C++ Coroutines TS expressions
 def CoroutineSuspendExpr : StmtNode<Expr, 1>;
@@ -169,6 +179,22 @@ def CoyieldExpr : StmtNode<CoroutineSuspendExpr>;
 // C++20 Concepts expressions
 def ConceptSpecializationExpr : StmtNode<Expr>;
 def RequiresExpr : StmtNode<Expr>;
+
+// [Meta] expressions
+def CXXReflectExpr : StmtNode<Expr>;
+def CXXInvalidReflectionExpr : StmtNode<Expr>;
+def CXXReflectionReadQueryExpr : StmtNode<Expr>;
+def CXXReflectionWriteQueryExpr : StmtNode<Expr>;
+def CXXReflectPrintLiteralExpr : StmtNode<Expr>;
+def CXXReflectPrintReflectionExpr : StmtNode<Expr>;
+def CXXReflectDumpReflectionExpr : StmtNode<Expr>;
+def CXXCompilerErrorExpr : StmtNode<Expr>;
+def CXXIdExprExpr : StmtNode<Expr>;
+def CXXMemberIdExprExpr : StmtNode<Expr>;
+def CXXDependentSpliceIdExpr : StmtNode<Expr>;
+def CXXValueOfExpr : StmtNode<Expr>;
+def CXXConcatenateExpr : StmtNode<Expr>;
+def CXXDependentVariadicReifierExpr : StmtNode<Expr>;
 
 // Obj-C Expressions.
 def ObjCStringLiteral : StmtNode<Expr>;

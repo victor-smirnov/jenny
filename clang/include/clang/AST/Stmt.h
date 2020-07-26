@@ -960,6 +960,19 @@ protected:
     SourceLocation RequiresKWLoc;
   };
 
+  class CXXFragmentExprBitfields {
+    friend class ASTStmtReader;
+    friend class ASTStmtWriter;
+    friend class CXXFragmentExpr;
+
+    unsigned : NumExprBits;
+
+    unsigned IsLegacy : 1;
+
+    /// The location of the introducer token.
+    SourceLocation IntroLoc;
+  };
+
   //===--- C++ Coroutines TS bitfields classes ---===//
 
   class CoawaitExprBitfields {
@@ -1063,6 +1076,7 @@ protected:
     SubstNonTypeTemplateParmExprBitfields SubstNonTypeTemplateParmExprBits;
     LambdaExprBitfields LambdaExprBits;
     RequiresExprBitfields RequiresExprBits;
+    CXXFragmentExprBitfields FragmentExprBits;
 
     // C++ Coroutines TS expressions
     CoawaitExprBitfields CoawaitBits;
@@ -1376,7 +1390,6 @@ class CompoundStmt final : public Stmt,
   explicit CompoundStmt(EmptyShell Empty) : Stmt(CompoundStmtClass, Empty) {}
 
   void setStmts(ArrayRef<Stmt *> Stmts);
-
 public:
   static CompoundStmt *Create(const ASTContext &C, ArrayRef<Stmt *> Stmts,
                               SourceLocation LB, SourceLocation RB);

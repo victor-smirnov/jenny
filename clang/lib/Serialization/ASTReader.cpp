@@ -6607,6 +6607,10 @@ void TypeLocReader::VisitUnresolvedUsingTypeLoc(UnresolvedUsingTypeLoc TL) {
   TL.setNameLoc(readSourceLocation());
 }
 
+void TypeLocReader::VisitCXXRequiredTypeTypeLoc(CXXRequiredTypeTypeLoc TL) {
+  TL.setNameLoc(readSourceLocation());
+}
+
 void TypeLocReader::VisitTypedefTypeLoc(TypedefTypeLoc TL) {
   TL.setNameLoc(readSourceLocation());
 }
@@ -6625,6 +6629,10 @@ void TypeLocReader::VisitTypeOfTypeLoc(TypeOfTypeLoc TL) {
 }
 
 void TypeLocReader::VisitDecltypeTypeLoc(DecltypeTypeLoc TL) {
+  TL.setNameLoc(readSourceLocation());
+}
+
+void TypeLocReader::VisitReflectedTypeLoc(ReflectedTypeLoc TL) {
   TL.setNameLoc(readSourceLocation());
 }
 
@@ -6733,6 +6741,11 @@ void TypeLocReader::VisitPackExpansionTypeLoc(PackExpansionTypeLoc TL) {
   TL.setEllipsisLoc(readSourceLocation());
 }
 
+void TypeLocReader::VisitCXXDependentVariadicReifierTypeLoc
+(CXXDependentVariadicReifierTypeLoc TL) {
+  TL.setEllipsisLoc(readSourceLocation());
+}
+
 void TypeLocReader::VisitObjCInterfaceTypeLoc(ObjCInterfaceTypeLoc TL) {
   TL.setNameLoc(readSourceLocation());
 }
@@ -6809,6 +6822,9 @@ QualType ASTReader::GetType(TypeID ID) {
     switch ((PredefinedTypeIDs)Index) {
     case PREDEF_TYPE_NULL_ID:
       return QualType();
+    case PREDEF_TYPE_META_INFO_ID:
+      T = Context.MetaInfoTy;
+      break;
     case PREDEF_TYPE_VOID_ID:
       T = Context.VoidTy;
       break;
@@ -7090,6 +7106,7 @@ ASTReader::getGlobalTypeID(ModuleFile &F, unsigned LocalID) const {
 TemplateArgumentLocInfo
 ASTRecordReader::readTemplateArgumentLocInfo(TemplateArgument::ArgKind Kind) {
   switch (Kind) {
+  case TemplateArgument::Reflected:
   case TemplateArgument::Expression:
     return readExpr();
   case TemplateArgument::Type:
@@ -8993,6 +9010,8 @@ APValue ASTRecordReader::readAPValue() {
   case APValue::Union:
   case APValue::MemberPointer:
   case APValue::AddrLabelDiff:
+  case APValue::Reflection:
+  case APValue::Fragment:
     // TODO : Handle all these APValue::ValueKind.
     return APValue();
   }
@@ -11159,12 +11178,14 @@ void ASTReader::diagnoseOdrViolations() {
                     FirstRecord, FirstModule, FirstTemplate->getLocation(),
                     FirstTemplate->getSourceRange(),
                     FunctionTemplateParameterDifferentDefaultArgument)
-                    << FirstTemplate << (i + 1) << FirstDefaultArgument;
+                    << FirstTemplate << (i + 1)
+                    << FirstDefaultArgument;
                 ODRDiagDeclNote(
                     SecondModule, SecondTemplate->getLocation(),
                     SecondTemplate->getSourceRange(),
                     FunctionTemplateParameterDifferentDefaultArgument)
-                    << SecondTemplate << (i + 1) << SecondDefaultArgument;
+                    << SecondTemplate << (i + 1)
+                    << SecondDefaultArgument;
                 ParameterMismatch = true;
                 break;
               }
@@ -11630,7 +11651,7 @@ void ASTReader::pushExternalDeclIntoScope(NamedDecl *D, DeclarationName Name) {
     auto It = PendingFakeLookupResults.find(II);
     if (It != PendingFakeLookupResults.end()) {
       for (auto *ND : It->second)
-        SemaObj->IdResolver.RemoveDecl(ND);
+        SemaObj->IdResolver->RemoveDecl(ND);
       // FIXME: this works around module+PCH performance issue.
       // Rather than erase the result from the map, which is O(n), just clear
       // the vector of NamedDecls.
@@ -11638,14 +11659,14 @@ void ASTReader::pushExternalDeclIntoScope(NamedDecl *D, DeclarationName Name) {
     }
   }
 
-  if (SemaObj->IdResolver.tryAddTopLevelDecl(D, Name) && SemaObj->TUScope) {
+  if (SemaObj->IdResolver->tryAddTopLevelDecl(D, Name) && SemaObj->TUScope) {
     SemaObj->TUScope->AddDecl(D);
   } else if (SemaObj->TUScope) {
     // Adding the decl to IdResolver may have failed because it was already in
     // (even though it was not added in scope). If it is already in, make sure
     // it gets in the scope as well.
-    if (std::find(SemaObj->IdResolver.begin(Name),
-                  SemaObj->IdResolver.end(), D) != SemaObj->IdResolver.end())
+    if (std::find(SemaObj->IdResolver->begin(Name),
+                  SemaObj->IdResolver->end(), D) != SemaObj->IdResolver->end())
       SemaObj->TUScope->AddDecl(D);
   }
 }
@@ -11694,7 +11715,7 @@ ASTReader::~ASTReader() {
 }
 
 IdentifierResolver &ASTReader::getIdResolver() {
-  return SemaObj ? SemaObj->IdResolver : DummyIdResolver;
+  return SemaObj ? *SemaObj->IdResolver : DummyIdResolver;
 }
 
 Expected<unsigned> ASTRecordReader::readRecord(llvm::BitstreamCursor &Cursor,

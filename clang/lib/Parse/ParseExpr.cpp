@@ -176,6 +176,11 @@ ExprResult Parser::ParseAssignmentExpression(TypeCastState isTypeCast) {
   return ParseRHSOfBinaryExpression(LHS, prec::Assignment);
 }
 
+ExprResult Parser::ParseConditionalExpression(TypeCastState isTypeCast) {
+  ExprResult LHS(ParseCastExpression(AnyCastExpr, false, isTypeCast));
+  return ParseRHSOfBinaryExpression(LHS, prec::Conditional);
+}
+
 /// Parse an assignment expression where part of an Objective-C message
 /// send has already been parsed.
 ///
@@ -759,6 +764,7 @@ class CastExpressionIdValidator final : public CorrectionCandidateCallback {
 /// [C++11] 'noexcept' '(' expression ')' [C++11 5.3.7]
 /// [C++]   new-expression
 /// [C++]   delete-expression
+/// [Meta]  reflect-expression
 ///
 ///       unary-operator: one of
 ///         '&'  '*'  '+'  '-'  '~'  '!'
@@ -813,6 +819,7 @@ class CastExpressionIdValidator final : public CorrectionCandidateCallback {
 /// [G++]   binary-type-trait '(' type-id ',' type-id ')'           [TODO]
 /// [EMBT]  array-type-trait '(' type-id ',' integer ')'
 /// [clang] '^' block-literal
+/// [meta]  idexpr-splice
 ///
 ///       constant: [C99 6.4.4]
 ///         integer-constant
@@ -840,6 +847,9 @@ class CastExpressionIdValidator final : public CorrectionCandidateCallback {
 ///       delete-expression: [C++ 5.3.5]
 ///                   '::'[opt] 'delete' cast-expression
 ///                   '::'[opt] 'delete' '[' ']' cast-expression
+///
+///       fragment-expression:
+///                   '<<' fragment
 ///
 /// [GNU/Embarcadero] unary-type-trait:
 ///                   '__is_arithmetic'
@@ -1063,7 +1073,7 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
       // is a parenthesis, this is likely to be a use of a type trait. Check
       // those tokens.
       if (Next.is(tok::l_paren) &&
-          Tok.is(tok::identifier) &&
+          isIdentifier() &&
           Tok.getIdentifierInfo()->hasRevertedTokenIDToIdentifier()) {
         IdentifierInfo *II = Tok.getIdentifierInfo();
         // Build up the mapping of revertible type traits, for future use.
@@ -1147,7 +1157,7 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
         // If TryAnnotateTypeOrScopeToken annotates the token, tail recurse.
         if (TryAnnotateTypeOrScopeToken())
           return ExprError();
-        if (!Tok.is(tok::identifier))
+        if (!isIdentifier())
           return ParseCastExpression(ParseKind, isAddressOfOperand,
                                      NotCastExpr, isTypeCast,
                                      isVectorLiteral,
@@ -1155,10 +1165,18 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
       }
     }
 
+    if (Tok.is(tok::kw_idexpr)) {
+      ExprResult IdExpr = ParseCXXIdExprExpression();
+      if (IdExpr.isInvalid())
+        return ExprError();
+
+      return IdExpr;
+    }
+
     // Consume the identifier so that we can see if it is followed by a '(' or
     // '.'.
     IdentifierInfo &II = *Tok.getIdentifierInfo();
-    SourceLocation ILoc = ConsumeToken();
+    SourceLocation ILoc = ConsumeIdentifier();
 
     // Support 'Class.property' and 'super.property' notation.
     if (getLangOpts().ObjC && Tok.is(tok::period) &&
@@ -1174,13 +1192,13 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
         return ExprError();
       }
       // Allow either an identifier or the keyword 'class' (in C++).
-      if (Tok.isNot(tok::identifier) &&
+      if (!isIdentifier() &&
           !(getLangOpts().CPlusPlus && Tok.is(tok::kw_class))) {
         Diag(Tok, diag::err_expected_property_name);
         return ExprError();
       }
       IdentifierInfo &PropertyName = *Tok.getIdentifierInfo();
-      SourceLocation PropertyLoc = ConsumeToken();
+      SourceLocation PropertyLoc = ConsumeAsIdentifier();
 
       Res = Actions.ActOnClassPropertyRefExpr(II, PropertyName,
                                               ILoc, PropertyLoc);
@@ -1193,7 +1211,7 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
     // bracket. Treat it as such.
     if (getLangOpts().ObjC && &II == Ident_super && !InMessageExpression &&
         getCurScope()->isInObjcMethodScope() &&
-        ((Tok.is(tok::identifier) &&
+        ((isIdentifier() &&
          (NextToken().is(tok::colon) || NextToken().is(tok::r_square))) ||
          Tok.is(tok::code_completion))) {
       Res = ParseObjCMessageExpressionBody(SourceLocation(), ILoc, nullptr,
@@ -1207,7 +1225,7 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
     // appropriately. Also take this path if we're performing code
     // completion after an Objective-C class name.
     if (getLangOpts().ObjC &&
-        ((Tok.is(tok::identifier) && !InMessageExpression) ||
+        ((isIdentifier() && !InMessageExpression) ||
          Tok.is(tok::code_completion))) {
       const Token& Next = NextToken();
       if (Tok.is(tok::code_completion) ||
@@ -1440,7 +1458,7 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
     if (NotPrimaryExpression)
       *NotPrimaryExpression = true;
     SourceLocation AmpAmpLoc = ConsumeToken();
-    if (Tok.isNot(tok::identifier))
+    if (!isIdentifier())
       return ExprError(Diag(Tok, diag::err_expected) << tok::identifier);
 
     if (getCurScope()->getFnParent() == nullptr)
@@ -1450,7 +1468,7 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
     LabelDecl *LD = Actions.LookupOrCreateLabel(Tok.getIdentifierInfo(),
                                                 Tok.getLocation());
     Res = Actions.ActOnAddrLabel(AmpAmpLoc, Tok.getLocation(), LD);
-    ConsumeToken();
+    ConsumeIdentifier();
     AllowSuffix = false;
     break;
   }
@@ -1484,6 +1502,23 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
   case tok::kw___builtin_unique_stable_name:
     Res = ParseUniqueStableNameExpression();
     break;
+
+  case tok::kw_reflexpr:
+    Res = ParseCXXReflectExpression();
+    break;
+
+  case tok::kw_idexpr:
+    Res = ParseCXXIdExprExpression();
+    break;
+
+  case tok::kw_valueof:
+    Res = ParseCXXValueOfExpression();
+    break;
+
+  case tok::kw___select_member:
+    Res = ParseCXXSelectMemberExpr();
+    break;
+
   case tok::annot_typename:
     if (isStartOfObjCClassMessageMissingOpenBracket()) {
       TypeResult Type = getTypeAnnotation(Tok);
@@ -1553,6 +1588,11 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
       //                     typename-specifier braced-init-list
       if (TryAnnotateTypeOrScopeToken())
         return ExprError();
+
+      // If TryAnnotateTypeOrScopeToken annotates the token, tail recurse.
+      if (!Tok.is(tok::kw_typename))
+        return ParseCastExpression(ParseKind, isAddressOfOperand,
+                                   NotCastExpr, isTypeCast);
 
       if (!Actions.isSimpleTypeSpecifier(Tok.getKind()))
         // We are trying to parse a simple-type-specifier but might not get such
@@ -1628,7 +1668,17 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
     LLVM_FALLTHROUGH;
   }
 
+  // [Meta] id-expression: template unqualid ( reflection )
+  case tok::kw_template: {
+    if (Tok.is(tok::kw_template) && !NextToken().is(tok::kw_unqualid)) {
+      NotCastExpr = true;
+      return ExprError();
+    }
+
+    LLVM_FALLTHROUGH;
+  }
   case tok::kw_operator: // [C++] id-expression: operator/conversion-function-id
+  case tok::kw_unqualid: // [Meta] id-expression: unqualid ( reflection )
     Res = ParseCXXIdExpression(isAddressOfOperand);
     break;
 
@@ -1683,6 +1733,12 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
     AllowSuffix = false;
     break;
 
+  case tok::kw_fragment:
+    return ParseCXXFragmentExpression();
+
+  case tok::kw___fragment:
+    return ParseCXXLegacyFragmentExpression();
+
   case tok::kw_noexcept: { // [C++0x] 'noexcept' '(' expression ')'
     if (NotPrimaryExpression)
       *NotPrimaryExpression = true;
@@ -1727,6 +1783,33 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
       *NotPrimaryExpression = true;
     Res = ParseExpressionTrait();
     break;
+
+  case tok::kw___reflect:
+    return ParseCXXReflectionReadQuery();
+
+  case tok::kw___reflect_mod:
+    return ParseCXXReflectionWriteQuery();
+
+  case tok::kw___invalid_reflection:
+    return ParseCXXInvalidReflectionExpression();
+
+  case tok::kw___reflect_print:
+    return ParseCXXReflectPrintLiteralExpression();
+
+  case tok::kw___reflect_pretty_print:
+    return ParseCXXReflectPrintReflectionExpression();
+
+  case tok::kw___reflect_dump:
+    return ParseCXXReflectDumpReflectionExpression();
+
+  case tok::kw___compiler_error:
+    return ParseCXXCompilerErrorExpression();
+
+  case tok::kw___concatenate:
+    return ParseCXXConcatenateExpression();
+
+  case tok::percentl_brace:
+    return ParseCXXUnquoteOperator();
 
   case tok::at: {
     if (NotPrimaryExpression)
@@ -2032,6 +2115,7 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
       };
       if (OpKind == tok::l_paren || !LHS.isInvalid()) {
         if (Tok.isNot(tok::r_paren)) {
+          Sema::OverloadParseRAII ParsingOverloads(Actions);
           if (ParseExpressionList(ArgExprs, CommaLocs, [&] {
                 PreferredType.enterFunctionArgument(Tok.getLocation(),
                                                     RunSignatureHelp);
@@ -2089,6 +2173,25 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
     }
     case tok::arrow:
     case tok::period: {
+      // postfix-expression: p-e '->' idexpr-splice
+      //
+      // If the next token is idexpr process this as a special
+      // expression
+
+      if (NextToken().is(tok::kw_idexpr)) {
+        // The template case isn't in p1240, leave it off for now.
+        //
+        // (NextToken().is(tok::kw_template) &&
+        //    GetLookAheadToken(2).is(tok::kw_idexpr))) {
+
+        // FIXME: How does this happen? Does this happen?
+        // if (LHS.isInvalid())
+        //  break;
+
+        LHS = ParseCXXMemberIdExprExpression(LHS.get());
+        break;
+      }
+
       // postfix-expression: p-e '->' template[opt] id-expression
       // postfix-expression: p-e '.' template[opt] id-expression
       tok::TokenKind OpKind = Tok.getKind();
@@ -2126,9 +2229,11 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
           }
           break;
         }
+
         ParseOptionalCXXScopeSpecifier(
             SS, ObjectType, LHS.get() && LHS.get()->containsErrors(),
             /*EnteringContext=*/false, &MayBePseudoDestructor);
+
         if (SS.isNotEmpty())
           ObjectType = nullptr;
       }
@@ -2399,9 +2504,9 @@ ExprResult Parser::ParseUnaryExprOrTypeTraitExpression() {
       BalancedDelimiterTracker T(*this, tok::l_paren);
       T.consumeOpen();
       LParenLoc = T.getOpenLocation();
-      if (Tok.is(tok::identifier)) {
+      if (isIdentifier()) {
         Name = Tok.getIdentifierInfo();
-        NameLoc = ConsumeToken();
+        NameLoc = ConsumeIdentifier();
         T.consumeClose();
         RParenLoc = T.getCloseLocation();
         if (RParenLoc.isInvalid())
@@ -2410,9 +2515,9 @@ ExprResult Parser::ParseUnaryExprOrTypeTraitExpression() {
         Diag(Tok, diag::err_expected_parameter_pack);
         SkipUntil(tok::r_paren, StopAtSemi);
       }
-    } else if (Tok.is(tok::identifier)) {
+    } else if (isIdentifier()) {
       Name = Tok.getIdentifierInfo();
-      NameLoc = ConsumeToken();
+      NameLoc = ConsumeIdentifier();
       LParenLoc = PP.getLocForEndOfToken(EllipsisLoc);
       RParenLoc = PP.getLocForEndOfToken(NameLoc);
       Diag(LParenLoc, diag::err_paren_sizeof_parameter_pack)
@@ -2555,7 +2660,7 @@ ExprResult Parser::ParseBuiltinPrimaryExpression() {
     }
 
     // We must have at least one identifier here.
-    if (Tok.isNot(tok::identifier)) {
+    if (!isIdentifier()) {
       Diag(Tok, diag::err_expected) << tok::identifier;
       SkipUntil(tok::r_paren, StopAtSemi);
       return ExprError();
@@ -2567,7 +2672,7 @@ ExprResult Parser::ParseBuiltinPrimaryExpression() {
     Comps.push_back(Sema::OffsetOfComponent());
     Comps.back().isBrackets = false;
     Comps.back().U.IdentInfo = Tok.getIdentifierInfo();
-    Comps.back().LocStart = Comps.back().LocEnd = ConsumeToken();
+    Comps.back().LocStart = Comps.back().LocEnd = ConsumeIdentifier();
 
     // FIXME: This loop leaks the index expressions on error.
     while (1) {
@@ -2577,13 +2682,13 @@ ExprResult Parser::ParseBuiltinPrimaryExpression() {
         Comps.back().isBrackets = false;
         Comps.back().LocStart = ConsumeToken();
 
-        if (Tok.isNot(tok::identifier)) {
+        if (!isIdentifier()) {
           Diag(Tok, diag::err_expected) << tok::identifier;
           SkipUntil(tok::r_paren, StopAtSemi);
           return ExprError();
         }
         Comps.back().U.IdentInfo = Tok.getIdentifierInfo();
-        Comps.back().LocEnd = ConsumeToken();
+        Comps.back().LocEnd = ConsumeIdentifier();
 
       } else if (Tok.is(tok::l_square)) {
         if (CheckProhibitedCXX11Attribute())
@@ -2942,7 +3047,7 @@ Parser::ParseParenExpression(ParenParseOption &ExprType, bool stopIfCastExpr,
     // If our type is followed by an identifier and either ':' or ']', then
     // this is probably an Objective-C message send where the leading '[' is
     // missing. Recover as if that were the case.
-    if (!DeclaratorInfo.isInvalidType() && Tok.is(tok::identifier) &&
+    if (!DeclaratorInfo.isInvalidType() && isIdentifier() &&
         !InMessageExpression && getLangOpts().ObjC &&
         (NextToken().is(tok::colon) || NextToken().is(tok::r_square))) {
       TypeResult Ty;
@@ -3029,7 +3134,7 @@ Parser::ParseParenExpression(ParenParseOption &ExprType, bool stopIfCastExpr,
         }
 
         // Reject the cast of super idiom in ObjC.
-        if (Tok.is(tok::identifier) && getLangOpts().ObjC &&
+        if (isIdentifier() && getLangOpts().ObjC &&
             Tok.getIdentifierInfo() == Ident_super &&
             getCurScope()->isInObjcMethodScope() &&
             GetLookAheadToken(1).isNot(tok::period)) {
@@ -3370,15 +3475,36 @@ bool Parser::ParseExpressionList(SmallVectorImpl<Expr *> &Exprs,
     if (ExpressionStarts)
       ExpressionStarts();
 
-    ExprResult Expr;
+    ExprResult ArgExpr;
+    bool VariadicReifier = isVariadicReifier();
+
     if (getLangOpts().CPlusPlus11 && Tok.is(tok::l_brace)) {
       Diag(Tok, diag::warn_cxx98_compat_generalized_initializer_lists);
-      Expr = ParseBraceInitializer();
+      ArgExpr = ParseBraceInitializer();
+    } else if (VariadicReifier) {
+      llvm::SmallVector<Expr *, 4> ExpandedExprs;
+
+      /// Let reflection_range = {r1, r2, ..., rN, where rI is a reflection}.
+      /// valueof(... reflection_range) expands to valueof(r1), ..., valueof(rN)
+      SawError = ParseVariadicReifier(ExpandedExprs);
+
+      // We need to insert several fake commas to get around error checking.
+      // We only need size() - 1, since there is already a comma in front of
+      // the reifier parameter.
+      if (!ExpandedExprs.empty())
+        for (std::size_t I = 0; I < ExpandedExprs.size() - 1; ++I)
+          CommaLocs.emplace_back();
+
+      if (SawError)
+        SkipUntil(tok::comma, tok::r_paren, StopBeforeMatch);
+
+      // Add our expanded expressions into the parameter list.
+      Exprs.append(ExpandedExprs.begin(), ExpandedExprs.end());
     } else
-      Expr = ParseAssignmentExpression();
+      ArgExpr = ParseAssignmentExpression();
 
     if (Tok.is(tok::ellipsis))
-      Expr = Actions.ActOnPackExpansion(Expr.get(), ConsumeToken());
+      ArgExpr = Actions.ActOnPackExpansion(ArgExpr.get(), ConsumeToken());
     else if (Tok.is(tok::code_completion)) {
       // There's nothing to suggest in here as we parsed a full expression.
       // Instead fail and propogate the error since caller might have something
@@ -3389,11 +3515,11 @@ bool Parser::ParseExpressionList(SmallVectorImpl<Expr *> &Exprs,
       cutOffParsing();
       break;
     }
-    if (Expr.isInvalid()) {
+    if (ArgExpr.isInvalid() && !VariadicReifier) {
       SkipUntil(tok::comma, tok::r_paren, StopBeforeMatch);
       SawError = true;
-    } else {
-      Exprs.push_back(Expr.get());
+    } else if (!VariadicReifier) {
+      Exprs.push_back(ArgExpr.get());
     }
 
     if (Tok.isNot(tok::comma))
@@ -3412,6 +3538,7 @@ bool Parser::ParseExpressionList(SmallVectorImpl<Expr *> &Exprs,
       if (Expr.isUsable()) E = Expr.get();
     }
   }
+
   return SawError;
 }
 
@@ -3642,7 +3769,7 @@ Optional<AvailabilitySpec> Parser::ParseAvailabilitySpec() {
       cutOffParsing();
       return None;
     }
-    if (Tok.isNot(tok::identifier)) {
+    if (!isIdentifier()) {
       Diag(Tok, diag::err_avail_query_expected_platform_name);
       return None;
     }
@@ -3675,7 +3802,7 @@ ExprResult Parser::ParseAvailabilityCheckExpr(SourceLocation BeginLoc) {
          Tok.isObjCAtKeyword(tok::objc_available));
 
   // Eat the available or __builtin_available.
-  ConsumeToken();
+  ConsumeAsIdentifier();
 
   BalancedDelimiterTracker Parens(*this, tok::l_paren);
   if (Parens.expectAndConsume())

@@ -29,6 +29,7 @@ namespace clang {
 
 class ASTContext;
 class BindingDecl;
+class CompleteTemplateArgumentList;
 class CXXMethodDecl;
 class Decl;
 class DeclaratorDecl;
@@ -73,6 +74,8 @@ enum class TemplateSubstitutionKind : char {
   /// list will contain a template argument list (int) at depth 0 and a
   /// template argument list (17) at depth 1.
   class MultiLevelTemplateArgumentList {
+    friend CompleteTemplateArgumentList;
+
     /// The template argument list at a certain template depth
     using ArgList = ArrayRef<TemplateArgument>;
 
@@ -197,6 +200,101 @@ enum class TemplateSubstitutionKind : char {
     const ArgList &getInnermost() const {
       return TemplateArgumentLists.front();
     }
+
+    /// Returns true if this template argument list should promote
+    /// constexpr to consteval.
+    bool isConstexprPromoting() const {
+      for (const ArgList &SubList : TemplateArgumentLists) {
+        for (const TemplateArgument &Arg :SubList) {
+          if (Arg.isConstexprPromoting())
+            return true;
+        }
+      }
+
+      return false;
+    }
+  };
+
+  class CompleteTemplateArgumentList {
+    /// The template argument list view at a certain template depth
+    using ArgListView = ArrayRef<TemplateArgument>;
+
+    /// The template argument lists, stored from the innermost template
+    /// argument list (first) to the outermost template argument list (last).
+    SmallVector<SmallVector<TemplateArgument, 4>, 4> TemplateArgumentLists;
+
+    /// The number of outer levels of template arguments that are not
+    /// being substituted.
+    unsigned NumRetainedOuterLevels = 0;
+
+  public:
+    /// Construct an empty set of template argument lists.
+    CompleteTemplateArgumentList() = default;
+
+    /// Construct a non-temporary representation
+    /// of a MutliLevelTemplateArgumentList.
+    explicit CompleteTemplateArgumentList(
+        const MultiLevelTemplateArgumentList &TemplateArgs) {
+      for (ArgListView ArgList : TemplateArgs.TemplateArgumentLists) {
+        TemplateArgumentLists.push_back({});
+        TemplateArgumentLists.back().append(ArgList.begin(), ArgList.end());
+      }
+
+      NumRetainedOuterLevels = TemplateArgs.NumRetainedOuterLevels;
+    }
+
+    operator MultiLevelTemplateArgumentList() const {
+      MultiLevelTemplateArgumentList MultiLevelArgList;
+
+      for (auto &ArgList : TemplateArgumentLists) {
+        MultiLevelArgList.addOuterTemplateArguments(ArgList);
+      }
+      while (MultiLevelArgList.getNumLevels() < getNumLevels()) {
+        MultiLevelArgList.addOuterRetainedLevel();
+      }
+
+      return MultiLevelArgList;
+    }
+
+    /// Determine the number of levels in this template argument
+    /// list.
+    unsigned getNumLevels() const {
+      return TemplateArgumentLists.size() + NumRetainedOuterLevels;
+    }
+
+    /// Determine the number of substituted levels in this template
+    /// argument list.
+    unsigned getNumSubstitutedLevels() const {
+      return TemplateArgumentLists.size();
+    }
+
+    /// Retrieve the template argument at a given depth and index.
+    const TemplateArgument &operator()(unsigned Depth, unsigned Index) const {
+      assert(NumRetainedOuterLevels <= Depth && Depth < getNumLevels());
+      assert(Index < TemplateArgumentLists[getNumLevels() - Depth - 1].size());
+      return TemplateArgumentLists[getNumLevels() - Depth - 1][Index];
+    }
+
+    /// Determine whether there is a non-NULL template argument at the
+    /// given depth and index.
+    ///
+    /// There must exist a template argument list at the given depth.
+    bool hasTemplateArgument(unsigned Depth, unsigned Index) const {
+      assert(Depth < getNumLevels());
+
+      if (Depth < NumRetainedOuterLevels)
+        return false;
+
+      if (Index >= TemplateArgumentLists[getNumLevels() - Depth - 1].size())
+        return false;
+
+      return !(*this)(Depth, Index).isNull();
+    }
+
+    /// Retrieve the innermost template argument list.
+    const ArgListView getInnermost() const {
+      return TemplateArgumentLists.front();
+    }
   };
 
   /// The context in which partial ordering of function templates occurs.
@@ -316,6 +414,13 @@ enum class TemplateSubstitutionKind : char {
     /// lookup will search our outer scope.
     bool CombineWithOuterScope;
 
+  public:
+    /// Whether we should allow uninstatiated decls to be used
+    /// if no instantiated version can be found. Used for
+    /// expansion statements.
+    const bool AllowUninstantiated;
+
+  private:
     /// If non-NULL, the template parameter pack that has been
     /// partially substituted per C++0x [temp.arg.explicit]p9.
     NamedDecl *PartiallySubstitutedPack = nullptr;
@@ -330,9 +435,11 @@ enum class TemplateSubstitutionKind : char {
     unsigned NumArgsInPartiallySubstitutedPack;
 
   public:
-    LocalInstantiationScope(Sema &SemaRef, bool CombineWithOuterScope = false)
+    LocalInstantiationScope(Sema &SemaRef, bool CombineWithOuterScope = false,
+                            bool AllowUninstantiated = false)
         : SemaRef(SemaRef), Outer(SemaRef.CurrentInstantiationScope),
-          CombineWithOuterScope(CombineWithOuterScope) {
+          CombineWithOuterScope(CombineWithOuterScope),
+          AllowUninstantiated(AllowUninstantiated) {
       SemaRef.CurrentInstantiationScope = this;
     }
 
@@ -419,6 +526,11 @@ enum class TemplateSubstitutionKind : char {
     /// returns NULL.
     llvm::PointerUnion<Decl *, DeclArgumentPack *> *
     findInstantiationOf(const Decl *D);
+
+    /// Like above, but returns a nullptr if there is no local
+    /// declaration.
+    llvm::PointerUnion<Decl *, DeclArgumentPack *> *
+    lookupInstantiationOf(const Decl *D);
 
     void InstantiatedLocal(const Decl *D, Decl *Inst);
     void InstantiatedLocalPackArg(const Decl *D, VarDecl *Inst);

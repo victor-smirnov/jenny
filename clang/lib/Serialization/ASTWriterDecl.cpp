@@ -128,6 +128,10 @@ namespace clang {
     void VisitCapturedDecl(CapturedDecl *D);
     void VisitEmptyDecl(EmptyDecl *D);
     void VisitLifetimeExtendedTemporaryDecl(LifetimeExtendedTemporaryDecl *D);
+    void VisitCXXMetaprogramDecl(CXXMetaprogramDecl *D);
+    void VisitCXXInjectionDecl(CXXInjectionDecl *D);
+    void VisitCXXRequiredTypeDecl(CXXRequiredTypeDecl *D);
+    void VisitCXXRequiredDeclaratorDecl(CXXRequiredDeclaratorDecl *D);
 
     void VisitDeclContext(DeclContext *DC);
     template <typename T> void VisitRedeclarable(Redeclarable<T> *D);
@@ -1175,6 +1179,31 @@ void ASTDeclWriter::VisitLifetimeExtendedTemporaryDecl(
   Record.push_back(D->getManglingNumber());
   Code = serialization::DECL_LIFETIME_EXTENDED_TEMPORARY;
 }
+
+void ASTDeclWriter::VisitCXXMetaprogramDecl(CXXMetaprogramDecl *D) {
+  VisitDecl(D);
+  Record.AddDeclRef(D->getFunctionDecl());
+  Record.AddStmt(D->getCallExpr());
+  Code = serialization::DECL_CXX_METAPROGRAM;
+}
+
+void ASTDeclWriter::VisitCXXInjectionDecl(CXXInjectionDecl *D) {
+  VisitDecl(D);
+  Record.AddDeclRef(D->getFunctionDecl());
+  Record.AddStmt(D->getCallExpr());
+  Code = serialization::DECL_CXX_INJECTION;
+}
+
+void ASTDeclWriter::VisitCXXRequiredTypeDecl(CXXRequiredTypeDecl *D) {
+  VisitDecl(D);
+  Code = serialization::DECL_CXX_REQUIRED_TYPE;
+}
+
+void ASTDeclWriter::VisitCXXRequiredDeclaratorDecl(CXXRequiredDeclaratorDecl *D) {
+  VisitDecl(D);
+  Code = serialization::DECL_CXX_REQUIRED_DECLARATOR;
+}
+
 void ASTDeclWriter::VisitBlockDecl(BlockDecl *D) {
   VisitDecl(D);
   Record.AddStmt(D->getBody());

@@ -1275,6 +1275,9 @@ LValue CodeGenFunction::EmitLValue(const Expr *E) {
   default: return EmitUnsupportedLValue(E, "l-value expression");
 
   case Expr::ObjCPropertyRefExprClass:
+  case Expr::CXXIdExprExprClass:
+  case Expr::CXXMemberIdExprExprClass:
+  case Expr::CXXValueOfExprClass:
     llvm_unreachable("cannot emit a property reference directly");
 
   case Expr::ObjCSelectorExprClass:
@@ -1379,6 +1382,10 @@ LValue CodeGenFunction::EmitLValue(const Expr *E) {
     return EmitMatrixSubscriptExpr(cast<MatrixSubscriptExpr>(E));
   case Expr::OMPArraySectionExprClass:
     return EmitOMPArraySectionExpr(cast<OMPArraySectionExpr>(E));
+  case Expr::CXXSelectMemberExprClass:
+    return EmitCXXSelectMemberExpr(cast<CXXSelectMemberExpr>(E));
+  case Expr::CXXSelectPackExprClass:
+    return EmitCXXSelectPackExpr(cast<CXXSelectPackExpr>(E));
   case Expr::ExtVectorElementExprClass:
     return EmitExtVectorElementExpr(cast<ExtVectorElementExpr>(E));
   case Expr::MemberExprClass:
@@ -1485,18 +1492,19 @@ CodeGenFunction::tryEmitAsConstant(DeclRefExpr *refExpr) {
   if (CEK == CEK_None) return ConstantEmission();
 
   Expr::EvalResult result;
+  Expr::EvalContext EvalCtx(getContext(), nullptr);
   bool resultIsReference;
   QualType resultType;
 
   // It's best to evaluate all the way as an r-value if that's permitted.
   if (CEK != CEK_AsReferenceOnly &&
-      refExpr->EvaluateAsRValue(result, getContext())) {
+      refExpr->EvaluateAsRValue(result, EvalCtx)) {
     resultIsReference = false;
     resultType = refExpr->getType();
 
   // Otherwise, try to evaluate as an l-value.
   } else if (CEK != CEK_AsValueOnly &&
-             refExpr->EvaluateAsLValue(result, getContext())) {
+             refExpr->EvaluateAsLValue(result, EvalCtx)) {
     resultIsReference = true;
     resultType = value->getType();
 
@@ -2716,6 +2724,7 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
     }
   }
 
+
   // FIXME: We should be able to assert this for FunctionDecls as well!
   // FIXME: We should be able to assert this for all DeclRefExprs, not just
   // those with a valid source location.
@@ -2747,7 +2756,6 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
       addr = Address(CGM.getOrCreateStaticVarDecl(
           *VD, CGM.getLLVMLinkageVarDefinition(VD, /*IsConstant=*/false)),
                      getContext().getDeclAlign(VD));
-
     // No other cases for now.
     } else {
       llvm_unreachable("DeclRefExpr for Decl not entered in LocalDeclMap?");
@@ -3867,18 +3875,18 @@ LValue CodeGenFunction::EmitOMPArraySectionExpr(const OMPArraySectionExpr *E,
     auto *Length = E->getLength();
     llvm::APSInt ConstLength;
     if (Length) {
+      Expr::EvalContext EvalCtx(C, nullptr);
       // Idx = LowerBound + Length - 1;
-      if (Optional<llvm::APSInt> CL = Length->getIntegerConstantExpr(C)) {
-        ConstLength = CL->zextOrTrunc(PointerWidthInBits);
+      if (Length->isIntegerConstantExpr(ConstLength, EvalCtx)) {
+        ConstLength = ConstLength.zextOrTrunc(PointerWidthInBits);
         Length = nullptr;
       }
       auto *LowerBound = E->getLowerBound();
       llvm::APSInt ConstLowerBound(PointerWidthInBits, /*isUnsigned=*/false);
-      if (LowerBound) {
-        if (Optional<llvm::APSInt> LB = LowerBound->getIntegerConstantExpr(C)) {
-          ConstLowerBound = LB->zextOrTrunc(PointerWidthInBits);
-          LowerBound = nullptr;
-        }
+      if (LowerBound &&
+          LowerBound->isIntegerConstantExpr(ConstLowerBound, EvalCtx)) {
+        ConstLowerBound = ConstLowerBound.zextOrTrunc(PointerWidthInBits);
+        LowerBound = nullptr;
       }
       if (!Length)
         --ConstLength;
@@ -3915,10 +3923,9 @@ LValue CodeGenFunction::EmitOMPArraySectionExpr(const OMPArraySectionExpr *E,
                              : BaseTy;
       if (auto *VAT = C.getAsVariableArrayType(ArrayTy)) {
         Length = VAT->getSizeExpr();
-        if (Optional<llvm::APSInt> L = Length->getIntegerConstantExpr(C)) {
-          ConstLength = *L;
+        Expr::EvalContext EvalCtx(C, nullptr);
+        if (Length->isIntegerConstantExpr(ConstLength, EvalCtx))
           Length = nullptr;
-        }
       } else {
         auto *CAT = C.getAsConstantArrayType(ArrayTy);
         ConstLength = CAT->getSize();
@@ -4548,6 +4555,7 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
   case CK_IntegralComplexToBoolean:
   case CK_IntegralComplexCast:
   case CK_IntegralComplexToFloatingComplex:
+  case CK_ReflectionToBoolean:
   case CK_DerivedToBaseMemberPointer:
   case CK_BaseToDerivedMemberPointer:
   case CK_MemberPointerToBoolean:
