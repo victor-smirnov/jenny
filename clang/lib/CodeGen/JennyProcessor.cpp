@@ -52,7 +52,6 @@ protected:
     PreprocessorOptions preprocessor_options_;
     CodeGenOptions codegen_options_;
 
-    //CompilerInstance& compiler_instance_;
     Sema* sema_;
     std::unique_ptr<ASTConsumer> target_;
 
@@ -72,12 +71,16 @@ protected:
     public:
         Visitor(JennyProcessorImpl& consumer): consumer_(consumer) {}
 
+        bool shouldVisitTemplateInstantiations() const { return true; }
+
         bool VisitFunctionDecl(FunctionDecl* fd)
         {
             if (fd->hasBody())
             {
                 std::string name = consumer_.name_gen_.getName(fd);
-                consumer_.functions_[name] = fd;
+                if (name != "") {
+                    consumer_.functions_[name] = fd;
+                }
             }
 
             return true;
@@ -85,12 +88,8 @@ protected:
 
         bool VisitJennyTypeOfExprType(JennyTypeOfExprType* type)
         {
-
-
             return false;
         }
-
-
     };
 
 
@@ -172,14 +171,14 @@ public:
 
     void HandleTranslationUnit(ASTContext& ctx)
     {
-        auto dd = ctx.getTranslationUnitDecl();
-        Visitor visitor(*this);
+//        auto dd = ctx.getTranslationUnitDecl();
+//        Visitor visitor(*this);
 
-        visitor.TraverseDecl(dd);
+//        visitor.TraverseDecl(dd);
 
-        using FnSig = void (*)(...);
-        FnSig fn = (FnSig)cantFail(jit_->lookup("main")).getAddress();
-        fn();
+//        using FnSig = void (*)(...);
+//        FnSig fn = (FnSig)cantFail(jit_->lookup("main")).getAddress();
+//        fn();
 
         for (auto& fn: producer_history_) {
             fn(*target_);
@@ -197,6 +196,8 @@ public:
             std::unique_ptr<llvm::Module>(code_generator_->ReleaseModule()),
             std::move(llvm_ctx_)
         );
+
+        mm.getModuleUnlocked()->dump();
 
         llvm_ctx_ = std::make_unique<LLVMContext>();
         code_generator_->StartModule(std::string("CodeGenModule_") + std::to_string(fn_cnt_++), *llvm_ctx_);
