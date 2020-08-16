@@ -6141,6 +6141,101 @@ public:
   }
 };
 
+// [Jenny stuff]
+
+/// \brief Represents expressions of the form `__jy_meta_call(x)`.
+///
+/// The operand of the expression is a function call.
+///
+class JennyMetaCallExpr final : public Expr {
+
+  // The operand of the expression.
+  CallExpr* Ref;
+  FunctionDecl* Adapter;
+  const char* SymbolName;
+
+  // Source locations.
+  SourceLocation KWLoc;
+  SourceLocation LParenLoc;
+  SourceLocation RParenLoc;
+public:
+  /// Describes the kind of result that can be tail-allocated.
+  enum ResultStorageKind { RSK_None, RSK_Void, RSK_APValue };
+private:
+
+  JennyMetaCallExpr(QualType T, CallExpr *Arg);
+
+
+  JennyMetaCallExpr(EmptyShell Empty)
+    : Expr(CXXReflectExprClass, Empty), Ref() {}
+
+
+
+
+public:
+
+  static JennyMetaCallExpr *Create(ASTContext &C, QualType T,
+                                SourceLocation KW, CallExpr *Arg,
+                                SourceLocation LP, SourceLocation RP);
+
+
+  const char* GetSymbol() const noexcept {
+    return SymbolName;
+  }
+
+  const char* SetSymbol(ASTContext& Context, const char* SymbolName);
+
+  FunctionDecl* GetAdapter() noexcept {
+    return Adapter;
+  }
+
+  void SetAdapter(FunctionDecl* Adapter) {
+    this->Adapter = Adapter;
+  }
+
+  const CallExpr* getOperand() const { return Ref; }
+  CallExpr* getOperand() { return Ref; }
+
+  SourceLocation getBeginLoc() const LLVM_READONLY {
+    return KWLoc;
+  }
+
+  SourceLocation getEndLoc() const LLVM_READONLY {
+    return RParenLoc;
+  }
+
+  /// Returns location of the `reflexpr` keyword.
+  SourceLocation getKeywordLoc() const { return KWLoc; }
+
+  /// Returns the location of the '(' token.
+  SourceLocation getLParenLoc() const { return LParenLoc; }
+
+  /// Returns the location of the ')' token.
+  SourceLocation getRParenLoc() const { return RParenLoc; }
+
+  /// Sets the location of the `reflexpr` keyword.
+  void setKeywordLoc(SourceLocation L) { KWLoc = L; }
+
+  /// Sets the location of the `(` token.
+  void setLParenLoc(SourceLocation L) { LParenLoc = L; }
+
+  /// Sets the location of the `)` token.
+  void setRParenLoc(SourceLocation L) { RParenLoc = L; }
+
+  // Iterators
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+
+  const_child_range children() const {
+    return const_child_range(const_child_iterator(), const_child_iterator());
+  }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == JennyMetaCallExprClass;
+  }
+};
+
 } // namespace clang
 
 #endif // LLVM_CLANG_AST_EXPRCXX_H

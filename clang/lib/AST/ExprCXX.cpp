@@ -2046,3 +2046,41 @@ CXXFragmentCaptureExpr *CXXFragmentCaptureExpr::CreateEmpty(
     const ASTContext &C, EmptyShell Empty) {
   return new (C) CXXFragmentCaptureExpr(Empty);
 }
+
+
+// [Jenny] stuff.
+
+JennyMetaCallExpr::JennyMetaCallExpr(QualType T, CallExpr *Arg)
+    : Expr(JennyMetaCallExprClass, T, VK_RValue, OK_Ordinary), Ref(Arg), SymbolName(nullptr)
+{
+  setDependence(computeDependence(this));
+}
+
+JennyMetaCallExpr *JennyMetaCallExpr::Create(
+        ASTContext &C, QualType T,
+        SourceLocation KW, CallExpr *Arg,
+        SourceLocation LP, SourceLocation RP
+)
+{
+  JennyMetaCallExpr *E = new (C) JennyMetaCallExpr (T, Arg);
+  E->setKeywordLoc(KW);
+  E->setLParenLoc(LP);
+  E->setRParenLoc(RP);
+  return E;
+}
+
+const char* JennyMetaCallExpr::SetSymbol(ASTContext& Context, const char* SymbolName)
+{
+  if (SymbolName)
+  {
+    size_t len = std::strlen(SymbolName);
+    void* mem = Context.Allocate(len + 1);
+    std::memcpy(mem, SymbolName, len + 1);
+    this->SymbolName = reinterpret_cast<char*>(mem);
+  }
+  else {
+    this->SymbolName = nullptr;
+  }
+
+  return this->SymbolName;
+}

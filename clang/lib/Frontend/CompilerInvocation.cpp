@@ -1899,6 +1899,7 @@ static InputKind ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
       Args, OPT_ftime_trace_granularity_EQ, Opts.TimeTraceGranularity, Diags);
   Opts.ShowVersion = Args.hasArg(OPT_version);
   Opts.ASTMergeFiles = Args.getAllArgValues(OPT_ast_merge);
+  Opts.JennyJITLibraries = Args.getAllArgValues(OPT_jl);
   Opts.LLVMArgs = Args.getAllArgValues(OPT_mllvm);
   Opts.FixWhatYouCan = Args.hasArg(OPT_fix_what_you_can);
   Opts.FixOnlyWarnings = Args.hasArg(OPT_fix_only_warnings);

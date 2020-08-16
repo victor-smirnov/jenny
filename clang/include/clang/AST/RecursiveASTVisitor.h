@@ -2744,6 +2744,8 @@ DEF_TRAVERSE_STMT(CXXDependentVariadicReifierExpr, {})
 DEF_TRAVERSE_STMT(CXXFragmentExpr, {})
 DEF_TRAVERSE_STMT(CXXFragmentCaptureExpr, {})
 
+DEF_TRAVERSE_STMT(JennyMetaCallExpr, {})
+
 DEF_TRAVERSE_STMT(MaterializeTemporaryExpr, {
   if (S->getLifetimeExtendedTemporaryDecl()) {
     TRY_TO(TraverseLifetimeExtendedTemporaryDecl(

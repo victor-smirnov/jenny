@@ -1016,6 +1016,12 @@ public:
     return Visit(CE->getSubExpr(), T);
   }
 
+  llvm::Constant *VisitJennyMetaCallExpr(JennyMetaCallExpr *CE, QualType T) {
+    if (llvm::Constant *Result = Emitter.tryEmitConstantExpr(CE))
+      return Result;
+    llvm_unreachable("Don't know how to handle constexpr record for __jy_meta_call");
+  }
+
   llvm::Constant *VisitParenExpr(ParenExpr *PE, QualType T) {
     return Visit(PE->getSubExpr(), T);
   }
@@ -1374,6 +1380,21 @@ llvm::Constant *ConstantEmitter::tryEmitConstantExpr(const ConstantExpr *CE) {
   llvm::Constant *Res =
       emitAbstract(CE->getBeginLoc(), CE->getAPValueResult(), RetType);
   return Res;
+}
+
+llvm::Constant *ConstantEmitter::tryEmitConstantExpr(const JennyMetaCallExpr *CE) {
+  const CallExpr *Inner = CE->getOperand();
+  QualType RetType = Inner->getCallReturnType(CGF->getContext());
+
+  Expr::EvalContext ECtx(CGM.getContext(), nullptr);
+  Expr::EvalResult Result;
+  if (CE->EvaluateAsRValue(Result, ECtx, true)) {
+    llvm::Constant *Res =
+      emitAbstract(CE->getBeginLoc(), Result.Val, RetType);
+    return Res;
+  }
+
+  return nullptr;
 }
 
 llvm::Constant *
@@ -1774,6 +1795,7 @@ private:
 
   ConstantLValue VisitStmt(const Stmt *S) { return nullptr; }
   ConstantLValue VisitConstantExpr(const ConstantExpr *E);
+  ConstantLValue VisitJennyMetaCallExpr(const JennyMetaCallExpr *E);
   ConstantLValue VisitCompoundLiteralExpr(const CompoundLiteralExpr *E);
   ConstantLValue VisitStringLiteral(const StringLiteral *E);
   ConstantLValue VisitObjCBoxedExpr(const ObjCBoxedExpr *E);
@@ -1924,6 +1946,16 @@ ConstantLValueEmitter::VisitConstantExpr(const ConstantExpr *E) {
   if (llvm::Constant *Result = Emitter.tryEmitConstantExpr(E))
     return Result;
   return Visit(E->getSubExpr());
+}
+
+ConstantLValue
+ConstantLValueEmitter::VisitJennyMetaCallExpr(const JennyMetaCallExpr *E) {
+  if (llvm::Constant *Result = Emitter.tryEmitConstantExpr(E))
+    return Result;
+  else {
+      CGM.Error(E->getBeginLoc(), "Can't evaluate arguments of the metacall");
+  }
+  return ConstantAddress::invalid();
 }
 
 ConstantLValue

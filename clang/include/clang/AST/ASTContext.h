@@ -31,6 +31,7 @@
 #include "clang/Basic/AddressSpaces.h"
 #include "clang/Basic/AttrKinds.h"
 #include "clang/Basic/IdentifierTable.h"
+#include "clang/Basic/JennyJIT.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/Linkage.h"
@@ -428,6 +429,8 @@ class ASTContext : public RefCountedBase<ASTContext> {
   };
   llvm::DenseMap<Module*, PerModuleInitializers*> ModuleInitializers;
 
+  std::shared_ptr<JennyJIT> JennyJit;
+
   ASTContext &this_() { return *this; }
 
 public:
@@ -588,6 +591,15 @@ public:
   mutable DeclarationNameTable DeclarationNames;
   IntrusiveRefCntPtr<ExternalASTSource> ExternalSource;
   ASTMutationListener *Listener = nullptr;
+
+  JennyJIT& GetJennyJIT() {
+    assert(JennyJit.get() && "JIT is not specified for ASTContext");
+    return *this->JennyJit.get();
+  }
+
+  void SetJennyJIT(std::shared_ptr<JennyJIT> jit) noexcept {
+    this->JennyJit = std::move(jit);
+  }
 
   /// Returns the clang bytecode interpreter context.
   interp::Context &getInterpContext();

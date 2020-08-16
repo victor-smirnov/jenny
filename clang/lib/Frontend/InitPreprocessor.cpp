@@ -478,6 +478,11 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
     if (LangOpts.CUDAIsDevice)
       Builder.defineMacro("__HIP_DEVICE_COMPILE__");
   }
+
+  if (LangOpts.Reflection) {
+      Builder.defineMacro("__jenny__"); // Jenny Frontend
+      Builder.append("#include <__clang_jenny_metacall.h>");
+  }
 }
 
 /// Initialize the predefined C++ language feature test macros defined in

@@ -67,6 +67,8 @@ protected:
 
   void EndSourceFileAction() override;
 
+  void BeforParsing(CompilerInstance &CI) override;
+
 public:
   ~CodeGenAction() override;
 

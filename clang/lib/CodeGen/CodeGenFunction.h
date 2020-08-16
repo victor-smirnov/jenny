@@ -4575,6 +4575,15 @@ public:
       for (auto I = CallArgTypeInfo->param_type_begin() + ParamsToSkip,
                 E = CallArgTypeInfo->param_type_end();
            I != E; ++I, ++Arg) {
+
+//          getContext()
+//                  .getCanonicalType((*I).getNonReferenceType())
+//                  .getTypePtr()->dump();
+
+//          getContext()
+//              .getCanonicalType((*Arg)->getType())
+//              .getTypePtr()->dump();
+
         assert(Arg != ArgRange.end() && "Running over edge of argument list!");
         assert((isGenericMethod ||
                 ((*I)->isVariablyModifiedType() ||

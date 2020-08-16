@@ -1315,6 +1315,7 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::CXXFragmentCaptureExprClass:
     case Stmt::CXXInjectionStmtClass:
     case Stmt::CXXBaseInjectionStmtClass:
+    case Stmt::JennyMetaCallExprClass:
     {
       const ExplodedNode *node = Bldr.generateSink(S, Pred, Pred->getState());
       Engine.addAbortedBlock(node, currBldrCtx->getBlock());

@@ -929,3 +929,12 @@ ExprDependence clang::computeDependence(ObjCMessageExpr *E) {
     D |= A->getDependence();
   return D;
 }
+
+
+ExprDependence clang::computeDependence(JennyMetaCallExpr *MetaCallExpr) {
+  const CallExpr* E = MetaCallExpr->getOperand();
+  if (E->isTypeDependent() || E->isValueDependent())
+    return ExprDependence::ValueInstantiation;
+
+  return ExprDependence::None;
+}

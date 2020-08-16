@@ -1426,6 +1426,13 @@ ExprResult Parser::ParseCastExpression(CastParseKind ParseKind,
     return Res;
   }
 
+  case tok::kw___jy_meta_call: {  // unary-expression: '__jy_meta_call' cast-expression
+    if (NotPrimaryExpression)
+      *NotPrimaryExpression = true;
+
+    return ParseJennyMetaCallExpression();
+  }
+
   case tok::kw___extension__:{//unary-expression:'__extension__' cast-expr [GNU]
     // __extension__ silences extension warnings in the subexpression.
     if (NotPrimaryExpression)

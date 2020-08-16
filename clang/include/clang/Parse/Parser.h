@@ -3139,6 +3139,8 @@ public:
   ExprResult ParseCXXReflectDumpReflectionExpression();
   ExprResult ParseCXXCompilerErrorExpression();
 
+  ExprResult ParseJennyMetaCallExpression();
+
   bool ParseCXXIdentifierSplice(
       IdentifierInfo *&Id,
       SourceLocation &IdBeginLoc);

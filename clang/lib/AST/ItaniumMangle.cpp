@@ -3867,6 +3867,7 @@ recurse:
   case Expr::CXXConcatenateExprClass:
   case Expr::CXXDependentVariadicReifierExprClass:
   case Expr::CXXCompilerErrorExprClass:
+  case Expr::JennyMetaCallExprClass:
     llvm_unreachable("unexpected statement kind");
 
   case Expr::ConstantExprClass:

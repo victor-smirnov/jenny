@@ -3507,6 +3507,7 @@ bool Expr::HasSideEffects(const EvalContext &Ctx,
   case CXXOperatorCallExprClass:
   case CXXMemberCallExprClass:
   case CUDAKernelCallExprClass:
+  case JennyMetaCallExprClass:
   case UserDefinedLiteralClass: {
     // We don't know a call definitely has side effects, except for calls
     // to pure/const functions that definitely don't.

@@ -3911,6 +3911,7 @@ static void RenderDebugOptions(const ToolChain &TC, const Driver &D,
 void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                          const InputInfo &Output, const InputInfoList &Inputs,
                          const ArgList &Args, const char *LinkingOutput) const {
+
   const auto &TC = getToolChain();
   const llvm::Triple &RawTriple = TC.getTriple();
   const llvm::Triple &Triple = TC.getEffectiveTriple();
@@ -6242,6 +6243,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back(Input.getFilename());
     else
       Input.getInputArg().renderAsInput(Args, CmdArgs);
+  }
+
+  for (auto fileName: Args.getAllArgValues(options::OPT_jl)) {
+      CmdArgs.push_back("-jl");
+      CmdArgs.push_back(Args.MakeArgString(fileName));
   }
 
   // Finally add the compile command to the compilation.

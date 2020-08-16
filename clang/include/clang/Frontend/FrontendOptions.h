@@ -424,6 +424,9 @@ public:
   /// The list of AST files to merge.
   std::vector<std::string> ASTMergeFiles;
 
+  /// The list of Jenny JIT libraries.
+  std::vector<std::string> JennyJITLibraries;
+
   /// A list of arguments to forward to LLVM's option processing; this
   /// should only be used for debugging and experimental features.
   std::vector<std::string> LLVMArgs;

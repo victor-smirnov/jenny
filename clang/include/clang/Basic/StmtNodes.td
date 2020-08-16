@@ -196,6 +196,9 @@ def CXXValueOfExpr : StmtNode<Expr>;
 def CXXConcatenateExpr : StmtNode<Expr>;
 def CXXDependentVariadicReifierExpr : StmtNode<Expr>;
 
+// [Jenny] expressions
+def JennyMetaCallExpr : StmtNode<Expr>;
+
 // Obj-C Expressions.
 def ObjCStringLiteral : StmtNode<Expr>;
 def ObjCBoxedExpr : StmtNode<Expr>;

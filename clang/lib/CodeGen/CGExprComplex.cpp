@@ -108,6 +108,15 @@ public:
                            Result->getAggregateElement(1U));
     return Visit(E->getSubExpr());
   }
+
+  ComplexPairTy VisitJennyMetaCallExpr(JennyMetaCallExpr *E) {
+    if (llvm::Constant *Result = ConstantEmitter(CGF).tryEmitConstantExpr(E))
+      return ComplexPairTy(Result->getAggregateElement(0U),
+                           Result->getAggregateElement(1U));
+    CGF.CGM.Error(E->getBeginLoc(), "Can't evaluate argiuments for the metacall");
+    return ComplexPairTy{};
+  }
+
   ComplexPairTy VisitParenExpr(ParenExpr *PE) { return Visit(PE->getSubExpr());}
   ComplexPairTy VisitGenericSelectionExpr(GenericSelectionExpr *GE) {
     return Visit(GE->getResultExpr());

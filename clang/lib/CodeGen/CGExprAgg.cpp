@@ -135,6 +135,18 @@ public:
     return Visit(E->getSubExpr());
   }
 
+  void VisitJennyMetaCallExpr(JennyMetaCallExpr *E) {
+    bool IsNonVoidType = !E->getType()->isVoidType();
+    if (IsNonVoidType) {
+      if (llvm::Value *Result = ConstantEmitter(CGF).tryEmitConstantExpr(E)) {
+        CGF.EmitAggregateStore(Result, Dest.getAddress(),
+                             E->getType().isVolatileQualified());
+        return;
+      }
+      CGF.CGM.Error(E->getBeginLoc(), "Can't evaluate argiuments for the metacall");
+    }
+  }
+
   // l-values.
   void VisitDeclRefExpr(DeclRefExpr *E) { EmitAggLoadOfLValue(E); }
   void VisitMemberExpr(MemberExpr *ME) { EmitAggLoadOfLValue(ME); }

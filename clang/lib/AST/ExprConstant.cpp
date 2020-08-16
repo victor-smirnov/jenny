@@ -59,8 +59,14 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include "JennyJITFnAdapter.h"
+
 #include <cstring>
 #include <functional>
+
+#include <iostream>
+#include <atomic>
 
 #define DEBUG_TYPE "exprconstant"
 
@@ -5851,7 +5857,7 @@ typedef SmallVector<APValue, 8> ArgVector;
 
 /// EvaluateArgs - Evaluate the arguments to a function call.
 static bool EvaluateArgs(ArrayRef<const Expr *> Args, ArgVector &ArgValues,
-                         EvalInfo &Info, const FunctionDecl *Callee) {
+                         EvalInfo &Info, const FunctionDecl *Callee, bool ReportFailure = false) {
   bool Success = true;
   llvm::SmallBitVector ForbiddenNullArgs;
   if (Callee->hasAttr<NonNullAttr>()) {
@@ -7683,6 +7689,44 @@ public:
 
   bool VisitCXXReflectionReadQueryExpr(const CXXReflectionReadQueryExpr *E);
   bool VisitCXXReflectionWriteQueryExpr(const CXXReflectionWriteQueryExpr *E);
+
+  bool VisitJennyMetaCallExpr(const JennyMetaCallExpr* E)
+  {
+    auto Args = llvm::makeArrayRef(E->getOperand()->getArgs(), E->getOperand()->getNumArgs());
+    const FunctionDecl* Callee = E->getOperand()->getDirectCallee();
+
+    ArgVector ArgValues(Args.size());
+
+    if (!EvaluateArgs(Args, ArgValues, Info, Callee)) {
+        return false;
+    }
+
+    if (Info.CheckingPotentialConstantExpression) {
+        return true;
+    }
+
+    JennyMetaCallAdapterImpl Adapter(E->getType(), Info.ASTCtx);
+
+    for (auto arg: ArgValues) {
+        Adapter.addParam(arg);
+    }
+
+    JennyJIT& jit = Info.ASTCtx.GetJennyJIT();
+
+    const char* Symbol = E->GetSymbol();
+    if (!Symbol) {
+      FunctionDecl* decl = jit.CreateAdapter(E->getOperand(), Adapter.types());
+      std::string fn_name = jit.compile(decl);
+      Symbol = const_cast<JennyMetaCallExpr*>(E)->SetSymbol(Info.ASTCtx, fn_name.c_str());
+    }
+
+    using AdapterFnTy = JennyJIT::AdapterFn;
+
+    AdapterFnTy fn = (AdapterFnTy)jit.GetSymbol(Symbol);
+    fn(Adapter);
+
+    return DerivedSuccess(Adapter.getAPValueResult(), E);
+  }
 
   bool VisitCXXConcatenateExpr(const CXXConcatenateExpr *E) {
     SmallString<256> Buf;
@@ -15305,6 +15349,7 @@ static ICEDiag CheckICE(const Expr* E, const Expr::EvalContext &Ctx) {
   case Expr::CXXMemberIdExprExprClass:
   case Expr::CXXDependentSpliceIdExprClass:
   case Expr::CXXValueOfExprClass:
+  case Expr::JennyMetaCallExprClass:
     return NoDiag();
 
   case Expr::CallExprClass:

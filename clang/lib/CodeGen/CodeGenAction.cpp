@@ -16,6 +16,7 @@
 #include "clang/AST/DeclGroup.h"
 #include "clang/Basic/DiagnosticFrontend.h"
 #include "clang/Basic/FileManager.h"
+#include "clang/Basic/JennyJIT.h"
 #include "clang/Basic/LangStandard.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
@@ -44,6 +45,8 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Transforms/IPO/Internalize.h"
+
+
 
 #include <memory>
 using namespace clang;
@@ -1182,6 +1185,22 @@ void CodeGenAction::ExecuteAction() {
 
   // Otherwise follow the normal AST path.
   this->ASTFrontendAction::ExecuteAction();
+}
+
+void CodeGenAction::BeforParsing(CompilerInstance &CI)
+{
+    auto jit = JennyJIT::Create(
+        CI.getASTContext(),
+        CI.getFrontendOpts().JennyJITLibraries,
+        CI.getDiagnostics(),
+        CI.getHeaderSearchOpts(),
+        CI.getPreprocessorOpts(),
+        CI.getCodeGenOpts()
+    );
+
+    CI.getASTContext().SetJennyJIT(jit);
+
+    ASTFrontendAction::BeforParsing(CI);
 }
 
 //

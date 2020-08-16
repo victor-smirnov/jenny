@@ -107,6 +107,8 @@ protected:
   /// BeginSourceFileAction (and BeginSourceFile).
   virtual bool shouldEraseOutputFiles();
 
+  virtual void BeforParsing(CompilerInstance &CI) {}
+
   /// @}
 
 public:

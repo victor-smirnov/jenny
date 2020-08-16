@@ -8236,6 +8236,19 @@ TreeTransform<Derived>::TransformCoyieldExpr(CoyieldExpr *E) {
 
 template<typename Derived>
 ExprResult
+TreeTransform<Derived>::TransformJennyMetaCallExpr(JennyMetaCallExpr *E) {
+  ExprResult Result = getDerived().TransformCallExpr(E->getOperand());
+  if (Result.isInvalid())
+    return ExprError();
+
+  return getSema().ActOnJennyMetaCallExpr(
+              E->getKeywordLoc(),
+              dyn_cast<CallExpr>(Result.get()),
+              SourceLocation{}, SourceLocation{});
+}
+
+template<typename Derived>
+ExprResult
 TreeTransform<Derived>::TransformCXXReflectExpr(CXXReflectExpr *E) {
   Sema::CXXReflectionScopeRAII ReflectionScope(getSema());
 

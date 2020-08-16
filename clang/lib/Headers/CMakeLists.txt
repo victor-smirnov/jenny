@@ -49,6 +49,7 @@ set(files
   __clang_hip_libdevice_declares.h
   __clang_hip_math.h
   __clang_hip_runtime_wrapper.h
+  __clang_jenny_metacall.h
   cetintrin.h
   cet.h
   cldemoteintrin.h

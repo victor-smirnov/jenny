@@ -2125,6 +2125,8 @@ def imultilib : Separate<["-"], "imultilib">, Group<gfortran_Group>;
 def keep__private__externs : Flag<["-"], "keep_private_externs">;
 def l : JoinedOrSeparate<["-"], "l">, Flags<[LinkerInput, RenderJoined]>,
         Group<Link_Group>;
+def jl : JoinedOrSeparate<["-"], "jl">, HelpText<"Append a library to the Jenny JIT">, Flags<[RenderJoined, CC1Option]>,
+        Group<Link_Group>;
 def lazy__framework : Separate<["-"], "lazy_framework">, Flags<[LinkerInput]>;
 def lazy__library : Separate<["-"], "lazy_library">, Flags<[LinkerInput]>;
 def mlittle_endian : Flag<["-"], "mlittle-endian">, Flags<[DriverOption]>;

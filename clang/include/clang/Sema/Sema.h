@@ -10210,6 +10210,12 @@ public:
       SourceLocation LAngleLoc, ASTTemplateArgsPtr TemplateArgsPtr,
       SourceLocation RAngleLoc);
 
+
+  ExprResult ActOnJennyMetaCallExpr(SourceLocation KWLoc, CallExpr *E,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc);
+
+
   bool
   ActOnVariadicReifier(SmallVectorImpl<Expr *> &Expressions,
                        SourceLocation KWLoc,

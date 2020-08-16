@@ -432,6 +432,33 @@ public:
       return nullptr;
     }
   }
+
+  Value *VisitJennyMetaCallExpr(JennyMetaCallExpr *E) {
+    bool IsNonVoidType = !E->getType()->isVoidType();
+
+    if (IsNonVoidType) {
+        if (Value *Result = ConstantEmitter(CGF).tryEmitConstantExpr(E)) {
+          if (E->isGLValue())
+            return CGF.Builder.CreateLoad(Address(
+                Result, CGF.getContext().getTypeAlignInChars(E->getType())));
+
+          return Result;
+        }
+        else {
+            CGF.CGM.Error(E->getBeginLoc(), "Can't evaluate arguments of the metacall");
+        }
+    }
+    else {
+        Expr::EvalContext ECtx(CGF.getContext(), nullptr);
+        Expr::EvalResult Result;
+        if (!E->EvaluateAsConstantExpr(Result, Expr::EvaluateForCodeGen, ECtx, true)) {
+            CGF.CGM.Error(E->getBeginLoc(), "Can't evaluate arguments of the metacall");
+        }
+    }
+
+    return nullptr;
+  }
+
   Value *VisitParenExpr(ParenExpr *PE) {
     return Visit(PE->getSubExpr());
   }
