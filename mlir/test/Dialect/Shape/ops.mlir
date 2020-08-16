@@ -49,9 +49,16 @@ func @test_shape_num_elements_fixed() {
 func @test_broadcast_fixed() {
   %0 = shape.const_shape [10, 1, 57, 92] : !shape.shape
   %1 = shape.const_shape [4, 57, 92] : !shape.shape
-  %2 = shape.broadcast %0, %1
+  %2 = shape.broadcast %0, %1 : !shape.shape, !shape.shape -> !shape.shape
   %3 = "shape.print"(%2) : (!shape.shape) -> !shape.shape
   return
+}
+
+func @test_broadcast_extents() -> tensor<?xindex> {
+  %0 = shape.const_shape [10, 1, 57, 92] : tensor<?xindex>
+  %1 = shape.const_shape [4, 57, 92] : tensor<?xindex>
+  %2 = shape.broadcast %0, %1 : tensor<?xindex>, tensor<?xindex> -> tensor<?xindex>
+  return %2 : tensor<?xindex>
 }
 
 func @test_shape_any_fixed() {
@@ -99,7 +106,7 @@ func @test_constraints() {
   %w3 = shape.const_witness false
   %w4 = shape.assuming_all %w0, %w1, %w2, %w3
   shape.assuming %w4 -> !shape.shape {
-    %2 = shape.any %0, %1 : !shape.shape
+    %2 = "shape.any"(%0, %1) : (!shape.shape, !shape.shape) -> !shape.shape
     shape.assuming_yield %2 : !shape.shape
   }
   return
@@ -120,6 +127,15 @@ func @mul(%size_arg : !shape.size, %index_arg : index) {
   return
 }
 
+func @add(%size_arg : !shape.size, %index_arg : index) {
+  %size_sum = shape.add %size_arg, %size_arg
+      : !shape.size, !shape.size -> !shape.size
+  %index_sum = shape.add %index_arg, %index_arg : index, index -> index
+  %mixed_sum = shape.add %size_arg, %index_arg
+      : !shape.size, index -> !shape.size
+  return
+}
+
 func @const_size() {
   // CHECK: %c1 = shape.const_size 1
   // CHECK: %c2 = shape.const_size 2
@@ -131,7 +147,7 @@ func @const_size() {
 }
 
 func @test_to_extent_tensor(%arg: !shape.shape) -> tensor<3xindex> {
-  %0 = shape.to_extent_tensor %arg : tensor<3xindex>
+  %0 = shape.to_extent_tensor %arg : !shape.shape -> tensor<3xindex>
   return %0 : tensor<3xindex>
 }
 
@@ -188,10 +204,34 @@ func @get_extent_on_mixed_operands(%arg : tensor<?xindex>) -> !shape.size {
 func @any() {
   %0 = shape.const_shape [1, 2, 3] : !shape.shape
   %1 = shape.const_shape [4, 5, 6] : !shape.shape
-  %2 = shape.any %0, %1 : !shape.shape
+  %2 = "shape.any"(%0, %1) : (!shape.shape, !shape.shape) -> !shape.shape
   %3 = shape.const_shape [1, 2, 3] : tensor<?xindex>
   %4 = shape.const_shape [4, 5, 6] : tensor<?xindex>
-  %5 = shape.any %3, %4 : tensor<?xindex>
+  %5 = "shape.any"(%3, %4) : (tensor<?xindex>, tensor<?xindex>) -> tensor<?xindex>
   return
 }
 
+func @num_elements_extent_tensor(%arg : tensor<?xindex>) -> index {
+  %result = shape.num_elements %arg : tensor<?xindex> -> index
+  return %result : index
+}
+
+func @num_elements_shape(%arg : !shape.shape) -> !shape.size {
+  %result = shape.num_elements %arg : !shape.shape -> !shape.size
+  return %result : !shape.size
+}
+
+// Testing nvoking shape function from another. shape_equal_shapes is merely
+// a trivial helper function to invoke elsewhere.
+func @shape_equal_shapes(%a : !shape.value_shape, %b : !shape.value_shape) -> !shape.shape {
+  %0 = shape.shape_of %a : !shape.value_shape -> !shape.shape
+  %1 = shape.shape_of %b : !shape.value_shape -> !shape.shape
+  %2 = "shape.join"(%0, %1) : (!shape.shape, !shape.shape) -> !shape.shape
+  return %2 : !shape.shape
+}
+func @shape_with_shape(%a : !shape.value_shape, %b : !shape.value_shape) -> !shape.shape {
+  %0 = shape.shape_of %a : !shape.value_shape -> !shape.shape
+  %1 = shape.with_shape %b, %0 : !shape.value_shape, !shape.shape
+  %2 = call @shape_equal_shapes(%a, %1) : (!shape.value_shape, !shape.value_shape) -> !shape.shape
+  return %2 : !shape.shape
+}

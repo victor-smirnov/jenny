@@ -3309,6 +3309,12 @@ void ItaniumRTTIBuilder::BuildVTablePointer(const Type *Ty) {
   case Type::Pipe:
     llvm_unreachable("Pipe types shouldn't get here");
 
+  case Type::InParameter:
+  case Type::OutParameter:
+  case Type::InOutParameter:
+  case Type::MoveParameter:
+    llvm_unreachable("Parameter types shouldn't get here");
+
   case Type::Builtin:
   case Type::ExtInt:
   // GCC treats vector and complex types as fundamental types.
@@ -3585,6 +3591,12 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
 
   case Type::ExtInt:
     break;
+
+  case Type::InParameter:
+  case Type::OutParameter:
+  case Type::InOutParameter:
+  case Type::MoveParameter:
+    llvm_unreachable("Parameter types shouldn't get here");
 
   case Type::ConstantArray:
   case Type::IncompleteArray:
@@ -4598,5 +4610,16 @@ void XLCXXABI::emitCXXStermFinalizer(const VarDecl &D, llvm::Function *dtorStub,
 
   CGF.FinishFunction();
 
-  CGM.AddCXXStermFinalizerEntry(StermFinalizer);
+  assert(!D.getAttr<InitPriorityAttr>() &&
+         "Prioritized sinit and sterm functions are not yet supported.");
+
+  if (isTemplateInstantiation(D.getTemplateSpecializationKind()) ||
+      getContext().GetGVALinkageForVariable(&D) == GVA_DiscardableODR)
+    // According to C++ [basic.start.init]p2, class template static data
+    // members (i.e., implicitly or explicitly instantiated specializations)
+    // have unordered initialization. As a consequence, we can put them into
+    // their own llvm.global_dtors entry.
+    CGM.AddCXXStermFinalizerToGlobalDtor(StermFinalizer, 65535);
+  else
+    CGM.AddCXXStermFinalizerEntry(StermFinalizer);
 }

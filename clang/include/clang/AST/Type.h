@@ -481,6 +481,11 @@ public:
            // Otherwise in OpenCLC v2.0 s6.5.5: every address space except
            // for __constant can be used as __generic.
            (A == LangAS::opencl_generic && B != LangAS::opencl_constant) ||
+           // We also define global_device and global_host address spaces,
+           // to distinguish global pointers allocated on host from pointers
+           // allocated on device, which are a subset of __global.
+           (A == LangAS::opencl_global && (B == LangAS::opencl_global_device ||
+                                           B == LangAS::opencl_global_host)) ||
            // Consider pointer size address spaces to be equivalent to default.
            ((isPtrSizeAddressSpace(A) || A == LangAS::Default) &&
             (isPtrSizeAddressSpace(B) || B == LangAS::Default));
@@ -936,6 +941,8 @@ public:
   bool isAtLeastAsQualifiedAs(QualType Other) const;
 
   QualType getNonReferenceType() const;
+
+  QualType getParameterType() const;
 
   /// Determine the type of a (typically non-lvalue) expression with the
   /// specified result type.
@@ -1675,19 +1682,6 @@ protected:
     uint32_t NumElements;
   };
 
-  class ConstantMatrixTypeBitfields {
-    friend class ConstantMatrixType;
-
-    unsigned : NumTypeBits;
-
-    /// Number of rows and columns. Using 20 bits allows supporting very large
-    /// matrixes, while keeping 24 bits to accommodate NumTypeBits.
-    unsigned NumRows : 20;
-    unsigned NumColumns : 20;
-
-    static constexpr uint32_t MaxElementsPerDimension = (1 << 20) - 1;
-  };
-
   class AttributedTypeBitfields {
     friend class AttributedType;
 
@@ -1784,6 +1778,23 @@ protected:
     unsigned NumExpansions;
   };
 
+  class DependentIdentifierSpliceTypeBitfields {
+    friend class DependentIdentifierSpliceType;
+
+    unsigned : NumTypeBits;
+
+    unsigned NumTemplateArgs;
+  };
+
+  class ParameterTypeBitfields {
+    friend class ParameterType;
+
+    unsigned : NumTypeBits;
+
+    /// The parameter passing mode of the type.
+    unsigned PassingMode : 1;
+  };
+
   class CXXDependentVariadicReifierTypeBitfields {
     friend class CXXDependentVariadicReifierType;
 
@@ -1803,12 +1814,13 @@ protected:
     TypeWithKeywordBitfields TypeWithKeywordBits;
     ElaboratedTypeBitfields ElaboratedTypeBits;
     VectorTypeBitfields VectorTypeBits;
-    ConstantMatrixTypeBitfields ConstantMatrixTypeBits;
     SubstTemplateTypeParmPackTypeBitfields SubstTemplateTypeParmPackTypeBits;
     TemplateSpecializationTypeBitfields TemplateSpecializationTypeBits;
     DependentTemplateSpecializationTypeBitfields
       DependentTemplateSpecializationTypeBits;
     PackExpansionTypeBitfields PackExpansionTypeBits;
+    DependentIdentifierSpliceTypeBitfields DependentIdentifierSpliceTypeBits;
+    ParameterTypeBitfields ParameterTypeBits;
 
     static_assert(sizeof(TypeBitfields) <= 8,
                   "TypeBitfields is larger than 8 bytes!");
@@ -1843,6 +1855,10 @@ protected:
                   " than 8 bytes!");
     static_assert(sizeof(PackExpansionTypeBitfields) <= 8,
                   "PackExpansionTypeBitfields is larger than 8 bytes");
+    static_assert(sizeof(DependentIdentifierSpliceTypeBitfields) <= 8,
+                  "DependentIdentifierSpliceTypeBitfields is larger than 8 bytes");
+    static_assert(sizeof(ParameterTypeBitfields) <= 8,
+                  "ParameterTypeBitfields is larger than 8 bytes");
   };
 
 private:
@@ -1859,6 +1875,10 @@ protected:
   Type(TypeClass tc, QualType canon, TypeDependence Dependence, bool MetaType)
       : ExtQualsTypeCommonBase(this,
                                canon.isNull() ? QualType(this_(), 0) : canon) {
+    static_assert(sizeof(*this) <= 8 + sizeof(ExtQualsTypeCommonBase),
+                  "changing bitfields changed sizeof(Type)!");
+    static_assert(alignof(decltype(*this)) % sizeof(void *) == 0,
+                  "Insufficient alignment!");
     TypeBits.TC = tc;
     TypeBits.Dependence = static_cast<unsigned>(Dependence);
     TypeBits.MetaType = MetaType;
@@ -2163,6 +2183,8 @@ public:
   bool isPipeType() const;                      // OpenCL pipe type
   bool isExtIntType() const;                    // Extended Int Type
   bool isOpenCLSpecificType() const;            // Any OpenCL specific type
+
+  bool isParameterType() const;                 // In, out, etc.
 
   /// Determines if this type, which must satisfy
   /// isObjCLifetimeType(), is implicitly __unsafe_unretained rather
@@ -3485,7 +3507,14 @@ protected:
   friend class ASTContext;
 
   /// The element type of the matrix.
+  // FIXME: Appears to be unused? There is also MatrixType::ElementType...
   QualType ElementType;
+
+  /// Number of rows and columns.
+  unsigned NumRows;
+  unsigned NumColumns;
+
+  static constexpr unsigned MaxElementsPerDimension = (1 << 20) - 1;
 
   ConstantMatrixType(QualType MatrixElementType, unsigned NRows,
                      unsigned NColumns, QualType CanonElementType);
@@ -3495,25 +3524,24 @@ protected:
 
 public:
   /// Returns the number of rows in the matrix.
-  unsigned getNumRows() const { return ConstantMatrixTypeBits.NumRows; }
+  unsigned getNumRows() const { return NumRows; }
 
   /// Returns the number of columns in the matrix.
-  unsigned getNumColumns() const { return ConstantMatrixTypeBits.NumColumns; }
+  unsigned getNumColumns() const { return NumColumns; }
 
   /// Returns the number of elements required to embed the matrix into a vector.
   unsigned getNumElementsFlattened() const {
-    return ConstantMatrixTypeBits.NumRows * ConstantMatrixTypeBits.NumColumns;
+    return getNumRows() * getNumColumns();
   }
 
   /// Returns true if \p NumElements is a valid matrix dimension.
-  static bool isDimensionValid(uint64_t NumElements) {
-    return NumElements > 0 &&
-           NumElements <= ConstantMatrixTypeBitfields::MaxElementsPerDimension;
+  static constexpr bool isDimensionValid(size_t NumElements) {
+    return NumElements > 0 && NumElements <= MaxElementsPerDimension;
   }
 
   /// Returns the maximum number of elements per dimension.
-  static unsigned getMaxElementsPerDimension() {
-    return ConstantMatrixTypeBitfields::MaxElementsPerDimension;
+  static constexpr unsigned getMaxElementsPerDimension() {
+    return MaxElementsPerDimension;
   }
 
   void Profile(llvm::FoldingSetNodeID &ID) {
@@ -4441,12 +4469,7 @@ class TypedefType : public Type {
 protected:
   friend class ASTContext; // ASTContext creates these.
 
-  TypedefType(TypeClass tc, const TypedefNameDecl *D, QualType can)
-      : Type(tc, can, can->getDependence() & ~TypeDependence::UnexpandedPack,
-             can->isMetaType()),
-        Decl(const_cast<TypedefNameDecl *>(D)) {
-    assert(!isa<TypedefType>(can) && "Invalid canonical type");
-  }
+  TypedefType(TypeClass tc, const TypedefNameDecl *D, QualType can);
 
 public:
   TypedefNameDecl *getDecl() const { return Decl; }
@@ -4597,6 +4620,68 @@ public:
 
   static void Profile(llvm::FoldingSetNodeID &ID, const ASTContext &Context,
                       Expr *E);
+};
+
+/// \brief Representation of a dependent identifier splice.
+class DependentIdentifierSpliceType : public Type,
+                                      public llvm::FoldingSetNode {
+  const ASTContext &Context;
+
+  /// The optional qualifier
+  NestedNameSpecifier *NNS;
+
+  /// The dependent identifier that names this type.
+  IdentifierInfo *II;
+
+  DependentIdentifierSpliceType(
+      const ASTContext &C, NestedNameSpecifier *NNS, IdentifierInfo *II,
+      unsigned NumTemplateArgs);
+
+public:
+  static DependentIdentifierSpliceType *Create(
+      const ASTContext &C, NestedNameSpecifier *NNS, IdentifierInfo *II,
+      ArrayRef<TemplateArgument> TemplateArgs);
+
+  NestedNameSpecifier *getQualifier() const { return NNS; }
+
+  IdentifierInfo *getIdentifierInfo() const { return II; }
+
+  /// Retrieve the template arguments.
+  const TemplateArgument *getArgs() const {
+    return reinterpret_cast<const TemplateArgument *>(this + 1);
+  }
+
+  /// Retrieve the number of template arguments.
+  unsigned getNumArgs() const {
+    return DependentIdentifierSpliceTypeBits.NumTemplateArgs;
+  }
+
+  const TemplateArgument &getArg(unsigned Idx) const; // in TemplateBase.h
+
+  ArrayRef<TemplateArgument> template_arguments() const {
+    return {getArgs(), getNumArgs()};
+  }
+
+  /// Remove a single level of sugar.
+  QualType desugar() const { return QualType(this, 0); }
+
+  /// Returns whether this type directly provides sugar.
+  bool isSugared() const { return false; }
+
+  static bool classof(const Type *T) {
+    return T->getTypeClass() == DependentIdentifierSplice;
+  }
+
+  void Profile(llvm::FoldingSetNodeID &ID) {
+    Profile(
+        ID, Context, getQualifier(), getIdentifierInfo(),
+        template_arguments());
+  }
+
+  static void Profile(
+      llvm::FoldingSetNodeID &ID, const ASTContext &Context,
+      NestedNameSpecifier *NNS, IdentifierInfo *II,
+      ArrayRef<TemplateArgument> TemplateArgs);
 };
 
 /// \brief Representation of reflected types.
@@ -5735,7 +5820,8 @@ class PackExpansionType : public Type, public llvm::FoldingSetNode {
   PackExpansionType(QualType Pattern, QualType Canon,
                     Optional<unsigned> NumExpansions)
       : Type(PackExpansion, Canon,
-             (Pattern->getDependence() | TypeDependence::Instantiation) &
+             (Pattern->getDependence() | TypeDependence::Dependent |
+              TypeDependence::Instantiation) &
                  ~TypeDependence::UnexpandedPack, /*MetaType=*/false),
         Pattern(Pattern) {
     PackExpansionTypeBits.NumExpansions =
@@ -5756,8 +5842,8 @@ public:
     return None;
   }
 
-  bool isSugared() const { return !Pattern->isDependentType(); }
-  QualType desugar() const { return isSugared() ? Pattern : QualType(this, 0); }
+  bool isSugared() const { return false; }
+  QualType desugar() const { return QualType(this, 0); }
 
   void Profile(llvm::FoldingSetNodeID &ID) {
     Profile(ID, getPattern(), getNumExpansions());
@@ -6503,6 +6589,128 @@ public:
   }
 };
 
+/// Base for LValueReferenceType and RValueReferenceType
+class ParameterType : public Type, public llvm::FoldingSetNode {
+  /// The underlying parameter type.
+  QualType ParmType;
+
+  /// The adjusted parameter type. This is used during code generation to
+  /// lower declarations to their corresponding "as if ..." modes.
+  QualType AdjType;
+
+  /// The parameter passing mode.
+  ParameterPassingKind PassingMode;
+
+protected:
+  ParameterType(TypeClass tc, QualType Parm, QualType CanonicalParm,
+                ParameterPassingKind PPK, QualType Adjusted)
+      : Type(tc, CanonicalParm, Parm->getDependence(), false),
+        ParmType(Parm), AdjType(Adjusted), PassingMode(PPK) {
+    ParameterTypeBits.PassingMode = PPK;
+  }
+
+public:
+  ParameterPassingKind getParameterPassingMode() const { return PassingMode; }
+  bool isInParameter() const { return PassingMode == PPK_in; }
+  bool isOutParameter() const { return PassingMode == PPK_out; }
+  bool isInOutParameter() const { return PassingMode == PPK_inout; }
+  bool isMoveParameter() const { return PassingMode == PPK_move; }
+
+  QualType getParameterType() const { return ParmType; }
+
+  QualType getAdjustedType() const { return AdjType; }
+
+  void Profile(llvm::FoldingSetNodeID &ID) {
+    Profile(ID, ParmType, PassingMode);
+  }
+
+  static void Profile(llvm::FoldingSetNodeID &ID,
+                      QualType Parm,
+                      ParameterPassingKind PPK) {
+    ID.AddPointer(Parm.getAsOpaquePtr());
+    ID.AddInteger(PPK);
+  }
+
+  static bool classof(const Type *T) {
+    return T->getTypeClass() == InParameter ||
+           T->getTypeClass() == OutParameter ||
+           T->getTypeClass() == InOutParameter ||
+           T->getTypeClass() == MoveParameter;
+  }
+};
+
+/// An input parameter type.
+class InParameterType : public ParameterType {
+  friend class ASTContext; // ASTContext creates these
+
+  InParameterType(QualType Parm, QualType Canonical, QualType Adjusted)
+    : ParameterType(InParameter, Parm, Canonical, PassingMode, Adjusted) {}
+
+public:
+  static constexpr ParameterPassingKind PassingMode = PPK_in;
+
+  bool isSugared() const { return false; }
+  QualType desugar() const { return QualType(this, 0); }
+
+  static bool classof(const Type *T) {
+    return T->getTypeClass() == InParameter;
+  }
+};
+
+/// An output parameter type.
+class OutParameterType : public ParameterType {
+  friend class ASTContext; // ASTContext creates these
+
+  OutParameterType(QualType Parm, QualType Canonical, QualType Adjusted)
+    : ParameterType(OutParameter, Parm, Canonical, PassingMode, Adjusted) {}
+
+public:
+  static constexpr ParameterPassingKind PassingMode = PPK_out;
+
+  bool isSugared() const { return false; }
+  QualType desugar() const { return QualType(this, 0); }
+
+  static bool classof(const Type *T) {
+    return T->getTypeClass() == OutParameter;
+  }
+};
+
+/// An input parameter type.
+class InOutParameterType : public ParameterType {
+  friend class ASTContext; // ASTContext creates these
+
+  InOutParameterType(QualType Parm, QualType Canonical, QualType Adjusted)
+    : ParameterType(InOutParameter, Parm, Canonical, PassingMode, Adjusted) {}
+
+public:
+  static constexpr ParameterPassingKind PassingMode = PPK_inout;
+
+  bool isSugared() const { return false; }
+  QualType desugar() const { return QualType(this, 0); }
+
+  static bool classof(const Type *T) {
+    return T->getTypeClass() == InOutParameter;
+  }
+};
+
+/// An input parameter type.
+class MoveParameterType : public ParameterType {
+  friend class ASTContext; // ASTContext creates these
+
+  MoveParameterType(QualType Parm, QualType Canonical, QualType Adjusted)
+    : ParameterType(MoveParameter, Parm, Canonical, PassingMode, Adjusted) {}
+
+public:
+  static constexpr ParameterPassingKind PassingMode = PPK_move;
+
+  bool isSugared() const { return false; }
+  QualType desugar() const { return QualType(this, 0); }
+
+  static bool classof(const Type *T) {
+    return T->getTypeClass() == MoveParameter;
+  }
+};
+
 /// A qualifier set is used to build a set of qualifiers.
 class QualifierCollector : public Qualifiers {
 public:
@@ -6765,6 +6973,14 @@ inline QualType QualType::getNonReferenceType() const {
     return RefType->getPointeeType();
   else
     return *this;
+}
+
+/// If Type is a parameter type (e.g., in int), returns the underlying
+/// type of the parameter (i.e., int).
+inline QualType QualType::getParameterType() const {
+  if (const auto *ParmType = (*this)->getAs<ParameterType>())
+    return ParmType->getParameterType();
+  return *this;
 }
 
 inline bool QualType::isCForbiddenLValueType() const {
@@ -7032,6 +7248,10 @@ inline bool Type::isPipeType() const {
 
 inline bool Type::isExtIntType() const {
   return isa<ExtIntType>(CanonicalType);
+}
+
+inline bool Type::isParameterType() const {
+  return isa<ParameterType>(CanonicalType);
 }
 
 #define EXT_OPAQUE_TYPE(ExtType, Id, Ext) \

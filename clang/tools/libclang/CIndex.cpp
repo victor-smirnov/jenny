@@ -1779,6 +1779,28 @@ bool CursorVisitor::VisitDecltypeTypeLoc(DecltypeTypeLoc TL) {
   return false;
 }
 
+bool CursorVisitor::VisitDependentIdentifierSpliceTypeLoc(
+    DependentIdentifierSpliceTypeLoc TL) {
+  // Visit the nested-name-specifier, if there is one.
+  if (NestedNameSpecifierLoc QualifierLoc = TL.getQualifierLoc()) {
+    if (VisitNestedNameSpecifierLoc(QualifierLoc))
+      return true;
+  }
+
+  auto II = static_cast<SplicedIdentifierInfo *>(TL.getIdentifierInfo());
+  for (Expr *E : II->getExprs()) {
+    if (Visit(MakeCXCursor(E, StmtParent, TU)))
+      return true;
+  }
+
+  // Visit the template arguments.
+  for (unsigned I = 0, N = TL.getNumArgs(); I != N; ++I)
+    if (VisitTemplateArgumentLoc(TL.getArgLoc(I)))
+      return true;
+
+  return false;
+}
+
 bool CursorVisitor::VisitReflectedTypeLoc(ReflectedTypeLoc TL) {
   if (Expr *E = TL.getReflection())
     return Visit(MakeCXCursor(E, StmtParent, TU));
@@ -1798,10 +1820,26 @@ bool CursorVisitor::VisitPipeTypeLoc(PipeTypeLoc TL) {
   return Visit(TL.getValueLoc());
 }
 
-#define DEFAULT_TYPELOC_IMPL(CLASS, PARENT)                                    \
-  bool CursorVisitor::Visit##CLASS##TypeLoc(CLASS##TypeLoc TL) {               \
-    return Visit##PARENT##Loc(TL);                                             \
-  }
+bool CursorVisitor::VisitInParameterTypeLoc(InParameterTypeLoc TL) {
+  return Visit(TL.getParameterTypeLoc());
+}
+
+bool CursorVisitor::VisitOutParameterTypeLoc(OutParameterTypeLoc TL) {
+  return Visit(TL.getParameterTypeLoc());
+}
+
+bool CursorVisitor::VisitInOutParameterTypeLoc(InOutParameterTypeLoc TL) {
+  return Visit(TL.getParameterTypeLoc());
+}
+
+bool CursorVisitor::VisitMoveParameterTypeLoc(MoveParameterTypeLoc TL) {
+  return Visit(TL.getParameterTypeLoc());
+}
+
+#define DEFAULT_TYPELOC_IMPL(CLASS, PARENT) \
+bool CursorVisitor::Visit##CLASS##TypeLoc(CLASS##TypeLoc TL) { \
+  return Visit##PARENT##Loc(TL); \
+}
 
 DEFAULT_TYPELOC_IMPL(Complex, Type)
 DEFAULT_TYPELOC_IMPL(ConstantArray, ArrayType)

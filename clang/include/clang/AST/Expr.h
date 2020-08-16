@@ -533,9 +533,11 @@ public:
   ///
   /// Note: This does not perform the implicit conversions required by C++11
   /// [expr.const]p5.
-  bool isIntegerConstantExpr(llvm::APSInt &Result, const EvalContext &Ctx,
-                             SourceLocation *Loc = nullptr,
-                             bool isEvaluated = true) const;
+
+  Optional<llvm::APSInt> getIntegerConstantExpr(const EvalContext &Ctx,
+                                                SourceLocation *Loc = nullptr,
+                                                bool isEvaluated = true) const;
+
   bool isIntegerConstantExpr(const EvalContext &Ctx,
                              SourceLocation *Loc = nullptr) const;
 

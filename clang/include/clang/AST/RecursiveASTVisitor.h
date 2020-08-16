@@ -983,6 +983,13 @@ DEF_TRAVERSE_TYPE(TypeOfType, { TRY_TO(TraverseType(T->getUnderlyingType())); })
 DEF_TRAVERSE_TYPE(DecltypeType,
                   { TRY_TO(TraverseStmt(T->getUnderlyingExpr())); })
 
+DEF_TRAVERSE_TYPE(DependentIdentifierSpliceType, {
+  // FIXME: Do we need to "traverse" the spliced identifier?
+
+  TRY_TO(TraverseTemplateArguments(T->getArgs(),
+                                   T->getNumArgs()));
+})
+
 DEF_TRAVERSE_TYPE(ReflectedType,
                   { TRY_TO(TraverseStmt(T->getReflection())); })
 
@@ -1070,6 +1077,15 @@ DEF_TRAVERSE_TYPE(PipeType, { TRY_TO(TraverseType(T->getElementType())); })
 DEF_TRAVERSE_TYPE(ExtIntType, {})
 DEF_TRAVERSE_TYPE(DependentExtIntType,
                   { TRY_TO(TraverseStmt(T->getNumBitsExpr())); })
+
+DEF_TRAVERSE_TYPE(InParameterType,
+                  { TRY_TO(TraverseType(T->getParameterType())); })
+DEF_TRAVERSE_TYPE(OutParameterType,
+                  { TRY_TO(TraverseType(T->getParameterType())); })
+DEF_TRAVERSE_TYPE(InOutParameterType,
+                  { TRY_TO(TraverseType(T->getParameterType())); })
+DEF_TRAVERSE_TYPE(MoveParameterType,
+                  { TRY_TO(TraverseType(T->getParameterType())); })
 
 #undef DEF_TRAVERSE_TYPE
 
@@ -1263,6 +1279,14 @@ DEF_TRAVERSE_TYPELOC(DecltypeType, {
   TRY_TO(TraverseStmt(TL.getTypePtr()->getUnderlyingExpr()));
 })
 
+DEF_TRAVERSE_TYPELOC(DependentIdentifierSpliceType, {
+  // FIXME: Do we need to "traverse" the spliced identifier?
+
+  for (unsigned I = 0, E = TL.getNumArgs(); I != E; ++I) {
+    TRY_TO(TraverseTemplateArgumentLoc(TL.getArgLoc(I)));
+  }
+})
+
 DEF_TRAVERSE_TYPELOC(ReflectedType, {
   TRY_TO(TraverseStmt(TL.getTypePtr()->getReflection()));
 })
@@ -1364,6 +1388,15 @@ DEF_TRAVERSE_TYPELOC(ExtIntType, {})
 DEF_TRAVERSE_TYPELOC(DependentExtIntType, {
   TRY_TO(TraverseStmt(TL.getTypePtr()->getNumBitsExpr()));
 })
+
+DEF_TRAVERSE_TYPELOC(InParameterType,
+                     { TRY_TO(TraverseTypeLoc(TL.getParameterTypeLoc())); })
+DEF_TRAVERSE_TYPELOC(OutParameterType,
+                     { TRY_TO(TraverseTypeLoc(TL.getParameterTypeLoc())); })
+DEF_TRAVERSE_TYPELOC(InOutParameterType,
+                     { TRY_TO(TraverseTypeLoc(TL.getParameterTypeLoc())); })
+DEF_TRAVERSE_TYPELOC(MoveParameterType,
+                     { TRY_TO(TraverseTypeLoc(TL.getParameterTypeLoc())); })
 
 #undef DEF_TRAVERSE_TYPELOC
 

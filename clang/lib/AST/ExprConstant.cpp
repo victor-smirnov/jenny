@@ -11139,6 +11139,10 @@ EvaluateBuiltinClassifyType(QualType T, const LangOptions &LangOpts) {
 
   case Type::LValueReference:
   case Type::RValueReference:
+  case Type::InParameter:
+  case Type::OutParameter:
+  case Type::InOutParameter:
+  case Type::MoveParameter:
     llvm_unreachable("invalid type for expression");
   }
 
@@ -13272,6 +13276,7 @@ bool IntExprEvaluator::VisitCastExpr(const CastExpr *E) {
   case CK_AtomicToNonAtomic:
   case CK_NoOp:
   case CK_LValueToRValueBitCast:
+  case CK_ParameterQualification:
     return ExprEvaluatorBaseTy::VisitCastExpr(E);
 
   case CK_MemberPointerToBoolean:
@@ -13378,6 +13383,7 @@ bool IntExprEvaluator::VisitCastExpr(const CastExpr *E) {
       return false;
     return Success(Value, E);
   }
+
   }
 
   llvm_unreachable("unknown cast resulting in integral value");
@@ -13604,6 +13610,29 @@ bool FixedPointExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
     }
     Result = LHSFX.div(RHSFX, &OpOverflow)
                   .convert(ResultFXSema, &ConversionOverflow);
+    break;
+  }
+  case BO_Shl:
+  case BO_Shr: {
+    FixedPointSemantics LHSSema = LHSFX.getSemantics();
+    llvm::APSInt RHSVal = RHSFX.getValue();
+
+    unsigned ShiftBW =
+        LHSSema.getWidth() - (unsigned)LHSSema.hasUnsignedPadding();
+    unsigned Amt = RHSVal.getLimitedValue(ShiftBW - 1);
+    // Embedded-C 4.1.6.2.2:
+    //   The right operand must be nonnegative and less than the total number
+    //   of (nonpadding) bits of the fixed-point operand ...
+    if (RHSVal.isNegative())
+      Info.CCEDiag(E, diag::note_constexpr_negative_shift) << RHSVal;
+    else if (Amt != RHSVal)
+      Info.CCEDiag(E, diag::note_constexpr_large_shift)
+          << RHSVal << E->getType() << ShiftBW;
+
+    if (E->getOpcode() == BO_Shl)
+      Result = LHSFX.shl(Amt, &OpOverflow);
+    else
+      Result = LHSFX.shr(Amt, &OpOverflow);
     break;
   }
   default:
@@ -14073,6 +14102,10 @@ bool ComplexExprEvaluator::VisitCastExpr(const CastExpr *E) {
            HandleIntToFloatCast(Info, E, From, Result.IntImag,
                                 To, Result.FloatImag);
   }
+
+  case CK_ParameterQualification:
+    // Evaluate the subexpression.
+    return Visit(E->getSubExpr());
   }
 
   llvm_unreachable("unknown cast resulting in complex value");
@@ -15661,16 +15694,22 @@ bool Expr::isIntegerConstantExpr(const EvalContext &Ctx,
 }
 
 
-bool Expr::isIntegerConstantExpr(llvm::APSInt &Value, const EvalContext &Ctx,
-                                 SourceLocation *Loc, bool isEvaluated) const {
+Optional<llvm::APSInt> Expr::getIntegerConstantExpr(const EvalContext &Ctx,
+                                                    SourceLocation *Loc,
+                                                    bool isEvaluated) const {
   assert(!isValueDependent() &&
          "Expression evaluator can't be called on a dependent expression.");
 
-  if (Ctx.ASTCtx.getLangOpts().CPlusPlus11)
-    return EvaluateCPlusPlus11IntegralConstantExpr(Ctx, this, &Value, Loc);
+  APSInt Value;
+
+  if (Ctx.ASTCtx.getLangOpts().CPlusPlus11) {
+    if (EvaluateCPlusPlus11IntegralConstantExpr(Ctx, this, &Value, Loc))
+      return Value;
+    return None;
+  }
 
   if (!isIntegerConstantExpr(Ctx, Loc))
-    return false;
+      return Optional<llvm::APSInt>{};
 
   // The only possible side-effects here are due to UB discovered in the
   // evaluation (for instance, INT_MAX + 1). In such a case, we are still
@@ -15686,7 +15725,7 @@ bool Expr::isIntegerConstantExpr(llvm::APSInt &Value, const EvalContext &Ctx,
 
   Value = ExprResult.Val.getInt();
 
-  return true;
+  return Value;
 }
 
 bool Expr::isCXX98IntegralConstantExpr(const EvalContext &Ctx) const {

@@ -104,8 +104,9 @@ using InjectionType = llvm::PointerUnion<Decl *, CXXBaseSpecifier *>;
 
 struct InjectionInfo {
   InjectionInfo(InjectionType Injection, InjectionInfo *ParentInjection)
-    : Injection(Injection), Modifiers(), ParentInjection(ParentInjection),
-      InitializingFragment() { }
+    : Injection(Injection), PointOfInjection(), Modifiers(),
+      ParentInjection(ParentInjection), InitializingFragment(),
+      CapturedValues() { }
 
 
   InjectionInfo *PrepareForPending() {
@@ -133,6 +134,9 @@ struct InjectionInfo {
 
   /// The entity being Injected.
   InjectionType Injection;
+
+  /// The source location of the triggering injector.
+  SourceLocation PointOfInjection;
 
   /// The modifiers to apply to injection.
   ReflectionModifiers Modifiers;
@@ -172,6 +176,10 @@ struct InjectionInfo {
 
   /// The template arguments to apply when injecting the injection.
   Sema::FragInstantiationArgTy TemplateArgs;
+
+  /// The required relative declarations that should be part of the
+  /// decl replacement mapping.
+  llvm::SmallVector<Decl *, 8> RequiredRelatives;
 };
 
 /// An injection context. This is declared to establish a set of
@@ -367,6 +375,37 @@ public:
     return CurInjection->TemplateArgs;
   }
 
+  // Adds this declaration as a required relative, a required relative
+  // is one that should be remapped from a declaration clone.
+  //
+  // For instance, in the following example, `x` is a required
+  // relative of `get_x`.
+  //
+  // class example {
+  //   int x;
+  //
+  //   int get_x() {
+  //     return x;
+  //   }
+  // };
+  void AddRequiredRelative(Decl *D) {
+    assert(!isInjectingFragment());
+    CurInjection->RequiredRelatives.push_back(D);
+  }
+
+  void verifyHasAllRequiredRelatives() {
+    SourceLocation POI = CurInjection->PointOfInjection;
+    for (Decl *D : CurInjection->RequiredRelatives) {
+      if (GetDeclReplacement(D))
+        continue;
+
+      SemaRef.Diag(POI, diag::err_injection_missing_required_relative)
+        << cast<NamedDecl>(D) << cast<NamedDecl>(Injectee);
+      SemaRef.Diag(D->getLocation(), diag::note_required_relative_declared)
+        << cast<NamedDecl>(D);
+    }
+  }
+
   bool ShouldInjectInto(DeclContext *DC) const {
     // When not doing a declaration rebuild, this should always be true.
     //
@@ -491,6 +530,10 @@ public:
     return RebuildOnlyContext;
   }
 
+  void SetPointOfInjection(SourceLocation PointOfInjection) {
+    CurInjection->PointOfInjection = PointOfInjection;
+  }
+
   /// Sets the declaration modifiers.
   void SetModifiers(const ReflectionModifiers &Modifiers) {
     this->CurInjection->Modifiers = Modifiers;
@@ -574,8 +617,10 @@ public:
       //
       // If this condition is true, we're injecting a decl who's in the same
       // decl context as the declaration we're currently cloning.
-      if (D->getDeclContext() == getInjectionDeclContext())
+      if (D->getDeclContext() == getInjectionDeclContext()) {
+        AddRequiredRelative(D);
         return nullptr;
+      }
     } else if (hasTemplateArgs() && InstantiateTemplates) {
       if (isa<CXXRecordDecl>(D)) {
         auto *Record = cast<CXXRecordDecl>(D);
@@ -1307,6 +1352,19 @@ static void InjectFunctionDefinition(InjectionContext *Ctx,
                             /*IsInstantiation=*/true);
 }
 
+static ConstexprSpecKind Transform(ConstexprModifier Modifier) {
+  switch(Modifier) {
+  case ConstexprModifier::Constexpr:
+    return CSK_constexpr;
+  case ConstexprModifier::Consteval:
+    return CSK_consteval;
+  case ConstexprModifier::Constinit:
+    return CSK_constinit;
+  default:
+    llvm_unreachable("Invalid constexpr modifier transformation");
+  }
+}
+
 Decl *InjectionContext::InjectFunctionDecl(FunctionDecl *D) {
   DeclContext *Owner = getSema().CurContext;
 
@@ -1322,16 +1380,23 @@ Decl *InjectionContext::InjectFunctionDecl(FunctionDecl *D) {
   UpdateFunctionParms(D, Fn);
 
   // Update the constexpr specifier.
-  if (GetModifiers().addConstexpr()) {
-    Fn->setConstexprKind(CSK_constexpr);
+  if (GetModifiers().modifyConstexpr()) {
     Fn->setType(Fn->getType().withConst());
+
+    ConstexprModifier Modifier = GetModifiers().getConstexprModifier();
+    if (Modifier == ConstexprModifier::Constinit) {
+      SemaRef.Diag(Fn->getLocation(), diag::err_modify_constinit_function);
+      Fn->setInvalidDecl(true);
+    } else {
+      Fn->setConstexprKind(Transform(Modifier));
+    }
   } else {
     Fn->setConstexprKind(D->getConstexprKind());
   }
 
   // Set properties.
   Fn->setInlineSpecified(D->isInlineSpecified());
-  Fn->setInvalidDecl(Invalid);
+  Fn->setInvalidDecl(Fn->isInvalidDecl() || Invalid);
   if (D->getFriendObjectKind() != Decl::FOK_None)
     Fn->setObjectOfFriendDecl();
 
@@ -1379,8 +1444,8 @@ static void CheckInjectedVarDecl(Sema &SemaRef, VarDecl *VD,
       return;
 
     SemaRef.Diag(VD->getLocation(),
-                   diag::err_static_data_member_not_allowed_in_anon_struct)
-      << VD->getDeclName() << RD->getTagKind();
+                 diag::err_static_data_member_not_allowed_in_anon_struct)
+        << VD->getDeclName() << RD->getTagKind();
   }
 }
 
@@ -1420,9 +1485,24 @@ Decl *InjectionContext::InjectVarDecl(VarDecl *D) {
   Var->setInitStyle(D->getInitStyle());
   Var->setCXXForRangeDecl(D->isCXXForRangeDecl());
 
-  if (GetModifiers().addConstexpr()) {
-    Var->setConstexpr(true);
+  if (GetModifiers().modifyConstexpr()) {
     Var->setType(Var->getType().withConst());
+    switch (GetModifiers().getConstexprModifier()) {
+    case ConstexprModifier::Constexpr:
+      Var->setConstexpr(true);
+      break;
+    case ConstexprModifier::Consteval:
+      SemaRef.Diag(Var->getLocation(), diag::err_modify_consteval_variable);
+      Var->setInvalidDecl(true);
+      break;
+    case ConstexprModifier::Constinit:
+      Var->addAttr(ConstInitAttr::Create(
+          SemaRef.Context, Var->getLocation(),
+          AttributeCommonInfo::AS_Keyword, ConstInitAttr::Keyword_constinit));
+      break;
+    default:
+      llvm_unreachable("invalid constexpr modifier transformation");
+    }
   } else {
     Var->setConstexpr(D->isConstexpr());
   }
@@ -1762,8 +1842,9 @@ Decl *InjectionContext::InjectFieldDecl(FieldDecl *D) {
   // There are some interesting cases we probably need to handle.
 
   // Can't make
-  if (GetModifiers().addConstexpr()) {
-    SemaRef.Diag(D->getLocation(), diag::err_modify_constexpr_field);
+  if (GetModifiers().modifyConstexpr()) {
+    SemaRef.Diag(D->getLocation(), diag::err_modify_constexpr_field) <<
+        Transform(GetModifiers().getConstexprModifier());
     Field->setInvalidDecl(true);
   }
 
@@ -1855,13 +1936,21 @@ Decl *InjectionContext::InjectCXXMethodDecl(CXXMethodDecl *D, F FinishBody) {
   ApplyAccess(GetModifiers(), Method, D);
 
   // Update the constexpr specifier.
-  if (GetModifiers().addConstexpr()) {
-    if (isa<CXXDestructorDecl>(Method)) {
-      SemaRef.Diag(D->getLocation(), diag::err_constexpr_dtor) << CSK_constexpr;
-      Method->setInvalidDecl(true);
-    }
-    Method->setConstexprKind(CSK_constexpr);
+  if (GetModifiers().modifyConstexpr()) {
     Method->setType(Method->getType().withConst());
+
+    ConstexprModifier Modifier = GetModifiers().getConstexprModifier();
+    if (Modifier == ConstexprModifier::Constinit) {
+      SemaRef.Diag(Method->getLocation(), diag::err_modify_constinit_function);
+      Method->setInvalidDecl(true);
+    } else {
+      ConstexprSpecKind SpecKind = Transform(Modifier);
+      if (isa<CXXDestructorDecl>(Method)) {
+        SemaRef.Diag(D->getLocation(), diag::err_constexpr_dtor) << SpecKind;
+        Method->setInvalidDecl(true);
+      }
+      Method->setConstexprKind(SpecKind);
+    }
   } else {
     Method->setConstexprKind(D->getConstexprKind());
   }
@@ -3496,6 +3585,9 @@ static bool InjectFragment(
     Ctx->MaybeAddDeclSubstitution(Injection, Injectee);
     Ctx->AddTemplateArgs(InjectionTemplateArgs);
 
+    // Add source location information for the current injection.
+    Ctx->SetPointOfInjection(POI);
+
     // Legacy setup.
     Ctx->AddLegacyPlaceholderSubstitutions(Injection->getDeclContext(), Captures);
 
@@ -3512,7 +3604,7 @@ static bool AddBase(Sema &S, CXXInjectorDecl *MD,
                     CXXBaseSpecifier *Injection,
                     const ReflectionModifiers &Modifiers,
                     Decl *Injectee) {
-  // SourceLocation POI = MD->getSourceRange().getEnd();
+  SourceLocation POI = MD->getSourceRange().getEnd();
   // DeclContext *InjectionDC = Injection->getDeclContext();
   // Decl *InjectionOwner = Decl::castFromDeclContext(InjectionDC);
   DeclContext *InjecteeAsDC = Decl::castToDeclContext(Injectee);
@@ -3526,6 +3618,7 @@ static bool AddBase(Sema &S, CXXInjectorDecl *MD,
 
   return BootstrapInjection(S, Injectee, Injection, [&](InjectionContext *Ctx) {
     Ctx->SetModifiers(Modifiers);
+    Ctx->SetPointOfInjection(POI);
 
     // Inject the base specifier.
     if (Ctx->InjectBaseSpecifier(Injection))
@@ -3558,8 +3651,10 @@ static bool CopyDeclaration(Sema &S, CXXInjectorDecl *MD,
   return BootstrapInjection(S, Injectee, Injection, [&](InjectionContext *Ctx) {
     // Setup substitutions
     Ctx->MaybeAddDeclSubstitution(InjectionOwner, Injectee);
-
     Ctx->SetModifiers(Modifiers);
+
+    // Add source location information for the current injection.
+    Ctx->SetPointOfInjection(POI);
 
     // Inject the declaration.
     Decl* Result = Ctx->InjectDecl(Injection);
@@ -3886,6 +3981,10 @@ public:
       InjectionContext *Ctx = PendingCtxs.back();
       if (shouldStopProcessing(Ctx))
         break;
+
+      Ctx->ForEachPendingInjection([&Ctx] {
+        Ctx->verifyHasAllRequiredRelatives();
+      });
 
       delete Ctx;
       PendingCtxs.pop_back();
@@ -4290,17 +4389,19 @@ EvaluateMetaDecl(Sema &Sema, MetaType *MD, FunctionDecl *D) {
   ASTContext &Context = Sema.Context;
 
   QualType FunctionTy = D->getType();
-  DeclRefExpr *Ref =
-      new (Context) DeclRefExpr(Context, D,
-                                /*RefersToEnclosingVariableOrCapture=*/false,
-                                FunctionTy, VK_LValue, MD->getLocation());
+  DeclRefExpr *Ref = new (Context) DeclRefExpr(
+      Context, D, /*RefersToEnclosingVariableOrCapture=*/false, FunctionTy,
+      VK_LValue, MD->getLocation());
+
   QualType PtrTy = Context.getPointerType(FunctionTy);
-  ImplicitCastExpr *Cast =
-      ImplicitCastExpr::Create(Context, PtrTy, CK_FunctionToPointerDecay, Ref,
-                               /*BasePath=*/nullptr, VK_RValue);
-  CallExpr *Call =
-      CallExpr::Create(Context, Cast, ArrayRef<Expr *>(), Context.VoidTy,
-                       VK_RValue, MD->getLocation(), Sema.CurFPFeatureOverrides());
+  ImplicitCastExpr *Cast = ImplicitCastExpr::Create(
+      Context, PtrTy, CK_FunctionToPointerDecay, Ref, /*BasePath=*/nullptr,
+      VK_RValue);
+
+  CallExpr *Call = CallExpr::Create(
+      Context, Cast, ArrayRef<Expr *>(), Context.VoidTy, VK_RValue,
+      MD->getLocation(), Sema.CurFPFeatureOverrides());
+
   return EvaluateMetaDeclCall(Sema, MD, Call);
 }
 

@@ -1955,6 +1955,128 @@ public:
   Expr *getUnderlyingExpr() const { return getTypePtr()->getUnderlyingExpr(); }
 };
 
+struct DependentIdentifierSpliceLocInfo {
+  SourceLocation TypenameKWLoc;
+
+  /// Data associated with the nested-name-specifier location.
+  void *QualifierData;
+  SourceLocation IdentifierLoc;
+
+  SourceLocation LAngleLoc;
+  SourceLocation RAngleLoc;
+  // followed by a TemplateArgumentLocInfo[]
+};
+
+class DependentIdentifierSpliceTypeLoc
+    : public ConcreteTypeLoc<UnqualTypeLoc,
+                             DependentIdentifierSpliceTypeLoc,
+                             DependentIdentifierSpliceType,
+                             DependentIdentifierSpliceLocInfo> {
+public:
+  SourceLocation getTypenameKeywordLoc() const {
+    return getLocalData()->TypenameKWLoc;
+  }
+
+  void setTypenameKeywordLoc(SourceLocation Loc) {
+    this->getLocalData()->TypenameKWLoc = Loc;
+  }
+
+  NestedNameSpecifierLoc getQualifierLoc() const {
+    if (!getLocalData()->QualifierData)
+      return NestedNameSpecifierLoc();
+
+    return NestedNameSpecifierLoc(getTypePtr()->getQualifier(),
+                                  getLocalData()->QualifierData);
+  }
+
+  void setQualifierLoc(NestedNameSpecifierLoc QualifierLoc) {
+    if (!QualifierLoc) {
+      // Even if we have a nested-name-specifier in the dependent
+      // identifier splice type, we won't record the nested-name-specifier
+      // location information when this type-source location information is
+      // part of a nested-name-specifier.
+      getLocalData()->QualifierData = nullptr;
+      return;
+    }
+
+    assert(QualifierLoc.getNestedNameSpecifier()
+                                        == getTypePtr()->getQualifier() &&
+           "Inconsistent nested-name-specifier pointer");
+    getLocalData()->QualifierData = QualifierLoc.getOpaqueData();
+  }
+
+  IdentifierInfo *getIdentifierInfo() const {
+    return getTypePtr()->getIdentifierInfo();
+  }
+
+  SourceLocation getIdentifierLoc() const {
+    return getLocalData()->IdentifierLoc;
+  }
+
+  void setIdentifierLoc(SourceLocation Loc) {
+    this->getLocalData()->IdentifierLoc = Loc;
+  }
+
+  SourceLocation getLAngleLoc() const {
+    return this->getLocalData()->LAngleLoc;
+  }
+
+  void setLAngleLoc(SourceLocation Loc) {
+    this->getLocalData()->LAngleLoc = Loc;
+  }
+
+  SourceLocation getRAngleLoc() const {
+    return this->getLocalData()->RAngleLoc;
+  }
+
+  void setRAngleLoc(SourceLocation Loc) {
+    this->getLocalData()->RAngleLoc = Loc;
+  }
+
+  unsigned getNumArgs() const { return getTypePtr()->getNumArgs(); }
+
+  void setArgLocInfo(unsigned i, TemplateArgumentLocInfo AI) {
+    getArgInfos()[i] = AI;
+  }
+
+  TemplateArgumentLocInfo getArgLocInfo(unsigned i) const {
+    return getArgInfos()[i];
+  }
+
+  TemplateArgumentLoc getArgLoc(unsigned i) const {
+    return TemplateArgumentLoc(getTypePtr()->getArg(i), getArgLocInfo(i));
+  }
+
+  SourceRange getLocalSourceRange() const {
+    if (getRAngleLoc().isValid())
+      return SourceRange(getTypenameKeywordLoc(), getRAngleLoc());
+    else
+      // FIXME: We should be able to do better than this with better
+      // identifier location info in the future.
+      return SourceRange(getTypenameKeywordLoc(), getIdentifierLoc());
+  }
+
+  void initializeLocal(ASTContext &Context, SourceLocation Loc);
+
+  static void initializeArgLocs(ASTContext &Context, unsigned NumArgs,
+                                const TemplateArgument *Args,
+                                TemplateArgumentLocInfo *ArgInfos,
+                                SourceLocation Loc);
+
+  unsigned getExtraLocalDataSize() const {
+    return getNumArgs() * sizeof(TemplateArgumentLocInfo);
+  }
+
+  unsigned getExtraLocalDataAlignment() const {
+    return alignof(TemplateArgumentLocInfo);
+  }
+
+private:
+  TemplateArgumentLocInfo *getArgInfos() const {
+    return static_cast<TemplateArgumentLocInfo*>(getExtraLocalData());
+  }
+};
+
 // FIXME: location of the 'typename' and parens.
 class ReflectedTypeLoc : public InheritingConcreteTypeLoc<TypeSpecTypeLoc,
                                                          ReflectedTypeLoc,
@@ -2571,6 +2693,70 @@ class ExtIntTypeLoc final
 class DependentExtIntTypeLoc final
     : public InheritingConcreteTypeLoc<TypeSpecTypeLoc, DependentExtIntTypeLoc,
                                         DependentExtIntType> {};
+
+struct ParameterTypeLocInfo {
+  SourceLocation ModeLoc;
+};
+
+/// Represents a location for a parameter type. We currently don't maintain
+/// source locations for the parameter passing specifier.
+class ParameterTypeLoc : public ConcreteTypeLoc<UnqualTypeLoc,
+                                                ParameterTypeLoc,
+                                                ParameterType,
+                                                ParameterTypeLocInfo> {
+public:
+  SourceLocation getModeLoc() const {
+    return this->getLocalData()->ModeLoc;
+  }
+
+  void setModeLoc(SourceLocation Loc) {
+    this->getLocalData()->ModeLoc = Loc;
+  }
+
+  TypeLoc getParameterTypeLoc() const {
+    return this->getInnerTypeLoc();
+  }
+
+  SourceRange getLocalSourceRange() const {
+    return SourceRange(getModeLoc(), getModeLoc());
+  }
+
+  void initializeLocal(ASTContext &Context, SourceLocation Loc) {
+    setModeLoc(Loc);
+  }
+
+  TypeLoc getInnerLoc() const {
+    return getInnerTypeLoc();
+  }
+
+  QualType getInnerType() const {
+    return this->getTypePtr()->getParameterType();
+  }
+};
+
+class InParameterTypeLoc :
+  public InheritingConcreteTypeLoc<ParameterTypeLoc,
+                                   InParameterTypeLoc,
+                                   InParameterType> {
+};
+
+class OutParameterTypeLoc :
+  public InheritingConcreteTypeLoc<ParameterTypeLoc,
+                                   OutParameterTypeLoc,
+                                   OutParameterType> {
+};
+
+class InOutParameterTypeLoc :
+  public InheritingConcreteTypeLoc<ParameterTypeLoc,
+                                   InOutParameterTypeLoc,
+                                   InOutParameterType> {
+};
+
+class MoveParameterTypeLoc :
+  public InheritingConcreteTypeLoc<ParameterTypeLoc,
+                                   MoveParameterTypeLoc,
+                                   MoveParameterType> {
+};
 
 } // namespace clang
 

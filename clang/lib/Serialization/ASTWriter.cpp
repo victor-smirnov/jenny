@@ -364,6 +364,19 @@ void TypeLocWriter::VisitDecltypeTypeLoc(DecltypeTypeLoc TL) {
   Record.AddSourceLocation(TL.getNameLoc());
 }
 
+void TypeLocWriter::VisitDependentIdentifierSpliceTypeLoc(
+    DependentIdentifierSpliceTypeLoc TL) {
+  Record.AddSourceLocation(TL.getTypenameKeywordLoc());
+  Record.AddNestedNameSpecifierLoc(TL.getQualifierLoc());
+  Record.AddSourceLocation(TL.getIdentifierLoc());
+  Record.AddSourceLocation(TL.getLAngleLoc());
+  Record.AddSourceLocation(TL.getRAngleLoc());
+  for (unsigned I = 0; I < TL.getNumArgs(); ++I)
+    Record.AddTemplateArgumentLocInfo(TL.getTypePtr()->getArg(I).getKind(),
+                                      TL.getArgLocInfo(I));
+}
+
+
 void TypeLocWriter::VisitReflectedTypeLoc(ReflectedTypeLoc TL) {
   Record.AddSourceLocation(TL.getNameLoc());
 }
@@ -512,9 +525,26 @@ void TypeLocWriter::VisitPipeTypeLoc(PipeTypeLoc TL) {
 void TypeLocWriter::VisitExtIntTypeLoc(clang::ExtIntTypeLoc TL) {
   Record.AddSourceLocation(TL.getNameLoc());
 }
+
 void TypeLocWriter::VisitDependentExtIntTypeLoc(
     clang::DependentExtIntTypeLoc TL) {
   Record.AddSourceLocation(TL.getNameLoc());
+}
+
+void TypeLocWriter::VisitInParameterTypeLoc(InParameterTypeLoc TL) {
+  Record.AddSourceLocation(TL.getModeLoc());
+}
+
+void TypeLocWriter::VisitOutParameterTypeLoc(OutParameterTypeLoc TL) {
+  Record.AddSourceLocation(TL.getModeLoc());
+}
+
+void TypeLocWriter::VisitInOutParameterTypeLoc(InOutParameterTypeLoc TL) {
+  Record.AddSourceLocation(TL.getModeLoc());
+}
+
+void TypeLocWriter::VisitMoveParameterTypeLoc(MoveParameterTypeLoc TL) {
+  Record.AddSourceLocation(TL.getModeLoc());
 }
 
 void ASTWriter::WriteTypeAbbrevs() {
@@ -6597,8 +6627,13 @@ void OMPClauseWriter::VisitOMPToClause(OMPToClause *C) {
   Record.push_back(C->getTotalComponentListNum());
   Record.push_back(C->getTotalComponentsNum());
   Record.AddSourceLocation(C->getLParenLoc());
+  for (unsigned I = 0; I < NumberOfOMPMotionModifiers; ++I) {
+    Record.push_back(C->getMotionModifier(I));
+    Record.AddSourceLocation(C->getMotionModifierLoc(I));
+  }
   Record.AddNestedNameSpecifierLoc(C->getMapperQualifierLoc());
   Record.AddDeclarationNameInfo(C->getMapperIdInfo());
+  Record.AddSourceLocation(C->getColonLoc());
   for (auto *E : C->varlists())
     Record.AddStmt(E);
   for (auto *E : C->mapperlists())
@@ -6621,8 +6656,13 @@ void OMPClauseWriter::VisitOMPFromClause(OMPFromClause *C) {
   Record.push_back(C->getTotalComponentListNum());
   Record.push_back(C->getTotalComponentsNum());
   Record.AddSourceLocation(C->getLParenLoc());
+  for (unsigned I = 0; I < NumberOfOMPMotionModifiers; ++I) {
+    Record.push_back(C->getMotionModifier(I));
+    Record.AddSourceLocation(C->getMotionModifierLoc(I));
+  }
   Record.AddNestedNameSpecifierLoc(C->getMapperQualifierLoc());
   Record.AddDeclarationNameInfo(C->getMapperIdInfo());
+  Record.AddSourceLocation(C->getColonLoc());
   for (auto *E : C->varlists())
     Record.AddStmt(E);
   for (auto *E : C->mapperlists())
@@ -6786,4 +6826,18 @@ void ASTRecordWriter::writeOMPTraitInfo(const OMPTraitInfo *TI) {
         writeEnum(Property.Kind);
     }
   }
+}
+
+void ASTRecordWriter::writeOMPChildren(OMPChildren *Data) {
+  if (!Data)
+    return;
+  writeUInt32(Data->getNumClauses());
+  writeUInt32(Data->getNumChildren());
+  writeBool(Data->hasAssociatedStmt());
+  for (unsigned I = 0, E = Data->getNumClauses(); I < E; ++I)
+    writeOMPClause(Data->getClauses()[I]);
+  if (Data->hasAssociatedStmt())
+    AddStmt(Data->getAssociatedStmt());
+  for (unsigned I = 0, E = Data->getNumChildren(); I < E; ++I)
+    AddStmt(Data->getChildren()[I]);
 }

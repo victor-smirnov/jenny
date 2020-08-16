@@ -506,13 +506,12 @@ public:
 
   bool isIdentifier() {
     if (Tok.is(tok::kw_unqualid) && GetLookAheadToken(2).isNot(tok::ellipsis)) {
-      if (AnnotateIdentifierSplice())
-        return false;
-
+      AnnotateIdentifierSplice();
       return true;
     }
 
-    return Tok.isOneOf(tok::identifier, tok::annot_identifier_splice);
+    return Tok.isOneOf(tok::identifier, tok::annot_identifier_splice,
+                       tok::annot_invalid_identifier_splice);
   }
 
   // FIXME: This should probably be private similar to the other
@@ -2396,12 +2395,16 @@ private:
                         ParsedAttributesWithRange &Attrs);
   DeclSpecContext
   getDeclSpecContextFromDeclaratorContext(DeclaratorContext Context);
+
   void ParseDeclarationSpecifiers(
       DeclSpec &DS,
       const ParsedTemplateInfo &TemplateInfo = ParsedTemplateInfo(),
       AccessSpecifier AS = AS_none,
       DeclSpecContext DSC = DeclSpecContext::DSC_normal,
       LateParsedAttrList *LateAttrs = nullptr);
+
+  void ParseParameterPassingSpecifier(DeclSpec &DS);
+
   bool DiagnoseMissingSemiAfterTagDefinition(
       DeclSpec &DS, AccessSpecifier AS, DeclSpecContext DSContext,
       LateParsedAttrList *LateAttrs = nullptr);
@@ -2575,6 +2578,10 @@ private:
   TPResult
   isCXXDeclarationSpecifier(TPResult BracedCastResult = TPResult::False,
                             bool *InvalidAsDeclSpec = nullptr);
+
+  /// Returns true if the next term is a parameter passing specifier
+  /// and false if it is not.
+  bool isParameterPassingSpecifier();
 
   /// Given that isCXXDeclarationSpecifier returns \c TPResult::True or
   /// \c TPResult::Ambiguous, determine whether the decl-specifier would be
@@ -3115,6 +3122,7 @@ public:
                                     bool ObjectHadErrors,
                                     SourceLocation TemplateKWLoc,
                                     IdentifierInfo *Name,
+                                    bool NameSpliced,
                                     SourceLocation NameLoc,
                                     bool EnteringContext,
                                     UnqualifiedId &Id,
@@ -3398,6 +3406,9 @@ public:
     MapTypeModifiers;
     SmallVector<SourceLocation, NumberOfOMPMapClauseModifiers>
     MapTypeModifiersLoc;
+    SmallVector<OpenMPMotionModifierKind, NumberOfOMPMotionModifiers>
+        MotionModifiers;
+    SmallVector<SourceLocation, NumberOfOMPMotionModifiers> MotionModifiersLoc;
     bool IsMapTypeImplicit = false;
     SourceLocation ExtraModifierLoc;
   };
@@ -3411,8 +3422,8 @@ private:
       CXXScopeSpec &SS, ParsedType ObjectType, bool ObjectHadErrors,
       bool EnteringContext, bool AllowDestructorName, bool AllowConstructorName,
       bool AllowDeductionGuide, bool TemplateSpecified,
-      SourceLocation *TemplateKWLoc, IdentifierInfo *Id, SourceLocation IdLoc,
-      UnqualifiedId &Result);
+      SourceLocation *TemplateKWLoc, IdentifierInfo *Id,
+      bool IdSpliced, SourceLocation IdLoc, UnqualifiedId &Result);
 public:
   bool ParseUnqualifiedId(
       CXXScopeSpec &SS, ParsedType ObjectType, bool ObjectHadErrors,
@@ -3479,6 +3490,7 @@ private:
                                CXXScopeSpec &SS,
                                SourceLocation TemplateKWLoc,
                                UnqualifiedId &TemplateName,
+                               bool TemplateNameSpliced,
                                bool AllowTypeAnnotation = true,
                                bool TypeConstraint = false);
   void AnnotateTemplateIdTokenAsType(CXXScopeSpec &SS,

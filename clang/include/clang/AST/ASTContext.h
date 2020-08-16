@@ -44,6 +44,7 @@
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/MapVector.h"
@@ -230,6 +231,10 @@ class ASTContext : public RefCountedBase<ASTContext> {
   mutable llvm::FoldingSet<PipeType> PipeTypes;
   mutable llvm::FoldingSet<ExtIntType> ExtIntTypes;
   mutable llvm::FoldingSet<DependentExtIntType> DependentExtIntTypes;
+  mutable llvm::FoldingSet<InParameterType> InParameterTypes;
+  mutable llvm::FoldingSet<OutParameterType> OutParameterTypes;
+  mutable llvm::FoldingSet<InOutParameterType> InOutParameterTypes;
+  mutable llvm::FoldingSet<MoveParameterType> MoveParameterTypes;
 
   mutable llvm::FoldingSet<QualifiedTemplateName> QualifiedTemplateNames;
   mutable llvm::FoldingSet<DependentTemplateName> DependentTemplateNames;
@@ -1018,6 +1023,9 @@ public:
   // Implicitly-declared type 'struct _GUID'.
   mutable TagDecl *MSGuidTagDecl = nullptr;
 
+  /// Keep track of CUDA/HIP static device variables referenced by host code.
+  llvm::DenseSet<const VarDecl *> CUDAStaticDeviceVarReferencedByHost;
+
   ASTContext(LangOptions &LOpts, SourceManager &SM, IdentifierTable &idents,
              SelectorTable &sels, Builtin::Context &builtins);
   ASTContext(const ASTContext &) = delete;
@@ -1385,6 +1393,16 @@ public:
     return getFunctionTypeInternal(ResultTy, Args, EPI, false);
   }
 
+private:
+  template<typename T>
+  QualType getParameterType(llvm::FoldingSet<T>& Types, QualType ParmType);
+
+public:
+  QualType getInParameterType(QualType ParmType) const;
+  QualType getOutParameterType(QualType ParmType) const;
+  QualType getInOutParameterType(QualType ParmType) const;
+  QualType getMoveParameterType(QualType ParmType) const;
+
   QualType adjustStringLiteralBaseType(QualType StrLTy) const;
 
 private:
@@ -1485,8 +1503,16 @@ public:
   void getInjectedTemplateArgs(const TemplateParameterList *Params,
                                SmallVectorImpl<TemplateArgument> &Args);
 
+  /// Form a pack expansion type with the given pattern.
+  /// \param NumExpansions The number of expansions for the pack, if known.
+  /// \param ExpectPackInType If \c false, we should not expect \p Pattern to
+  ///        contain an unexpanded pack. This only makes sense if the pack
+  ///        expansion is used in a context where the arity is inferred from
+  ///        elsewhere, such as if the pattern contains a placeholder type or
+  ///        if this is the canonical type of another pack expansion type.
   QualType getPackExpansionType(QualType Pattern,
-                                Optional<unsigned> NumExpansions);
+                                Optional<unsigned> NumExpansions,
+                                bool ExpectPackInType = true);
 
   QualType getCXXDependentVariadicReifierType(Expr *Range, SourceLocation KWLoc,
                                               SourceLocation EllipsisLoc,
@@ -1527,6 +1553,14 @@ public:
 
   /// C++11 decltype.
   QualType getDecltypeType(Expr *e, QualType UnderlyingType) const;
+
+  /// Dependent identifier splice type.
+  QualType getDependentIdentifierSpliceType(
+      NestedNameSpecifier *NNS, IdentifierInfo *II,
+      const TemplateArgumentListInfo &TemplateArgs) const;
+  QualType getDependentIdentifierSpliceType(
+      NestedNameSpecifier *NNS, IdentifierInfo *II,
+      ArrayRef<TemplateArgument> TemplateArgs) const;
 
   /// \brief Reflected types.
   QualType getReflectedType(Expr *e, QualType UnderlyingType) const;
@@ -3054,6 +3088,9 @@ public:
 
   /// Return a new OMPTraitInfo object owned by this context.
   OMPTraitInfo &getNewOMPTraitInfo();
+
+  /// Whether a C++ static variable should be externalized.
+  bool shouldExternalizeStaticVar(const Decl *D) const;
 
 private:
   /// All OMPTraitInfo objects live in this collection, one per

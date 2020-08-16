@@ -2890,6 +2890,14 @@ addAssociatedClassesAndNamespaces(AssociatedLookup &Result, QualType Ty) {
       T = cast<ReferenceType>(T)->getPointeeType().getTypePtr();
       continue;
 
+    // Treat parameter types like references
+    case Type::InParameter:
+    case Type::OutParameter:
+    case Type::InOutParameter:
+    case Type::MoveParameter:
+      T = cast<ParameterType>(T)->getParameterType().getTypePtr();
+      break;
+
     // These are fundamental types.
     case Type::Vector:
     case Type::ExtVector:
@@ -2999,7 +3007,6 @@ ObjCProtocolDecl *Sema::LookupProtocol(IdentifierInfo *II,
 }
 
 void Sema::LookupOverloadedOperatorName(OverloadedOperatorKind Op, Scope *S,
-                                        QualType T1, QualType T2,
                                         UnresolvedSetImpl &Functions) {
   // C++ [over.match.oper]p3:
   //     -- The set of non-member candidates is the result of the

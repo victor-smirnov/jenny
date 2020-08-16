@@ -421,7 +421,24 @@ let Class = ReflectedType in {
   }
 
   def : Creator<[{
-    return ctx.getDecltypeType(reflection, underlyingType);
+    return ctx.getReflectedType(reflection, underlyingType);
+  }]>;
+}
+
+let Class = DependentIdentifierSpliceType in {
+  def : Property<"qualifier", NestedNameSpecifier> {
+    let Read = [{ node->getQualifier() }];
+  }
+  def : Property<"identifier", Identifier> {
+    let Read = [{ node->getIdentifierInfo() }];
+  }
+  def : Property<"templateArguments", Array<TemplateArgument>> {
+    let Read = [{ node->template_arguments() }];
+  }
+
+  def : Creator<[{
+    return ctx.getDependentIdentifierSpliceType(qualifier, identifier,
+                                                templateArguments);
   }]>;
 }
 
@@ -735,7 +752,8 @@ let Class = PackExpansionType in {
   }
 
   def : Creator<[{
-    return ctx.getPackExpansionType(pattern, numExpansions);
+    return ctx.getPackExpansionType(pattern, numExpansions,
+                                    /*ExpectPackInType*/false);
   }]>;
 }
 
@@ -934,5 +952,51 @@ let Class = DependentExtIntType in {
   }
   def : Creator<[{
     return ctx.getDependentExtIntType(isUnsigned, numBitsExpr);
+  }]>;
+}
+
+let Class = ParameterType in {
+  def : Property<"parameterType", QualType> {
+    let Read = [{ node->getParameterType() }];
+  }
+}
+
+let Class = InParameterType in {
+  def : Property<"parameterType", QualType> {
+    let Read = [{ node->getParameterType() }];
+  }
+
+  def : Creator<[{
+    return ctx.getInParameterType(parameterType);
+  }]>;
+}
+
+let Class = OutParameterType in {
+  def : Property<"parameterType", QualType> {
+    let Read = [{ node->getParameterType() }];
+  }
+
+  def : Creator<[{
+    return ctx.getOutParameterType(parameterType);
+  }]>;
+}
+
+let Class = InOutParameterType in {
+  def : Property<"parameterType", QualType> {
+    let Read = [{ node->getParameterType() }];
+  }
+
+  def : Creator<[{
+    return ctx.getInOutParameterType(parameterType);
+  }]>;
+}
+
+let Class = MoveParameterType in {
+  def : Property<"parameterType", QualType> {
+    let Read = [{ node->getParameterType() }];
+  }
+
+  def : Creator<[{
+    return ctx.getMoveParameterType(parameterType);
   }]>;
 }

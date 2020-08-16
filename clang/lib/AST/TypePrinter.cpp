@@ -212,6 +212,7 @@ bool TypePrinter::canPrefixQualifiers(const Type *T,
     case Type::TypeOfExpr:
     case Type::TypeOf:
     case Type::Decltype:
+    case Type::DependentIdentifierSplice:
     case Type::Reflected:
     case Type::UnaryTransform:
     case Type::Record:
@@ -267,6 +268,10 @@ bool TypePrinter::canPrefixQualifiers(const Type *T,
     case Type::SubstTemplateTypeParm:
     case Type::MacroQualified:
     case Type::CXXDependentVariadicReifier:
+    case Type::InParameter:
+    case Type::OutParameter:
+    case Type::InOutParameter:
+    case Type::MoveParameter:
       CanPrefixQualifiers = false;
       break;
 
@@ -1062,6 +1067,25 @@ void TypePrinter::printDecltypeBefore(const DecltypeType *T, raw_ostream &OS) {
 
 void TypePrinter::printDecltypeAfter(const DecltypeType *T, raw_ostream &OS) {}
 
+void TypePrinter::printDependentIdentifierSpliceBefore(
+    const DependentIdentifierSpliceType *T, raw_ostream &OS) {
+  NestedNameSpecifier *Qualifier = T->getQualifier();
+  if (Qualifier)
+    Qualifier->print(OS, Policy);
+
+  OS << "unqualid(" << T->getIdentifierInfo()->getName() << ")";
+
+  if (T->getNumArgs()) {
+    IncludeStrongLifetimeRAII Strong(Policy);
+    printTemplateArgumentList(OS, T->template_arguments(), Policy);
+  }
+
+  spaceBeforePlaceHolder(OS);
+}
+
+void TypePrinter::printDependentIdentifierSpliceAfter(
+    const DependentIdentifierSpliceType *T, raw_ostream &OS) { }
+
 void TypePrinter::printReflectedBefore(const ReflectedType *T,
                                        raw_ostream &OS) {
   if (T->isDependentType()) {
@@ -1197,6 +1221,50 @@ void TypePrinter::printDependentExtIntBefore(const DependentExtIntType *T,
 
 void TypePrinter::printDependentExtIntAfter(const DependentExtIntType *T,
                                             raw_ostream &OS) {}
+
+namespace
+{
+  void printParameterType(TypePrinter &TP, const char *Mode,
+                          const ParameterType *T, raw_ostream &OS) {
+
+    OS << Mode << ' ';
+    TP.print(T->getParameterType(), OS, StringRef());
+  }
+}
+
+void TypePrinter::printInParameterBefore(const InParameterType *T,
+                                         raw_ostream &OS) {
+  printParameterType(*this, "in", T, OS);
+}
+
+void TypePrinter::printInParameterAfter(const InParameterType *T,
+                                        raw_ostream &OS) {}
+
+void TypePrinter::printOutParameterBefore(const OutParameterType *T,
+                                          raw_ostream &OS) {
+  printParameterType(*this, "out", T, OS);
+}
+
+void TypePrinter::printOutParameterAfter(const OutParameterType *T,
+                                         raw_ostream &OS) {}
+
+
+void TypePrinter::printInOutParameterBefore(const InOutParameterType *T,
+                                            raw_ostream &OS) {
+  printParameterType(*this, "inout", T, OS);
+}
+
+void TypePrinter::printInOutParameterAfter(const InOutParameterType *T,
+                                           raw_ostream &OS) {}
+
+
+void TypePrinter::printMoveParameterBefore(const MoveParameterType *T,
+                                           raw_ostream &OS) {
+  printParameterType(*this, "move", T, OS);
+}
+
+void TypePrinter::printMoveParameterAfter(const MoveParameterType *T,
+                                          raw_ostream &OS) {}
 
 /// Appends the given scope to the end of a string.
 void TypePrinter::AppendScope(DeclContext *DC, raw_ostream &OS) {
@@ -1604,6 +1672,8 @@ void TypePrinter::printAttributedAfter(const AttributedType *T,
 
   case attr::OpenCLPrivateAddressSpace:
   case attr::OpenCLGlobalAddressSpace:
+  case attr::OpenCLGlobalDeviceAddressSpace:
+  case attr::OpenCLGlobalHostAddressSpace:
   case attr::OpenCLLocalAddressSpace:
   case attr::OpenCLConstantAddressSpace:
   case attr::OpenCLGenericAddressSpace:
@@ -1906,6 +1976,10 @@ std::string Qualifiers::getAddrSpaceAsString(LangAS AS) {
     return "__constant";
   case LangAS::opencl_generic:
     return "__generic";
+  case LangAS::opencl_global_device:
+    return "__global_device";
+  case LangAS::opencl_global_host:
+    return "__global_host";
   case LangAS::cuda_device:
     return "__device__";
   case LangAS::cuda_constant:

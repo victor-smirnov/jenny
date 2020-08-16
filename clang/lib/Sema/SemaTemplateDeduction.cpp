@@ -1208,6 +1208,120 @@ static bool isForwardingReference(QualType Param, unsigned FirstInnerIndex) {
   return false;
 }
 
+///  Attempt to deduce the template arguments by checking the base types
+///  according to (C++20 [temp.deduct.call] p4b3.
+///
+/// \param S the semantic analysis object within which we are deducing.
+///
+/// \param RecordT the top level record object we are deducing against.
+///
+/// \param TemplateParams the template parameters that we are deducing.
+///
+/// \param SpecParam the template specialization parameter type.
+///
+/// \param Info information about the template argument deduction itself.
+///
+/// \param Deduced the deduced template arguments.
+///
+/// \returns the result of template argument deduction with the bases. "invalid"
+/// means no matches, "success" found a single item, and the
+/// "MiscellaneousDeductionFailure" result happens when the match is ambiguous.
+static Sema::TemplateDeductionResult DeduceTemplateBases(
+    Sema &S, const RecordType *RecordT, TemplateParameterList *TemplateParams,
+    const TemplateSpecializationType *SpecParam, TemplateDeductionInfo &Info,
+    SmallVectorImpl<DeducedTemplateArgument> &Deduced) {
+  // C++14 [temp.deduct.call] p4b3:
+  //   If P is a class and P has the form simple-template-id, then the
+  //   transformed A can be a derived class of the deduced A. Likewise if
+  //   P is a pointer to a class of the form simple-template-id, the
+  //   transformed A can be a pointer to a derived class pointed to by the
+  //   deduced A. However, if there is a class C that is a (direct or
+  //   indirect) base class of D and derived (directly or indirectly) from a
+  //   class B and that would be a valid deduced A, the deduced A cannot be
+  //   B or pointer to B, respectively.
+  //
+  //   These alternatives are considered only if type deduction would
+  //   otherwise fail. If they yield more than one possible deduced A, the
+  //   type deduction fails.
+
+  // Use a breadth-first search through the bases to collect the set of
+  // successful matches. Visited contains the set of nodes we have already
+  // visited, while ToVisit is our stack of records that we still need to
+  // visit.  Matches contains a list of matches that have yet to be
+  // disqualified.
+  llvm::SmallPtrSet<const RecordType *, 8> Visited;
+  SmallVector<const RecordType *, 8> ToVisit;
+  // We iterate over this later, so we have to use MapVector to ensure
+  // determinism.
+  llvm::MapVector<const RecordType *, SmallVector<DeducedTemplateArgument, 8>>
+      Matches;
+
+  auto AddBases = [&Visited, &ToVisit](const RecordType *RT) {
+    CXXRecordDecl *RD = cast<CXXRecordDecl>(RT->getDecl());
+    for (const auto &Base : RD->bases()) {
+      assert(Base.getType()->isRecordType() &&
+             "Base class that isn't a record?");
+      const RecordType *RT = Base.getType()->getAs<RecordType>();
+      if (Visited.insert(RT).second)
+        ToVisit.push_back(Base.getType()->getAs<RecordType>());
+    }
+  };
+
+  // Set up the loop by adding all the bases.
+  AddBases(RecordT);
+
+  // Search each path of bases until we either run into a successful match
+  // (where all bases of it are invalid), or we run out of bases.
+  while (!ToVisit.empty()) {
+    const RecordType *NextT = ToVisit.pop_back_val();
+
+    SmallVector<DeducedTemplateArgument, 8> DeducedCopy(Deduced.begin(),
+                                                        Deduced.end());
+    TemplateDeductionInfo BaseInfo(TemplateDeductionInfo::ForBase, Info);
+    Sema::TemplateDeductionResult BaseResult =
+        DeduceTemplateArguments(S, TemplateParams, SpecParam,
+                                QualType(NextT, 0), BaseInfo, DeducedCopy);
+
+    // If this was a successful deduction, add it to the list of matches,
+    // otherwise we need to continue searching its bases.
+    if (BaseResult == Sema::TDK_Success)
+      Matches.insert({NextT, DeducedCopy});
+    else
+      AddBases(NextT);
+  }
+
+  // At this point, 'Matches' contains a list of seemingly valid bases, however
+  // in the event that we have more than 1 match, it is possible that the base
+  // of one of the matches might be disqualified for being a base of another
+  // valid match. We can count on cyclical instantiations being invalid to
+  // simplify the disqualifications.  That is, if A & B are both matches, and B
+  // inherits from A (disqualifying A), we know that A cannot inherit from B.
+  if (Matches.size() > 1) {
+    Visited.clear();
+    for (const auto &Match : Matches)
+      AddBases(Match.first);
+
+    // We can give up once we have a single item (or have run out of things to
+    // search) since cyclical inheritence isn't valid.
+    while (Matches.size() > 1 && !ToVisit.empty()) {
+      const RecordType *NextT = ToVisit.pop_back_val();
+      Matches.erase(NextT);
+
+      // Always add all bases, since the inheritence tree can contain
+      // disqualifications for multiple matches.
+      AddBases(NextT);
+    }
+  }
+
+  if (Matches.empty())
+    return Sema::TDK_Invalid;
+  if (Matches.size() > 1)
+    return Sema::TDK_MiscellaneousDeductionFailure;
+
+  std::swap(Matches.front().second, Deduced);
+  return Sema::TDK_Success;
+}
+
 /// Deduce the template arguments by comparing the parameter type and
 /// the argument type (C++ [temp.deduct.type]).
 ///
@@ -1794,78 +1908,15 @@ DeduceTemplateArgumentsByTypeMatch(Sema &S,
       if (!S.isCompleteType(Info.getLocation(), Arg))
         return Result;
 
-      // C++14 [temp.deduct.call] p4b3:
-      //   If P is a class and P has the form simple-template-id, then the
-      //   transformed A can be a derived class of the deduced A. Likewise if
-      //   P is a pointer to a class of the form simple-template-id, the
-      //   transformed A can be a pointer to a derived class pointed to by the
-      //   deduced A.
-      //
-      //   These alternatives are considered only if type deduction would
-      //   otherwise fail. If they yield more than one possible deduced A, the
-      //   type deduction fails.
-
       // Reset the incorrectly deduced argument from above.
       Deduced = DeducedOrig;
 
-      // Use data recursion to crawl through the list of base classes.
-      // Visited contains the set of nodes we have already visited, while
-      // ToVisit is our stack of records that we still need to visit.
-      llvm::SmallPtrSet<const RecordType *, 8> Visited;
-      SmallVector<const RecordType *, 8> ToVisit;
-      ToVisit.push_back(RecordT);
-      bool Successful = false;
-      SmallVector<DeducedTemplateArgument, 8> SuccessfulDeduced;
-      while (!ToVisit.empty()) {
-        // Retrieve the next class in the inheritance hierarchy.
-        const RecordType *NextT = ToVisit.pop_back_val();
+      // Check bases according to C++14 [temp.deduct.call] p4b3:
+      Sema::TemplateDeductionResult BaseResult = DeduceTemplateBases(
+          S, RecordT, TemplateParams, SpecParam, Info, Deduced);
 
-        // If we have already seen this type, skip it.
-        if (!Visited.insert(NextT).second)
-          continue;
-
-        // If this is a base class, try to perform template argument
-        // deduction from it.
-        if (NextT != RecordT) {
-          TemplateDeductionInfo BaseInfo(TemplateDeductionInfo::ForBase, Info);
-          Sema::TemplateDeductionResult BaseResult =
-              DeduceTemplateArguments(S, TemplateParams, SpecParam,
-                                      QualType(NextT, 0), BaseInfo, Deduced);
-
-          // If template argument deduction for this base was successful,
-          // note that we had some success. Otherwise, ignore any deductions
-          // from this base class.
-          if (BaseResult == Sema::TDK_Success) {
-            // If we've already seen some success, then deduction fails due to
-            // an ambiguity (temp.deduct.call p5).
-            if (Successful)
-              return Sema::TDK_MiscellaneousDeductionFailure;
-
-            Successful = true;
-            std::swap(SuccessfulDeduced, Deduced);
-
-            Info.Param = BaseInfo.Param;
-            Info.FirstArg = BaseInfo.FirstArg;
-            Info.SecondArg = BaseInfo.SecondArg;
-          }
-
-          Deduced = DeducedOrig;
-        }
-
-        // Visit base classes
-        CXXRecordDecl *Next = cast<CXXRecordDecl>(NextT->getDecl());
-        for (const auto &Base : Next->bases()) {
-          assert(Base.getType()->isRecordType() &&
-                 "Base class that isn't a record?");
-          ToVisit.push_back(Base.getType()->getAs<RecordType>());
-        }
-      }
-
-      if (Successful) {
-        std::swap(SuccessfulDeduced, Deduced);
-        return Sema::TDK_Success;
-      }
-
+      if (BaseResult != Sema::TDK_Invalid)
+        return BaseResult;
       return Result;
     }
 
@@ -2110,24 +2161,23 @@ DeduceTemplateArgumentsByTypeMatch(Sema &S,
               Expr::EvalContext EvalCtx(
                   S.Context, S.GetReflectionCallbackObj());
 
-              llvm::APSInt ParamConst(
-                  S.Context.getTypeSize(S.Context.getSizeType()));
-              if (!ParamExpr->isIntegerConstantExpr(ParamConst, EvalCtx))
+              Optional<llvm::APSInt> ParamConst =
+                  ParamExpr->getIntegerConstantExpr(EvalCtx);
+              if (!ParamConst)
                 return Sema::TDK_NonDeducedMismatch;
 
               if (ArgConstMatrix) {
-                if ((ArgConstMatrix->*GetArgDimension)() == ParamConst)
+                if ((ArgConstMatrix->*GetArgDimension)() == ParamConst.getValue())
                   return Sema::TDK_Success;
                 return Sema::TDK_NonDeducedMismatch;
               }
 
               Expr *ArgExpr = (ArgDepMatrix->*GetArgDimensionExpr)();
-              llvm::APSInt ArgConst(
-                  S.Context.getTypeSize(S.Context.getSizeType()));
-              if (!ArgExpr->isValueDependent() &&
-                  ArgExpr->isIntegerConstantExpr(ArgConst, EvalCtx) &&
-                  ArgConst == ParamConst)
-                return Sema::TDK_Success;
+              if (!ArgExpr->isValueDependent())
+                if (Optional<llvm::APSInt> ArgConst =
+                        ArgExpr->getIntegerConstantExpr(EvalCtx))
+                  if (*ArgConst == *ParamConst)
+                    return Sema::TDK_Success;
               return Sema::TDK_NonDeducedMismatch;
             }
 
@@ -2241,11 +2291,19 @@ DeduceTemplateArgumentsByTypeMatch(Sema &S,
       return Sema::TDK_NonDeducedMismatch;
     }
 
+    case Type::InParameter:
+    case Type::OutParameter:
+    case Type::InOutParameter:
+    case Type::MoveParameter:
+      // FIXME: The above parameter types should likely can be usable
+      // for deduction. If this is changed, make sure to update
+      // MarkUsedTemplateParameters.
     case Type::TypeOfExpr:
     case Type::TypeOf:
     case Type::DependentName:
     case Type::UnresolvedUsing:
     case Type::Decltype:
+    case Type::DependentIdentifierSplice:
     case Type::Reflected:
     case Type::UnaryTransform:
     case Type::Auto:
@@ -3837,8 +3895,11 @@ static bool AdjustFunctionParmAndArgTypesForDeduction(
     //   If P is a forwarding reference and the argument is an lvalue, the type
     //   "lvalue reference to A" is used in place of A for type deduction.
     if (isForwardingReference(QualType(ParamRefType, 0), FirstInnerIndex) &&
-        Arg->isLValue())
+        Arg->isLValue()) {
+      if (S.getLangOpts().OpenCL)
+        ArgType = S.Context.getAddrSpaceQualType(ArgType, LangAS::opencl_generic);
       ArgType = S.Context.getLValueReferenceType(ArgType);
+    }
   } else {
     // C++ [temp.deduct.call]p2:
     //   If P is not a reference type:
@@ -4919,6 +4980,13 @@ TypeSourceInfo *Sema::SubstAutoTypeSourceInfo(TypeSourceInfo *TypeWithAuto,
 
 QualType Sema::ReplaceAutoType(QualType TypeWithAuto,
                                QualType TypeToReplaceAuto) {
+  return SubstituteDeducedTypeTransform(*this, TypeToReplaceAuto,
+                                        /*UseTypeSugar*/ false)
+      .TransformType(TypeWithAuto);
+}
+
+TypeSourceInfo *Sema::ReplaceAutoTypeSourceInfo(TypeSourceInfo *TypeWithAuto,
+                                                QualType TypeToReplaceAuto) {
   return SubstituteDeducedTypeTransform(*this, TypeToReplaceAuto,
                                         /*UseTypeSugar*/ false)
       .TransformType(TypeWithAuto);
@@ -6026,6 +6094,19 @@ MarkUsedTemplateParameters(ASTContext &Ctx, QualType T,
                                  OnlyDeduced, Depth, Used);
     break;
 
+  case Type::DependentIdentifierSplice: {
+    const DependentIdentifierSpliceType *SpliceTy
+      = cast<DependentIdentifierSpliceType>(T);
+
+    MarkUsedTemplateParameters(Ctx, SpliceTy->getQualifier(),
+                               OnlyDeduced, Depth, Used);
+
+    for (unsigned I = 0, N = SpliceTy->getNumArgs(); I != N; ++I)
+      MarkUsedTemplateParameters(Ctx, SpliceTy->getArg(I), OnlyDeduced, Depth,
+                                 Used);
+    break;
+  }
+
   case Type::Reflected:
     if (!OnlyDeduced)
       MarkUsedTemplateParameters(Ctx,
@@ -6057,6 +6138,13 @@ MarkUsedTemplateParameters(ASTContext &Ctx, QualType T,
                                cast<DependentExtIntType>(T)->getNumBitsExpr(),
                                OnlyDeduced, Depth, Used);
     break;
+
+  // FIXME: If these are changed to be used by deduction, this needs
+  // updated.
+  case Type::InParameter:
+  case Type::OutParameter:
+  case Type::InOutParameter:
+  case Type::MoveParameter:
 
   // None of these types have any template parameters in them.
   case Type::Builtin:

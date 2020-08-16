@@ -754,10 +754,10 @@ canonicalizeImmediatelyDeclaredConstraint(const ASTContext &C, Expr *IDC,
       CSE->isInstantiationDependent(), CSE->containsUnexpandedParameterPack());
 
   if (auto *OrigFold = dyn_cast<CXXFoldExpr>(IDC))
-    NewIDC = new (C) CXXFoldExpr(OrigFold->getType(), SourceLocation(), NewIDC,
-                                 BinaryOperatorKind::BO_LAnd,
-                                 SourceLocation(), /*RHS=*/nullptr,
-                                 SourceLocation(), /*NumExpansions=*/None);
+    NewIDC = new (C) CXXFoldExpr(
+        OrigFold->getType(), /*Callee*/nullptr, SourceLocation(), NewIDC,
+        BinaryOperatorKind::BO_LAnd, SourceLocation(), /*RHS=*/nullptr,
+        SourceLocation(), /*NumExpansions=*/None);
   return NewIDC;
 }
 
@@ -920,18 +920,20 @@ static const LangASMap *getAddressSpaceMap(const TargetInfo &T,
     // The fake address space map must have a distinct entry for each
     // language-specific address space.
     static const unsigned FakeAddrSpaceMap[] = {
-        0, // Default
-        1, // opencl_global
-        3, // opencl_local
-        2, // opencl_constant
-        0, // opencl_private
-        4, // opencl_generic
-        5, // cuda_device
-        6, // cuda_constant
-        7, // cuda_shared
-        8, // ptr32_sptr
-        9, // ptr32_uptr
-        10 // ptr64
+        0,  // Default
+        1,  // opencl_global
+        3,  // opencl_local
+        2,  // opencl_constant
+        0,  // opencl_private
+        4,  // opencl_generic
+        5,  // opencl_global_device
+        6,  // opencl_global_host
+        7,  // cuda_device
+        8,  // cuda_constant
+        9,  // cuda_shared
+        10, // ptr32_sptr
+        11, // ptr32_uptr
+        12  // ptr64
     };
     return &FakeAddrSpaceMap;
   } else {
@@ -2369,6 +2371,12 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
     Width = Target->getPointerWidth(getTargetAddressSpace(LangAS::opencl_global));
     Align = Target->getPointerAlign(getTargetAddressSpace(LangAS::opencl_global));
     break;
+
+  case Type::InParameter:
+  case Type::OutParameter:
+  case Type::InOutParameter:
+  case Type::MoveParameter:
+    return getTypeInfo(cast<ParameterType>(T)->getParameterType().getTypePtr());
   }
 
   assert(llvm::isPowerOf2_32(Align) && "Alignment must be power of 2");
@@ -2447,8 +2455,8 @@ CharUnits ASTContext::getTypeUnadjustedAlignInChars(const Type *T) const {
 
 /// getPreferredTypeAlign - Return the "preferred" alignment of the specified
 /// type for the current target in bits.  This can be different than the ABI
-/// alignment in cases where it is beneficial for performance to overalign
-/// a data type.
+/// alignment in cases where it is beneficial for performance or backwards
+/// compatibility preserving to overalign a data type.
 unsigned ASTContext::getPreferredTypeAlign(const Type *T) const {
   TypeInfo TI = getTypeInfo(T);
   unsigned ABIAlign = TI.Align;
@@ -2458,18 +2466,33 @@ unsigned ASTContext::getPreferredTypeAlign(const Type *T) const {
   // The preferred alignment of member pointers is that of a pointer.
   if (T->isMemberPointerType())
     return getPreferredTypeAlign(getPointerDiffType().getTypePtr());
-
+ 
   if (!Target->allowsLargerPreferedTypeAlignment())
     return ABIAlign;
 
-  // Double and long long should be naturally aligned if possible.
+  if (const auto *RT = T->getAs<RecordType>()) {
+    if (TI.AlignIsRequired)
+      return ABIAlign;
+
+    unsigned PreferredAlign = static_cast<unsigned>(
+        toBits(getASTRecordLayout(RT->getDecl()).PreferredAlignment));
+    assert(PreferredAlign >= ABIAlign &&
+           "PreferredAlign should be at least as large as ABIAlign.");
+    return PreferredAlign;
+  }
+
+  // Double (and, for targets supporting AIX `power` alignment, long double) and
+  // long long should be naturally aligned (despite requiring less alignment) if
+  // possible.
   if (const auto *CT = T->getAs<ComplexType>())
     T = CT->getElementType().getTypePtr();
   if (const auto *ET = T->getAs<EnumType>())
     T = ET->getDecl()->getIntegerType().getTypePtr();
   if (T->isSpecificBuiltinType(BuiltinType::Double) ||
       T->isSpecificBuiltinType(BuiltinType::LongLong) ||
-      T->isSpecificBuiltinType(BuiltinType::ULongLong))
+      T->isSpecificBuiltinType(BuiltinType::ULongLong) ||
+      (T->isSpecificBuiltinType(BuiltinType::LongDouble) &&
+       Target->defaultsToAIXPowerAlignment()))
     // Don't increase the alignment if an alignment attribute was specified on a
     // typedef declaration.
     if (!TI.AlignIsRequired)
@@ -3344,6 +3367,161 @@ QualType ASTContext::getRValueReferenceType(QualType T) const {
   return QualType(New, 0);
 }
 
+template<typename ConcreteType>
+QualType ASTContext::getParameterType(llvm::FoldingSet<ConcreteType> &Set,
+                                      QualType ParmType) {
+  // Search for a previously created value of the type.
+  llvm::FoldingSetNodeID ID;
+  ConcreteType::Profile(ID, ParmType, PPK_in);
+  void *InsertPos = nullptr;
+  if (ConcreteType *ParmTy = Set.FindNodeOrInsertPos(ID, InsertPos))
+    return QualType(ParmTy, 0);
+
+  // Find the canonical type of the parameter if it isn't already so.
+  QualType Canonical;
+  if (!ParmType.isCanonical()) {
+    Canonical = getParameterType(Set, getCanonicalType(ParmType));
+
+    // Update the insert position for the non-canonical type being added.
+    auto *NewIP = Set.FindNodeOrInsertPos(ID, InsertPos);
+    assert(!NewIP && "Shouldn't be in the map!"); (void)NewIP;
+  }
+
+  // Build and register the type.
+  auto *NewTy = new (*this, TypeAlignment) ConcreteType(ParmType, Canonical);
+  Types.push_back(NewTy);
+  Set.InsertNode(NewTy, InsertPos);
+  return QualType(NewTy, 0);
+}
+
+QualType ASTContext::getInParameterType(QualType T) const {
+  // Search for a previously created value of the type.
+  llvm::FoldingSetNodeID ID;
+  InParameterType::Profile(ID, T, PPK_in);
+  void *InsertPos = nullptr;
+  if (InParameterType *ParmTy =
+        InParameterTypes.FindNodeOrInsertPos(ID, InsertPos))
+    return QualType(ParmTy, 0);
+
+  // Find the canonical type of the parameter if it isn't already so.
+  QualType Canonical;
+  if (!T.isCanonical()) {
+    Canonical = getInParameterType(getCanonicalType(T));
+
+    // Update the insert position for the non-canonical type being added.
+    auto *NewIP = InParameterTypes.FindNodeOrInsertPos(ID, InsertPos);
+    assert(!NewIP && "Shouldn't be in the map!"); (void)NewIP;
+  }
+
+  // Build the adjusted type. Input types are passed by value if scalar and
+  // non-trivial. For large or non-trivial classes, we pass by reference.
+  QualType Adjusted = T;
+  if (CXXRecordDecl *Class = T->getAsCXXRecordDecl())
+    if (!Class->canPassInRegisters())
+      Adjusted = getLValueReferenceType(T);
+
+  // Build and register the type.
+  auto *NewTy =
+    new (*this, TypeAlignment) InParameterType(T, Canonical, Adjusted);
+  Types.push_back(NewTy);
+  InParameterTypes.InsertNode(NewTy, InsertPos);
+  return QualType(NewTy, 0);
+}
+
+QualType ASTContext::getOutParameterType(QualType T) const {
+  // Search for a previously created value of the type.
+  llvm::FoldingSetNodeID ID;
+  OutParameterType::Profile(ID, T, PPK_in);
+  void *InsertPos = nullptr;
+  if (OutParameterType *ParmTy =
+        OutParameterTypes.FindNodeOrInsertPos(ID, InsertPos))
+    return QualType(ParmTy, 0);
+
+  // Find the canonical type of the parameter if it isn't already so.
+  QualType Canonical;
+  if (!T.isCanonical()) {
+    Canonical = getOutParameterType(getCanonicalType(T));
+
+    // Update the insert position for the non-canonical type being added.
+    auto *NewIP = OutParameterTypes.FindNodeOrInsertPos(ID, InsertPos);
+    assert(!NewIP && "Shouldn't be in the map!"); (void)NewIP;
+  }
+
+  // Build the adjusted type. This is an lvalue reference.
+  QualType Adjusted = getLValueReferenceType(T);
+
+  // Build and register the type.
+  auto *NewTy =
+    new (*this, TypeAlignment) OutParameterType(T, Canonical, Adjusted);
+  Types.push_back(NewTy);
+  OutParameterTypes.InsertNode(NewTy, InsertPos);
+  return QualType(NewTy, 0);
+}
+
+QualType ASTContext::getInOutParameterType(QualType T) const {
+  // Search for a previously created value of the type.
+  llvm::FoldingSetNodeID ID;
+  InOutParameterType::Profile(ID, T, PPK_in);
+  void *InsertPos = nullptr;
+  if (InOutParameterType *ParmTy =
+        InOutParameterTypes.FindNodeOrInsertPos(ID, InsertPos))
+    return QualType(ParmTy, 0);
+
+  // Find the canonical type of the parameter if it isn't already so.
+  QualType Canonical;
+  if (!T.isCanonical()) {
+    Canonical = getInOutParameterType(getCanonicalType(T));
+
+    // Update the insert position for the non-canonical type being added.
+    auto *NewIP = InOutParameterTypes.FindNodeOrInsertPos(ID, InsertPos);
+    assert(!NewIP && "Shouldn't be in the map!"); (void)NewIP;
+  }
+
+  // Build the adjusted type. This is an lvalue reference.
+  QualType Adjusted = getLValueReferenceType(T);
+
+  // Build and register the type.
+  auto *NewTy =
+    new (*this, TypeAlignment) InOutParameterType(T, Canonical, Adjusted);
+  Types.push_back(NewTy);
+  InOutParameterTypes.InsertNode(NewTy, InsertPos);
+  return QualType(NewTy, 0);
+}
+
+QualType ASTContext::getMoveParameterType(QualType T) const {
+  // Search for a previously created value of the type.
+  llvm::FoldingSetNodeID ID;
+  MoveParameterType::Profile(ID, T, PPK_in);
+  void *InsertPos = nullptr;
+  if (MoveParameterType *ParmTy =
+        MoveParameterTypes.FindNodeOrInsertPos(ID, InsertPos))
+    return QualType(ParmTy, 0);
+
+  // Find the canonical type of the parameter if it isn't already so.
+  QualType Canonical;
+  if (!T.isCanonical()) {
+    Canonical = getMoveParameterType(getCanonicalType(T));
+
+    // Update the insert position for the non-canonical type being added.
+    auto *NewIP = MoveParameterTypes.FindNodeOrInsertPos(ID, InsertPos);
+    assert(!NewIP && "Shouldn't be in the map!"); (void)NewIP;
+  }
+
+  // Build the adjusted type. Move types are passed by value if scalar and
+  // non-trivial. For large or non-trivial classes, we pass by rvalue reference.
+  QualType Adjusted = T;
+  if (CXXRecordDecl *Class = T->getAsCXXRecordDecl())
+    if (!Class->canPassInRegisters())
+      Adjusted = getRValueReferenceType(T);
+
+  // Build and register the type.
+  auto *NewTy =
+    new (*this, TypeAlignment) MoveParameterType(T, Canonical, Adjusted);
+  Types.push_back(NewTy);
+  MoveParameterTypes.InsertNode(NewTy, InsertPos);
+  return QualType(NewTy, 0);
+}
+
 /// getMemberPointerType - Return the uniqued reference to the type for a
 /// member pointer to the specified type, in the specified class.
 QualType ASTContext::getMemberPointerType(QualType T, const Type *Cls) const {
@@ -3480,7 +3658,12 @@ QualType ASTContext::getVariableArrayDecayedType(QualType type) const {
   case Type::ExtInt:
   case Type::DependentExtInt:
   case Type::CXXDependentVariadicReifier:
+  case Type::DependentIdentifierSplice:
   case Type::CXXRequiredType:
+  case Type::InParameter:
+  case Type::OutParameter:
+  case Type::InOutParameter:
+  case Type::MoveParameter:
     llvm_unreachable("type should never be variably-modified");
 
   // These types can be variably-modified but should never need to
@@ -4838,37 +5021,27 @@ ASTContext::getInjectedTemplateArgs(const TemplateParameterList *Params,
 }
 
 QualType ASTContext::getPackExpansionType(QualType Pattern,
-                                          Optional<unsigned> NumExpansions) {
+                                          Optional<unsigned> NumExpansions,
+                                          bool ExpectPackInType) {
+  assert((!ExpectPackInType || Pattern->containsUnexpandedParameterPack()) &&
+         "Pack expansions must expand one or more parameter packs");
+
   llvm::FoldingSetNodeID ID;
   PackExpansionType::Profile(ID, Pattern, NumExpansions);
 
-  // A deduced type can deduce to a pack, eg
-  //   auto ...x = some_pack;
-  // That declaration isn't (yet) valid, but is created as part of building an
-  // init-capture pack:
-  //   [...x = some_pack] {}
-  assert((Pattern->containsUnexpandedParameterPack() ||
-          Pattern->getContainedDeducedType()) &&
-         "Pack expansions must expand one or more parameter packs");
   void *InsertPos = nullptr;
-  PackExpansionType *T
-    = PackExpansionTypes.FindNodeOrInsertPos(ID, InsertPos);
+  PackExpansionType *T = PackExpansionTypes.FindNodeOrInsertPos(ID, InsertPos);
   if (T)
     return QualType(T, 0);
 
   QualType Canon;
   if (!Pattern.isCanonical()) {
-    Canon = getCanonicalType(Pattern);
-    // The canonical type might not contain an unexpanded parameter pack, if it
-    // contains an alias template specialization which ignores one of its
-    // parameters.
-    if (Canon->containsUnexpandedParameterPack()) {
-      Canon = getPackExpansionType(Canon, NumExpansions);
+    Canon = getPackExpansionType(getCanonicalType(Pattern), NumExpansions,
+                                 /*ExpectPackInType=*/false);
 
-      // Find the insert position again, in case we inserted an element into
-      // PackExpansionTypes and invalidated our insert position.
-      PackExpansionTypes.FindNodeOrInsertPos(ID, InsertPos);
-    }
+    // Find the insert position again, in case we inserted an element into
+    // PackExpansionTypes and invalidated our insert position.
+    PackExpansionTypes.FindNodeOrInsertPos(ID, InsertPos);
   }
 
   T = new (*this, TypeAlignment)
@@ -5324,6 +5497,24 @@ QualType ASTContext::getDecltypeType(Expr *e, QualType UnderlyingType) const {
   }
   Types.push_back(dt);
   return QualType(dt, 0);
+}
+
+QualType ASTContext::getDependentIdentifierSpliceType(
+    NestedNameSpecifier *NNS, IdentifierInfo *II,
+    const TemplateArgumentListInfo &TemplateArgs) const {
+  llvm::SmallVector<TemplateArgument, 8> TemplateArgsArr;
+  for (auto &ArgLoc : TemplateArgs.arguments())
+    TemplateArgsArr.push_back(ArgLoc.getArgument());
+
+  return getDependentIdentifierSpliceType(NNS, II, TemplateArgsArr);
+}
+
+QualType ASTContext::getDependentIdentifierSpliceType(
+    NestedNameSpecifier *NNS, IdentifierInfo *II,
+    ArrayRef<TemplateArgument> TemplateArgs) const {
+  auto *T = DependentIdentifierSpliceType::Create(*this, NNS, II, TemplateArgs);
+  Types.push_back(T);
+  return QualType(T, 0);
 }
 
 QualType ASTContext::getReflectedType(Expr *E, QualType T) const {
@@ -7582,6 +7773,10 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string &S,
 
   case Type::Pipe:
   case Type::ExtInt:
+  case Type::InParameter:
+  case Type::OutParameter:
+  case Type::InOutParameter:
+  case Type::MoveParameter:
 #define ABSTRACT_TYPE(KIND, BASE)
 #define TYPE(KIND, BASE)
 #define DEPENDENT_TYPE(KIND, BASE) \
@@ -9489,6 +9684,10 @@ QualType ASTContext::mergeTypes(QualType LHS, QualType RHS,
   case Type::LValueReference:
   case Type::RValueReference:
   case Type::MemberPointer:
+  case Type::InParameter:
+  case Type::OutParameter:
+  case Type::InOutParameter:
+  case Type::MoveParameter:
     llvm_unreachable("C++ should never be in mergeTypes");
 
   case Type::ObjCInterface:
@@ -9597,17 +9796,12 @@ QualType ASTContext::mergeTypes(QualType LHS, QualType RHS,
           const ConstantArrayType* CAT)
           -> std::pair<bool,llvm::APInt> {
         if (VAT) {
-          llvm::APSInt TheInt;
+          Optional<llvm::APSInt> TheInt{};
           Expr *E = VAT->getSizeExpr();
           Expr::EvalContext EvalCtx(*this, nullptr);
-          if (E && E->isIntegerConstantExpr(TheInt, EvalCtx))
-            return std::make_pair(true, TheInt);
-          else
-            return std::make_pair(false, TheInt);
-        } else if (CAT) {
-            return std::make_pair(true, CAT->getSize());
-        } else {
-            return std::make_pair(false, llvm::APInt());
+          if (E && (TheInt = E->getIntegerConstantExpr(EvalCtx)))
+            return std::make_pair(true, *TheInt);
+          return std::make_pair(false, llvm::APSInt());
         }
         if (CAT)
           return std::make_pair(true, CAT->getSize());
@@ -10403,12 +10597,17 @@ static GVALinkage adjustGVALinkageForAttributes(const ASTContext &Context,
   } else if (D->hasAttr<DLLExportAttr>()) {
     if (L == GVA_DiscardableODR)
       return GVA_StrongODR;
-  } else if (Context.getLangOpts().CUDA && Context.getLangOpts().CUDAIsDevice &&
-             D->hasAttr<CUDAGlobalAttr>()) {
+  } else if (Context.getLangOpts().CUDA && Context.getLangOpts().CUDAIsDevice) {
     // Device-side functions with __global__ attribute must always be
     // visible externally so they can be launched from host.
-    if (L == GVA_DiscardableODR || L == GVA_Internal)
+    if (D->hasAttr<CUDAGlobalAttr>() &&
+        (L == GVA_DiscardableODR || L == GVA_Internal))
       return GVA_StrongODR;
+    // Single source offloading languages like CUDA/HIP need to be able to
+    // access static device variables from host code of the same compilation
+    // unit. This is done by externalizing the static variable.
+    if (Context.shouldExternalizeStaticVar(D))
+      return GVA_StrongExternal;
   }
   return L;
 }
@@ -11263,4 +11462,12 @@ clang::operator<<(const DiagnosticBuilder &DB,
   if (Section.Decl)
     return DB << Section.Decl;
   return DB << "a prior #pragma section";
+}
+
+bool ASTContext::shouldExternalizeStaticVar(const Decl *D) const {
+  return !getLangOpts().GPURelocatableDeviceCode &&
+         (D->hasAttr<CUDADeviceAttr>() || D->hasAttr<CUDAConstantAttr>()) &&
+         isa<VarDecl>(D) && cast<VarDecl>(D)->isFileVarDecl() &&
+         cast<VarDecl>(D)->getStorageClass() == SC_Static &&
+         CUDAStaticDeviceVarReferencedByHost.count(cast<VarDecl>(D));
 }

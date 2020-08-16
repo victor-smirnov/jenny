@@ -1219,8 +1219,14 @@ void Parser::ParseUnderlyingTypeSpecifier(DeclSpec &DS) {
 ///         ::[opt] nested-name-specifier[opt] class-name
 TypeResult Parser::ParseBaseTypeSpecifier(SourceLocation &BaseLoc,
                                           SourceLocation &EndLocation) {
-  // Ignore attempts to use typename
   if (Tok.is(tok::kw_typename)) {
+    // This may be a typename reifier
+    if (getLangOpts().Reflection && NextToken().is(tok::l_paren)) {
+      BaseLoc = ConsumeToken();
+      return ParseReflectedTypeSpecifier(BaseLoc, EndLocation);
+    }
+
+    // Ignore attempts to use typename
     Diag(Tok, diag::err_expected_class_name_not_template)
       << FixItHint::CreateRemoval(Tok.getLocation());
     ConsumeToken();
@@ -1273,6 +1279,7 @@ TypeResult Parser::ParseBaseTypeSpecifier(SourceLocation &BaseLoc,
   }
 
   IdentifierInfo *Id = Tok.getIdentifierInfo();
+  bool IdSpliced = Tok.is(tok::annot_identifier_splice);
   SourceLocation IdLoc = ConsumeIdentifier();
 
   if (Tok.is(tok::less)) {
@@ -1294,7 +1301,7 @@ TypeResult Parser::ParseBaseTypeSpecifier(SourceLocation &BaseLoc,
 
     // Parse the full template-id, then turn it into a type.
     if (AnnotateTemplateIdToken(Template, TNK, SS, SourceLocation(),
-                                TemplateName))
+                                TemplateName, IdSpliced))
       return true;
     if (Tok.is(tok::annot_template_id) &&
         takeTemplateIdAnnotation(Tok)->mightBeType())
@@ -1388,6 +1395,9 @@ bool Parser::isValidAfterTypeSpecifier(bool CouldBeBitfield) {
   case tok::annot_pragma_ms_vtordisp:
   // struct foo {...} _Pragma(pointers_to_members(...));
   case tok::annot_pragma_ms_pointers_to_members:
+  // struct foo {...} unqualid(...);
+  case tok::kw_unqualid:
+  case tok::annot_identifier_splice:
     return true;
   case tok::colon:
     return CouldBeBitfield ||   // enum E { ... }   :         2;

@@ -624,11 +624,13 @@ TEST_F(SymbolCollectorTest, Refs) {
   EXPECT_THAT(Refs, Not(Contains(Pair(findSymbol(Symbols, "NS").ID, _))));
   EXPECT_THAT(Refs, Contains(Pair(findSymbol(Symbols, "MACRO").ID,
                                   HaveRanges(Main.ranges("macro")))));
-  // Symbols *only* in the main file (a, b, c, FUNC) had no refs collected.
+  // Symbols *only* in the main file:
+  // - (a, b) externally visible and should have refs.
+  // - (c, FUNC) externally invisible and had no refs collected.
   auto MainSymbols =
       TestTU::withHeaderCode(SymbolsOnlyInMainCode.code()).headerSymbols();
-  EXPECT_THAT(Refs, Not(Contains(Pair(findSymbol(MainSymbols, "a").ID, _))));
-  EXPECT_THAT(Refs, Not(Contains(Pair(findSymbol(MainSymbols, "b").ID, _))));
+  EXPECT_THAT(Refs, Contains(Pair(findSymbol(MainSymbols, "a").ID, _)));
+  EXPECT_THAT(Refs, Contains(Pair(findSymbol(MainSymbols, "b").ID, _)));
   EXPECT_THAT(Refs, Not(Contains(Pair(findSymbol(MainSymbols, "c").ID, _))));
   EXPECT_THAT(Refs, Not(Contains(Pair(findSymbol(MainSymbols, "FUNC").ID, _))));
 }
@@ -816,11 +818,15 @@ TEST_F(SymbolCollectorTest, HeaderAsMainFile) {
     $Foo[[Foo]] fo;
   }
   )");
-  // The main file is normal .cpp file, we shouldn't collect any refs of symbols
-  // which are not declared in the preamble.
+  // The main file is normal .cpp file, we should collect the refs
+  // for externally visible symbols.
   TestFileName = testPath("foo.cpp");
   runSymbolCollector("", Header.code());
-  EXPECT_THAT(Refs, UnorderedElementsAre());
+  EXPECT_THAT(Refs,
+              UnorderedElementsAre(Pair(findSymbol(Symbols, "Foo").ID,
+                                        HaveRanges(Header.ranges("Foo"))),
+                                   Pair(findSymbol(Symbols, "Func").ID,
+                                        HaveRanges(Header.ranges("Func")))));
 
   // Run the .h file as main file, we should collect the refs.
   TestFileName = testPath("foo.h");
@@ -1514,6 +1520,31 @@ TEST_F(SymbolCollectorTest, MacrosInHeaders) {
   EXPECT_THAT(Symbols,
               UnorderedElementsAre(AllOf(QName("X"), ForCodeCompletion(true))));
 }
+
+// Regression test for a crash-bug we used to have.
+TEST_F(SymbolCollectorTest, UndefOfModuleMacro) {
+  auto TU = TestTU::withCode(R"cpp(#include "bar.h")cpp");
+  TU.AdditionalFiles["bar.h"] = R"cpp(
+    #include "foo.h"
+    #undef X
+    )cpp";
+  TU.AdditionalFiles["foo.h"] = "#define X 1";
+  TU.AdditionalFiles["module.map"] = R"cpp(
+    module foo {
+     header "foo.h"
+     export *
+   }
+   )cpp";
+  TU.ExtraArgs.push_back("-fmodules");
+  TU.ExtraArgs.push_back("-fmodule-map-file=" + testPath("module.map"));
+  TU.OverlayRealFileSystemForModules = true;
+
+  TU.build();
+  // We mostly care about not crashing, but verify that we didn't insert garbage
+  // about X too.
+  EXPECT_THAT(TU.headerSymbols(), Not(Contains(QName("X"))));
+}
+
 } // namespace
 } // namespace clangd
 } // namespace clang

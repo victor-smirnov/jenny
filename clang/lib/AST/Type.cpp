@@ -311,10 +311,8 @@ ConstantMatrixType::ConstantMatrixType(QualType matrixType, unsigned nRows,
 ConstantMatrixType::ConstantMatrixType(TypeClass tc, QualType matrixType,
                                        unsigned nRows, unsigned nColumns,
                                        QualType canonType)
-    : MatrixType(tc, matrixType, canonType) {
-  ConstantMatrixTypeBits.NumRows = nRows;
-  ConstantMatrixTypeBits.NumColumns = nColumns;
-}
+    : MatrixType(tc, matrixType, canonType), NumRows(nRows),
+      NumColumns(nColumns) {}
 
 DependentSizedMatrixType::DependentSizedMatrixType(
     const ASTContext &CTX, QualType ElementType, QualType CanonicalType,
@@ -1219,9 +1217,6 @@ public:
                            T->getTypeConstraintConcept(),
                            T->getTypeConstraintArguments());
   }
-
-  // FIXME: Non-trivial to implement, but important for C++
-  SUGARED_TYPE_CLASS(PackExpansion)
 
   QualType VisitObjCObjectType(const ObjCObjectType *T) {
     QualType baseType = recurse(T->getBaseType());
@@ -3421,6 +3416,12 @@ void FunctionProtoType::Profile(llvm::FoldingSetNodeID &ID,
           getExtProtoInfo(), Ctx, isCanonicalUnqualified());
 }
 
+TypedefType::TypedefType(TypeClass tc, const TypedefNameDecl *D, QualType can)
+    : Type(tc, can, D->getUnderlyingType()->getDependence(), can->isMetaType()),
+      Decl(const_cast<TypedefNameDecl *>(D)) {
+  assert(!isa<TypedefType>(can) && "Invalid canonical type");
+}
+
 QualType TypedefType::desugar() const {
   return getDecl()->getUnderlyingType();
 }
@@ -3489,6 +3490,48 @@ DependentDecltypeType::DependentDecltypeType(const ASTContext &Context, Expr *E)
 void DependentDecltypeType::Profile(llvm::FoldingSetNodeID &ID,
                                     const ASTContext &Context, Expr *E) {
   E->Profile(ID, Context, true);
+}
+
+DependentIdentifierSpliceType::DependentIdentifierSpliceType(
+    const ASTContext &C, NestedNameSpecifier *NNS, IdentifierInfo *II,
+    unsigned NumTemplateArgs)
+    : Type(DependentIdentifierSplice, C.DependentTy,
+           TypeDependence::DependentInstantiation, /*MetaType=*/false),
+      Context(C), NNS(NNS), II(II) {
+  assert(II->isSplice());
+
+  DependentIdentifierSpliceTypeBits.NumTemplateArgs = NumTemplateArgs;
+}
+
+DependentIdentifierSpliceType *DependentIdentifierSpliceType::Create(
+    const ASTContext &C, NestedNameSpecifier *NNS, IdentifierInfo *II,
+    ArrayRef<TemplateArgument> TemplateArgs) {
+  unsigned NumTemplateArgs = TemplateArgs.size();
+
+  unsigned SizeOfTrailingArgs = sizeof(TemplateArgument) * NumTemplateArgs;
+  unsigned SizeOfMem = sizeof(DependentIdentifierSpliceType) + SizeOfTrailingArgs;
+
+  void *Mem = C.Allocate(SizeOfMem, TypeAlignment);
+  auto *Type = new (Mem) DependentIdentifierSpliceType(
+      C, NNS, II, NumTemplateArgs);
+
+  if (NumTemplateArgs)
+    std::uninitialized_copy_n(TemplateArgs.data(), NumTemplateArgs,
+                              reinterpret_cast<TemplateArgument *>(Type + 1));
+
+  return Type;
+}
+
+void DependentIdentifierSpliceType::Profile(
+    llvm::FoldingSetNodeID &ID, const ASTContext& C,
+    NestedNameSpecifier *NNS, IdentifierInfo *II,
+    ArrayRef<TemplateArgument> TemplateArgs) {
+  NNS->Profile(ID);
+  ID.AddPointer(II);
+
+  for (TemplateArgument Arg : TemplateArgs) {
+    Arg.Profile(ID, C);
+  }
 }
 
 ReflectedType::ReflectedType(Expr *E, QualType T, QualType Can)
@@ -3968,6 +4011,11 @@ static CachedProperties computeCachedProperties(const Type *T) {
     return Cache::get(cast<AtomicType>(T)->getValueType());
   case Type::Pipe:
     return Cache::get(cast<PipeType>(T)->getElementType());
+  case Type::InParameter:
+  case Type::OutParameter:
+  case Type::InOutParameter:
+  case Type::MoveParameter:
+    return Cache::get(cast<ParameterType>(T)->getParameterType());
   }
 
   llvm_unreachable("unhandled type class");
@@ -4056,6 +4104,11 @@ LinkageInfo LinkageComputer::computeTypeLinkageInfo(const Type *T) {
     return computeTypeLinkageInfo(cast<AtomicType>(T)->getValueType());
   case Type::Pipe:
     return computeTypeLinkageInfo(cast<PipeType>(T)->getElementType());
+  case Type::InParameter:
+  case Type::OutParameter:
+  case Type::InOutParameter:
+  case Type::MoveParameter:
+    return computeTypeLinkageInfo(cast<ParameterType>(T)->getParameterType());
   }
 
   llvm_unreachable("unhandled type class");
@@ -4127,6 +4180,7 @@ bool Type::canHaveNullability(bool ResultIfUnknown) const {
   case Type::SubstTemplateTypeParmPack:
   case Type::DependentName:
   case Type::DependentTemplateSpecialization:
+  case Type::DependentIdentifierSplice:
   case Type::Auto:
   case Type::CXXRequiredType:
     return ResultIfUnknown;
@@ -4220,6 +4274,15 @@ bool Type::canHaveNullability(bool ResultIfUnknown) const {
   case Type::Pipe:
   case Type::ExtInt:
   case Type::DependentExtInt:
+    return false;
+
+  case Type::InParameter:
+  case Type::OutParameter:
+  case Type::InOutParameter:
+  case Type::MoveParameter:
+    // TODO: This could be wrong. It seems like these may be nullable
+    // if their underlying type is nullable. But maybe that's not what
+    // this function computes.
     return false;
   }
   llvm_unreachable("bad type kind!");
@@ -4476,3 +4539,4 @@ void AutoType::Profile(llvm::FoldingSetNodeID &ID, const ASTContext &Context,
   for (const TemplateArgument &Arg : Arguments)
     Arg.Profile(ID, Context);
 }
+

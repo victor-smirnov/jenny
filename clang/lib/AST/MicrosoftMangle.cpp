@@ -1373,10 +1373,9 @@ void MicrosoftCXXNameMangler::mangleIntegerLiteral(const llvm::APSInt &Value,
 
 void MicrosoftCXXNameMangler::mangleExpression(const Expr *E) {
   // See if this is a constant expression.
-  llvm::APSInt Value;
   Expr::EvalContext EvalCtx(Context.getASTContext(), nullptr);
-  if (E->isIntegerConstantExpr(Value, EvalCtx)) {
-    mangleIntegerLiteral(Value, E->getType()->isBooleanType());
+  if (Optional<llvm::APSInt> Value = E->getIntegerConstantExpr(EvalCtx)) {
+    mangleIntegerLiteral(*Value, E->getType()->isBooleanType());
     return;
   }
 
@@ -1802,7 +1801,7 @@ void MicrosoftCXXNameMangler::mangleAddressSpaceType(QualType T,
   // where:
   //  <language_addr_space> ::= <OpenCL-addrspace> | <CUDA-addrspace>
   //    <OpenCL-addrspace> ::= "CL" [ "global" | "local" | "constant" |
-  //                                "private"| "generic" ]
+  //                                "private"| "generic" | "device" | "host" ]
   //    <CUDA-addrspace> ::= "CU" [ "device" | "constant" | "shared" ]
   //    Note that the above were chosen to match the Itanium mangling for this.
   //
@@ -1826,6 +1825,12 @@ void MicrosoftCXXNameMangler::mangleAddressSpaceType(QualType T,
       llvm_unreachable("Not a language specific address space");
     case LangAS::opencl_global:
       Extra.mangleSourceName("_ASCLglobal");
+      break;
+    case LangAS::opencl_global_device:
+      Extra.mangleSourceName("_ASCLdevice");
+      break;
+    case LangAS::opencl_global_host:
+      Extra.mangleSourceName("_ASCLhost");
       break;
     case LangAS::opencl_local:
       Extra.mangleSourceName("_ASCLlocal");
@@ -2965,6 +2970,26 @@ void MicrosoftCXXNameMangler::mangleType(const PipeType *T, Qualifiers,
   Extra.mangleIntegerLiteral(llvm::APSInt::get(T->isReadOnly()), true);
 
   mangleArtificialTagType(TTK_Struct, TemplateMangling, {"__clang"});
+}
+
+void MicrosoftCXXNameMangler::mangleType(const InParameterType *T,
+                                         Qualifiers Quals, SourceRange Range) {
+  llvm_unreachable("cannot mangle in parameter types yet");
+}
+
+void MicrosoftCXXNameMangler::mangleType(const OutParameterType *T,
+                                         Qualifiers Quals, SourceRange Range) {
+  llvm_unreachable("cannot mangle out parameter types yet");
+}
+
+void MicrosoftCXXNameMangler::mangleType(const InOutParameterType *T,
+                                         Qualifiers Quals, SourceRange Range) {
+  llvm_unreachable("cannot mangle inout parameter types yet");
+}
+
+void MicrosoftCXXNameMangler::mangleType(const MoveParameterType *T,
+                                         Qualifiers Quals, SourceRange Range) {
+  llvm_unreachable("cannot mangle move parameter types yet");
 }
 
 void MicrosoftMangleContextImpl::mangleCXXName(GlobalDecl GD,
