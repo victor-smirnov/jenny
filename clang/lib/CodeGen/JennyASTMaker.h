@@ -87,6 +87,8 @@ public:
                                      ExprValueKind VK, CastKind K,
                                      Expr *Op);
 
+  CXXConstructExpr *makeCXXCopyConstructExpr(QualType type, Expr* arg);
+
 private:
   ASTContext &C;
 };

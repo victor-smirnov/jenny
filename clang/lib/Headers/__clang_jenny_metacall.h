@@ -20,7 +20,7 @@ struct JennyMetaCallAdapter {
   virtual const void* param_const(int num) const noexcept = 0;
   virtual void* param(int num) const noexcept = 0;
 
-  virtual void result(const void* value) const noexcept = 0;
+  virtual void result(const void* value) noexcept = 0;
 };
 
 }

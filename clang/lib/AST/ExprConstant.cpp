@@ -7705,10 +7705,12 @@ public:
         return true;
     }
 
-    JennyMetaCallAdapterImpl Adapter(E->getType(), Info.ASTCtx);
+    JennyMetaCallAdapterImpl Adapter(E->getType(), Info.Ctx, Info, E->getOperand()->getBeginLoc());
 
-    for (auto arg: ArgValues) {
-        Adapter.addParam(arg);
+    for (size_t cnt = 0; cnt < Args.size(); cnt++) {
+        if (!Adapter.addParam(ArgValues[cnt], Args[cnt]->getType())) {
+            return false;
+        }
     }
 
     JennyJIT& jit = Info.ASTCtx.GetJennyJIT();
@@ -7725,7 +7727,12 @@ public:
     AdapterFnTy fn = (AdapterFnTy)jit.GetSymbol(Symbol);
     fn(Adapter);
 
-    return DerivedSuccess(Adapter.getAPValueResult(), E);
+    if (Optional<APValue> result = Adapter.getAPValueResult()) {
+        return DerivedSuccess(*result, E);
+    }
+    else {
+        return false;
+    }
   }
 
   bool VisitCXXConcatenateExpr(const CXXConcatenateExpr *E) {

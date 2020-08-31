@@ -12,6 +12,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/CXXInheritance.h"
+#include "clang/AST/DeclCXX.h"
 
 #include "JennyASTMaker.h"
 
@@ -169,4 +170,21 @@ CStyleCastExpr *JennyASTMaker::makeCStyleCastExpr(QualType T,
     return CStyleCastExpr::Create(C, T, VK, K, Op,
                                   nullptr, C.getTrivialTypeSourceInfo(T),
                                   SourceLocation{}, SourceLocation{});
+}
+
+
+CXXConstructExpr *JennyASTMaker::makeCXXCopyConstructExpr(QualType type, Expr* arg)
+{
+    CXXRecordDecl* record = type->getAsCXXRecordDecl();
+
+    for (CXXConstructorDecl* ctor: record->ctors()) {
+        if (ctor->isCopyOrMoveConstructor() && !ctor->isDeleted()) {
+            return CXXConstructExpr::Create(
+                        C, type, SourceLocation{}, ctor,
+                        false,arg,false,false,false,false,
+                        CXXConstructExpr::CK_Complete, SourceRange{});
+        }
+    }
+
+    return nullptr;
 }
