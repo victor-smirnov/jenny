@@ -27,7 +27,6 @@
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/TypeLoc.h"
 #include "clang/Basic/Builtins.h"
-#include "clang/Basic/FixedPoint.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
@@ -1125,6 +1124,11 @@ static QualType handleFloatConversion(Sema &S, ExprResult &LHS,
   bool LHSFloat = LHSType->isRealFloatingType();
   bool RHSFloat = RHSType->isRealFloatingType();
 
+  // FIXME: Implement floating to fixed point conversion.(Bug 46268)
+  // Reference N1169 4.1.4 (Type conversion, usual arithmetic conversions).
+  if ((LHSType->isFixedPointType() && RHSFloat) ||
+      (LHSFloat && RHSType->isFixedPointType()))
+    return QualType();
   // If we have two real floating types, convert the smaller operand
   // to the bigger result.
   if (LHSFloat && RHSFloat) {
@@ -3309,9 +3313,8 @@ ExprValueKind Sema::getValueKindForDeclReference(QualType &type, ValueDecl *VD,
       break;
 
     case Type::MoveParameter:
-      // The type is adjusted to an xvalue of type T.
+      // The type is adjusted to T. It's already an lvalue.
       type = cast<ParameterType>(type)->getParameterType();
-      valueKind = VK_RValue;
       break;
 
     default:
@@ -7002,24 +7005,6 @@ Sema::ActOnInitList(SourceLocation LBraceLoc, MultiExprArg InitArgList,
         << DIE->getSourceRange();
       Diag(InitArgList[I]->getBeginLoc(), diag::note_designated_init_mixed)
         << InitArgList[I]->getSourceRange();
-    } else if (const auto *SL = dyn_cast<StringLiteral>(InitArgList[I])) {
-      unsigned NumConcat = SL->getNumConcatenated();
-      const auto *SLNext =
-          dyn_cast<StringLiteral>(InitArgList[I + 1 < E ? I + 1 : 0]);
-      // Diagnose missing comma in string array initialization.
-      // Do not warn when all the elements in the initializer are concatenated
-      // together. Do not warn for macros too.
-      if (NumConcat > 1 && E > 2 && !SL->getBeginLoc().isMacroID() && SLNext &&
-          NumConcat != SLNext->getNumConcatenated()) {
-        SmallVector<FixItHint, 1> Hints;
-        for (unsigned i = 0; i < NumConcat - 1; ++i)
-          Hints.push_back(FixItHint::CreateInsertion(
-              PP.getLocForEndOfToken(SL->getStrTokenLoc(i)), ","));
-
-        Diag(SL->getStrTokenLoc(1), diag::warn_concatenated_literal_array_init)
-            << Hints;
-        Diag(SL->getBeginLoc(), diag::note_concatenated_string_literal_silence);
-      }
     }
   }
 
@@ -9119,6 +9104,14 @@ Sema::CheckAssignmentConstraints(QualType LHSType, ExprResult &RHS,
       }
     }
 
+    // Allow assignments between fixed-length and sizeless SVE vectors.
+    if (((LHSType->isSizelessBuiltinType() && RHSType->isVectorType()) ||
+         (LHSType->isVectorType() && RHSType->isSizelessBuiltinType())) &&
+        Context.areCompatibleSveTypes(LHSType, RHSType)) {
+      Kind = CK_BitCast;
+      return Compatible;
+    }
+
     return Incompatible;
   }
 
@@ -10012,6 +10005,22 @@ QualType Sema::CheckVectorOperands(ExprResult &LHS, ExprResult &RHS,
 
   // Okay, the expression is invalid.
 
+  // Returns true if the operands are SVE VLA and VLS types.
+  auto IsSveConversion = [](QualType FirstType, QualType SecondType) {
+    const VectorType *VecType = SecondType->getAs<VectorType>();
+    return FirstType->isSizelessBuiltinType() && VecType &&
+           (VecType->getVectorKind() == VectorType::SveFixedLengthDataVector ||
+            VecType->getVectorKind() ==
+                VectorType::SveFixedLengthPredicateVector);
+  };
+
+  // If there's a sizeless and fixed-length operand, diagnose that.
+  if (IsSveConversion(LHSType, RHSType) || IsSveConversion(RHSType, LHSType)) {
+    Diag(Loc, diag::err_typecheck_vector_not_convertable_sizeless)
+        << LHSType << RHSType;
+    return QualType();
+  }
+
   // If there's a non-vector, non-real operand, diagnose that.
   if ((!RHSVecType && !RHSType->isRealType()) ||
       (!LHSVecType && !LHSType->isRealType())) {
@@ -10726,7 +10735,7 @@ static void DiagnoseBadShiftValues(Sema& S, ExprResult &LHS, ExprResult &RHS,
   if (LHSExprType->isExtIntType())
     LeftSize = S.Context.getIntWidth(LHSExprType);
   else if (LHSExprType->isFixedPointType()) {
-    FixedPointSemantics FXSema = S.Context.getFixedPointSemantics(LHSExprType);
+    auto FXSema = S.Context.getFixedPointSemantics(LHSExprType);
     LeftSize = FXSema.getWidth() - (unsigned)FXSema.hasUnsignedPadding();
   }
   llvm::APInt LeftBits(Right.getBitWidth(), LeftSize);
@@ -15950,8 +15959,13 @@ ExprResult Sema::VerifyIntegerConstantExpression(Expr *E,
                                                  llvm::APSInt *Result) {
   class SimpleICEDiagnoser : public VerifyICEDiagnoser {
   public:
-    void diagnoseNotICE(Sema &S, SourceLocation Loc, SourceRange SR) override {
-      S.Diag(Loc, diag::err_expr_not_ice) << S.LangOpts.CPlusPlus << SR;
+    SemaDiagnosticBuilder diagnoseNotICEType(Sema &S, SourceLocation Loc,
+                                             QualType T) override {
+      return S.Diag(Loc, diag::err_ice_not_integral)
+             << T << S.LangOpts.CPlusPlus;
+    }
+    SemaDiagnosticBuilder diagnoseNotICE(Sema &S, SourceLocation Loc) override {
+      return S.Diag(Loc, diag::err_expr_not_ice) << S.LangOpts.CPlusPlus;
     }
   } Diagnoser;
 
@@ -15969,17 +15983,23 @@ ExprResult Sema::VerifyIntegerConstantExpression(Expr *E,
     IDDiagnoser(unsigned DiagID)
       : VerifyICEDiagnoser(DiagID == 0), DiagID(DiagID) { }
 
-    void diagnoseNotICE(Sema &S, SourceLocation Loc, SourceRange SR) override {
-      S.Diag(Loc, DiagID) << SR;
+    SemaDiagnosticBuilder diagnoseNotICE(Sema &S, SourceLocation Loc) override {
+      return S.Diag(Loc, DiagID);
     }
   } Diagnoser(DiagID);
 
   return VerifyIntegerConstantExpression(E, Result, Diagnoser, AllowFold);
 }
 
-void Sema::VerifyICEDiagnoser::diagnoseFold(Sema &S, SourceLocation Loc,
-                                            SourceRange SR) {
-  S.Diag(Loc, diag::ext_expr_not_ice) << SR << S.LangOpts.CPlusPlus;
+Sema::SemaDiagnosticBuilder
+Sema::VerifyICEDiagnoser::diagnoseNotICEType(Sema &S, SourceLocation Loc,
+                                             QualType T) {
+  return diagnoseNotICE(S, Loc);
+}
+
+Sema::SemaDiagnosticBuilder
+Sema::VerifyICEDiagnoser::diagnoseFold(Sema &S, SourceLocation Loc) {
+  return S.Diag(Loc, diag::ext_expr_not_ice) << S.LangOpts.CPlusPlus;
 }
 
 ExprResult
@@ -15996,14 +16016,16 @@ Sema::VerifyIntegerConstantExpression(Expr *E, llvm::APSInt *Result,
     //   unscoped enumeration type
     ExprResult Converted;
     class CXX11ConvertDiagnoser : public ICEConvertDiagnoser {
+      VerifyICEDiagnoser &BaseDiagnoser;
     public:
-      CXX11ConvertDiagnoser(bool Silent)
-          : ICEConvertDiagnoser(/*AllowScopedEnumerations*/false,
-                                Silent, true) {}
+      CXX11ConvertDiagnoser(VerifyICEDiagnoser &BaseDiagnoser)
+          : ICEConvertDiagnoser(/*AllowScopedEnumerations*/ false,
+                                BaseDiagnoser.Suppress, true),
+            BaseDiagnoser(BaseDiagnoser) {}
 
       SemaDiagnosticBuilder diagnoseNotInt(Sema &S, SourceLocation Loc,
                                            QualType T) override {
-        return S.Diag(Loc, diag::err_ice_not_integral) << T;
+        return BaseDiagnoser.diagnoseNotICEType(S, Loc, T);
       }
 
       SemaDiagnosticBuilder diagnoseIncomplete(
@@ -16037,7 +16059,7 @@ Sema::VerifyIntegerConstantExpression(Expr *E, llvm::APSInt *Result,
           Sema &S, SourceLocation Loc, QualType T, QualType ConvTy) override {
         llvm_unreachable("conversion functions are permitted");
       }
-    } ConvertDiagnoser(Diagnoser.Suppress);
+    } ConvertDiagnoser(Diagnoser);
 
     Converted = PerformContextualImplicitConversion(DiagLoc, E,
                                                     ConvertDiagnoser);
@@ -16049,7 +16071,8 @@ Sema::VerifyIntegerConstantExpression(Expr *E, llvm::APSInt *Result,
   } else if (!E->getType()->isIntegralOrUnscopedEnumerationType()) {
     // An ICE must be of integral or unscoped enumeration type.
     if (!Diagnoser.Suppress)
-      Diagnoser.diagnoseNotICE(*this, DiagLoc, E->getSourceRange());
+      Diagnoser.diagnoseNotICEType(*this, DiagLoc, E->getType())
+          << E->getSourceRange();
     return ExprError();
   }
 
@@ -16103,7 +16126,7 @@ Sema::VerifyIntegerConstantExpression(Expr *E, llvm::APSInt *Result,
 
   if (!Folded || !AllowFold) {
     if (!Diagnoser.Suppress) {
-      Diagnoser.diagnoseNotICE(*this, DiagLoc, E->getSourceRange());
+      Diagnoser.diagnoseNotICE(*this, DiagLoc) << E->getSourceRange();
       for (const PartialDiagnosticAt &Note : Notes)
         Diag(Note.first, Note.second);
     }
@@ -16111,7 +16134,7 @@ Sema::VerifyIntegerConstantExpression(Expr *E, llvm::APSInt *Result,
     return ExprError();
   }
 
-  Diagnoser.diagnoseFold(*this, DiagLoc, E->getSourceRange());
+  Diagnoser.diagnoseFold(*this, DiagLoc) << E->getSourceRange();
   for (const PartialDiagnosticAt &Note : Notes)
     Diag(Note.first, Note.second);
 
@@ -18075,8 +18098,7 @@ static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
   // This also requires the reference of the static device/constant variable by
   // host code to be visible in the device compilation for the compiler to be
   // able to externalize the static device/constant variable.
-  if ((Var->hasAttr<CUDADeviceAttr>() || Var->hasAttr<CUDAConstantAttr>()) &&
-      Var->isFileVarDecl() && Var->getStorageClass() == SC_Static) {
+  if (SemaRef.getASTContext().mayExternalizeStaticVar(Var)) {
     auto *CurContext = SemaRef.CurContext;
     if (!CurContext || !isa<FunctionDecl>(CurContext) ||
         cast<FunctionDecl>(CurContext)->hasAttr<CUDAHostAttr>() ||

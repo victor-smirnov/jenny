@@ -52,7 +52,6 @@
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/CommentOptions.h"
 #include "clang/Basic/ExceptionSpecificationType.h"
-#include "clang/Basic/FixedPoint.h"
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/LangOptions.h"
@@ -66,6 +65,7 @@
 #include "clang/Basic/TargetCXXABI.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/XRayLists.h"
+#include "llvm/ADT/APFixedPoint.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -1708,6 +1708,8 @@ CharUnits ASTContext::getDeclAlign(const Decl *D, bool ForAlignof) const {
     // do nothing
   } else if (const auto *VD = dyn_cast<ValueDecl>(D)) {
     QualType T = VD->getType();
+    if (const auto *PT = dyn_cast<ParameterType>(T))
+      T = PT->getAdjustedType(*this);
     if (const auto *RT = T->getAs<ReferenceType>()) {
       if (ForAlignof)
         T = RT->getPointeeType();
@@ -1875,50 +1877,6 @@ TypeInfo ASTContext::getTypeInfo(const Type *T) const {
   return TI;
 }
 
-static unsigned getSveVectorWidth(const Type *T) {
-  // Get the vector size from the 'arm_sve_vector_bits' attribute via the
-  // AttributedTypeLoc associated with the typedef decl.
-  if (const auto *TT = T->getAs<TypedefType>()) {
-    const TypedefNameDecl *Typedef = TT->getDecl();
-    TypeSourceInfo *TInfo = Typedef->getTypeSourceInfo();
-    TypeLoc TL = TInfo->getTypeLoc();
-    if (AttributedTypeLoc ATL = TL.getAs<AttributedTypeLoc>())
-      if (const auto *Attr = ATL.getAttrAs<ArmSveVectorBitsAttr>())
-        return Attr->getNumBits();
-  }
-
-  llvm_unreachable("bad 'arm_sve_vector_bits' attribute!");
-}
-
-static unsigned getSvePredWidth(const ASTContext &Context, const Type *T) {
-  return getSveVectorWidth(T) / Context.getCharWidth();
-}
-
-unsigned ASTContext::getBitwidthForAttributedSveType(const Type *T) const {
-  assert(T->isVLST() &&
-         "getBitwidthForAttributedSveType called for non-attributed type!");
-
-  switch (T->castAs<BuiltinType>()->getKind()) {
-  default:
-    llvm_unreachable("unknown builtin type!");
-  case BuiltinType::SveInt8:
-  case BuiltinType::SveInt16:
-  case BuiltinType::SveInt32:
-  case BuiltinType::SveInt64:
-  case BuiltinType::SveUint8:
-  case BuiltinType::SveUint16:
-  case BuiltinType::SveUint32:
-  case BuiltinType::SveUint64:
-  case BuiltinType::SveFloat16:
-  case BuiltinType::SveFloat32:
-  case BuiltinType::SveFloat64:
-  case BuiltinType::SveBFloat16:
-    return getSveVectorWidth(T);
-  case BuiltinType::SveBool:
-    return getSvePredWidth(*this, T);
-  }
-}
-
 /// getTypeInfoImpl - Return the size of the specified type, in bits.  This
 /// method does not work on incomplete types.
 ///
@@ -1985,6 +1943,13 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
     uint64_t TargetVectorAlign = Target->getMaxVectorAlign();
     if (TargetVectorAlign && TargetVectorAlign < Align)
       Align = TargetVectorAlign;
+    if (VT->getVectorKind() == VectorType::SveFixedLengthDataVector)
+      // Adjust the alignment for fixed-length SVE vectors. This is important
+      // for non-power-of-2 vector lengths.
+      Align = 128;
+    else if (VT->getVectorKind() == VectorType::SveFixedLengthPredicateVector)
+      // Adjust the alignment for fixed-length SVE predicates.
+      Align = 16;
     break;
   }
 
@@ -2327,10 +2292,7 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
       Align = Info.Align;
       AlignIsRequired = Info.AlignIsRequired;
     }
-    if (T->isVLST())
-      Width = getBitwidthForAttributedSveType(T);
-    else
-      Width = Info.Width;
+    Width = Info.Width;
     break;
   }
 
@@ -2471,7 +2433,7 @@ unsigned ASTContext::getPreferredTypeAlign(const Type *T) const {
     return ABIAlign;
 
   if (const auto *RT = T->getAs<RecordType>()) {
-    if (TI.AlignIsRequired)
+    if (TI.AlignIsRequired || RT->getDecl()->isInvalidDecl())
       return ABIAlign;
 
     unsigned PreferredAlign = static_cast<unsigned>(
@@ -2948,14 +2910,27 @@ QualType ASTContext::getAddrSpaceQualType(QualType T,
 }
 
 QualType ASTContext::removeAddrSpaceQualType(QualType T) const {
+  // If the type is not qualified with an address space, just return it
+  // immediately.
+  if (!T.hasAddressSpace())
+    return T;
+
   // If we are composing extended qualifiers together, merge together
   // into one ExtQuals node.
   QualifierCollector Quals;
-  const Type *TypeNode = Quals.strip(T);
+  const Type *TypeNode;
 
-  // If the qualifier doesn't have an address space just return it.
-  if (!Quals.hasAddressSpace())
-    return T;
+  while (T.hasAddressSpace()) {
+    TypeNode = Quals.strip(T);
+
+    // If the type no longer has an address space after stripping qualifiers,
+    // jump out.
+    if (!QualType(TypeNode, 0).hasAddressSpace())
+      break;
+
+    // There might be sugar in the way. Strip it and try again.
+    T = T.getSingleStepDesugaredType(*this);
+  }
 
   Quals.removeAddressSpace();
 
@@ -3413,16 +3388,8 @@ QualType ASTContext::getInParameterType(QualType T) const {
     assert(!NewIP && "Shouldn't be in the map!"); (void)NewIP;
   }
 
-  // Build the adjusted type. Input types are passed by value if scalar and
-  // non-trivial. For large or non-trivial classes, we pass by reference.
-  QualType Adjusted = T;
-  if (CXXRecordDecl *Class = T->getAsCXXRecordDecl())
-    if (!Class->canPassInRegisters())
-      Adjusted = getLValueReferenceType(T);
-
   // Build and register the type.
-  auto *NewTy =
-    new (*this, TypeAlignment) InParameterType(T, Canonical, Adjusted);
+  auto *NewTy = new (*this, TypeAlignment) InParameterType(T, Canonical);
   Types.push_back(NewTy);
   InParameterTypes.InsertNode(NewTy, InsertPos);
   return QualType(NewTy, 0);
@@ -3447,12 +3414,8 @@ QualType ASTContext::getOutParameterType(QualType T) const {
     assert(!NewIP && "Shouldn't be in the map!"); (void)NewIP;
   }
 
-  // Build the adjusted type. This is an lvalue reference.
-  QualType Adjusted = getLValueReferenceType(T);
-
   // Build and register the type.
-  auto *NewTy =
-    new (*this, TypeAlignment) OutParameterType(T, Canonical, Adjusted);
+  auto *NewTy = new (*this, TypeAlignment) OutParameterType(T, Canonical);
   Types.push_back(NewTy);
   OutParameterTypes.InsertNode(NewTy, InsertPos);
   return QualType(NewTy, 0);
@@ -3477,12 +3440,8 @@ QualType ASTContext::getInOutParameterType(QualType T) const {
     assert(!NewIP && "Shouldn't be in the map!"); (void)NewIP;
   }
 
-  // Build the adjusted type. This is an lvalue reference.
-  QualType Adjusted = getLValueReferenceType(T);
-
   // Build and register the type.
-  auto *NewTy =
-    new (*this, TypeAlignment) InOutParameterType(T, Canonical, Adjusted);
+  auto *NewTy = new (*this, TypeAlignment) InOutParameterType(T, Canonical);
   Types.push_back(NewTy);
   InOutParameterTypes.InsertNode(NewTy, InsertPos);
   return QualType(NewTy, 0);
@@ -3507,16 +3466,8 @@ QualType ASTContext::getMoveParameterType(QualType T) const {
     assert(!NewIP && "Shouldn't be in the map!"); (void)NewIP;
   }
 
-  // Build the adjusted type. Move types are passed by value if scalar and
-  // non-trivial. For large or non-trivial classes, we pass by rvalue reference.
-  QualType Adjusted = T;
-  if (CXXRecordDecl *Class = T->getAsCXXRecordDecl())
-    if (!Class->canPassInRegisters())
-      Adjusted = getRValueReferenceType(T);
-
   // Build and register the type.
-  auto *NewTy =
-    new (*this, TypeAlignment) MoveParameterType(T, Canonical, Adjusted);
+  auto *NewTy = new (*this, TypeAlignment) MoveParameterType(T, Canonical);
   Types.push_back(NewTy);
   MoveParameterTypes.InsertNode(NewTy, InsertPos);
   return QualType(NewTy, 0);
@@ -3888,6 +3839,119 @@ QualType ASTContext::getIncompleteArrayType(QualType elementType,
   IncompleteArrayTypes.InsertNode(newType, insertPos);
   Types.push_back(newType);
   return QualType(newType, 0);
+}
+
+ASTContext::BuiltinVectorTypeInfo
+ASTContext::getBuiltinVectorTypeInfo(const BuiltinType *Ty) const {
+#define SVE_INT_ELTTY(BITS, ELTS, SIGNED, NUMVECTORS)                          \
+  {getIntTypeForBitwidth(BITS, SIGNED), llvm::ElementCount::getScalable(ELTS), \
+   NUMVECTORS};
+
+#define SVE_ELTTY(ELTTY, ELTS, NUMVECTORS)                                     \
+  {ELTTY, llvm::ElementCount::getScalable(ELTS), NUMVECTORS};
+
+  switch (Ty->getKind()) {
+  default:
+    llvm_unreachable("Unsupported builtin vector type");
+  case BuiltinType::SveInt8:
+    return SVE_INT_ELTTY(8, 16, true, 1);
+  case BuiltinType::SveUint8:
+    return SVE_INT_ELTTY(8, 16, false, 1);
+  case BuiltinType::SveInt8x2:
+    return SVE_INT_ELTTY(8, 16, true, 2);
+  case BuiltinType::SveUint8x2:
+    return SVE_INT_ELTTY(8, 16, false, 2);
+  case BuiltinType::SveInt8x3:
+    return SVE_INT_ELTTY(8, 16, true, 3);
+  case BuiltinType::SveUint8x3:
+    return SVE_INT_ELTTY(8, 16, false, 3);
+  case BuiltinType::SveInt8x4:
+    return SVE_INT_ELTTY(8, 16, true, 4);
+  case BuiltinType::SveUint8x4:
+    return SVE_INT_ELTTY(8, 16, false, 4);
+  case BuiltinType::SveInt16:
+    return SVE_INT_ELTTY(16, 8, true, 1);
+  case BuiltinType::SveUint16:
+    return SVE_INT_ELTTY(16, 8, false, 1);
+  case BuiltinType::SveInt16x2:
+    return SVE_INT_ELTTY(16, 8, true, 2);
+  case BuiltinType::SveUint16x2:
+    return SVE_INT_ELTTY(16, 8, false, 2);
+  case BuiltinType::SveInt16x3:
+    return SVE_INT_ELTTY(16, 8, true, 3);
+  case BuiltinType::SveUint16x3:
+    return SVE_INT_ELTTY(16, 8, false, 3);
+  case BuiltinType::SveInt16x4:
+    return SVE_INT_ELTTY(16, 8, true, 4);
+  case BuiltinType::SveUint16x4:
+    return SVE_INT_ELTTY(16, 8, false, 4);
+  case BuiltinType::SveInt32:
+    return SVE_INT_ELTTY(32, 4, true, 1);
+  case BuiltinType::SveUint32:
+    return SVE_INT_ELTTY(32, 4, false, 1);
+  case BuiltinType::SveInt32x2:
+    return SVE_INT_ELTTY(32, 4, true, 2);
+  case BuiltinType::SveUint32x2:
+    return SVE_INT_ELTTY(32, 4, false, 2);
+  case BuiltinType::SveInt32x3:
+    return SVE_INT_ELTTY(32, 4, true, 3);
+  case BuiltinType::SveUint32x3:
+    return SVE_INT_ELTTY(32, 4, false, 3);
+  case BuiltinType::SveInt32x4:
+    return SVE_INT_ELTTY(32, 4, true, 4);
+  case BuiltinType::SveUint32x4:
+    return SVE_INT_ELTTY(32, 4, false, 4);
+  case BuiltinType::SveInt64:
+    return SVE_INT_ELTTY(64, 2, true, 1);
+  case BuiltinType::SveUint64:
+    return SVE_INT_ELTTY(64, 2, false, 1);
+  case BuiltinType::SveInt64x2:
+    return SVE_INT_ELTTY(64, 2, true, 2);
+  case BuiltinType::SveUint64x2:
+    return SVE_INT_ELTTY(64, 2, false, 2);
+  case BuiltinType::SveInt64x3:
+    return SVE_INT_ELTTY(64, 2, true, 3);
+  case BuiltinType::SveUint64x3:
+    return SVE_INT_ELTTY(64, 2, false, 3);
+  case BuiltinType::SveInt64x4:
+    return SVE_INT_ELTTY(64, 2, true, 4);
+  case BuiltinType::SveUint64x4:
+    return SVE_INT_ELTTY(64, 2, false, 4);
+  case BuiltinType::SveBool:
+    return SVE_ELTTY(BoolTy, 16, 1);
+  case BuiltinType::SveFloat16:
+    return SVE_ELTTY(HalfTy, 8, 1);
+  case BuiltinType::SveFloat16x2:
+    return SVE_ELTTY(HalfTy, 8, 2);
+  case BuiltinType::SveFloat16x3:
+    return SVE_ELTTY(HalfTy, 8, 3);
+  case BuiltinType::SveFloat16x4:
+    return SVE_ELTTY(HalfTy, 8, 4);
+  case BuiltinType::SveFloat32:
+    return SVE_ELTTY(FloatTy, 4, 1);
+  case BuiltinType::SveFloat32x2:
+    return SVE_ELTTY(FloatTy, 4, 2);
+  case BuiltinType::SveFloat32x3:
+    return SVE_ELTTY(FloatTy, 4, 3);
+  case BuiltinType::SveFloat32x4:
+    return SVE_ELTTY(FloatTy, 4, 4);
+  case BuiltinType::SveFloat64:
+    return SVE_ELTTY(DoubleTy, 2, 1);
+  case BuiltinType::SveFloat64x2:
+    return SVE_ELTTY(DoubleTy, 2, 2);
+  case BuiltinType::SveFloat64x3:
+    return SVE_ELTTY(DoubleTy, 2, 3);
+  case BuiltinType::SveFloat64x4:
+    return SVE_ELTTY(DoubleTy, 2, 4);
+  case BuiltinType::SveBFloat16:
+    return SVE_ELTTY(BFloat16Ty, 8, 1);
+  case BuiltinType::SveBFloat16x2:
+    return SVE_ELTTY(BFloat16Ty, 8, 2);
+  case BuiltinType::SveBFloat16x3:
+    return SVE_ELTTY(BFloat16Ty, 8, 3);
+  case BuiltinType::SveBFloat16x4:
+    return SVE_ELTTY(BFloat16Ty, 8, 4);
+  }
 }
 
 /// getScalableVectorType - Return the unique reference to a scalable vector
@@ -8681,6 +8745,31 @@ bool ASTContext::areCompatibleVectorTypes(QualType FirstVec,
   return false;
 }
 
+bool ASTContext::areCompatibleSveTypes(QualType FirstType,
+                                       QualType SecondType) {
+  assert(((FirstType->isSizelessBuiltinType() && SecondType->isVectorType()) ||
+          (FirstType->isVectorType() && SecondType->isSizelessBuiltinType())) &&
+         "Expected SVE builtin type and vector type!");
+
+  auto IsValidCast = [this](QualType FirstType, QualType SecondType) {
+    if (const auto *BT = FirstType->getAs<BuiltinType>()) {
+      if (const auto *VT = SecondType->getAs<VectorType>()) {
+        // Predicates have the same representation as uint8 so we also have to
+        // check the kind to make these types incompatible.
+        if (VT->getVectorKind() == VectorType::SveFixedLengthPredicateVector)
+          return BT->getKind() == BuiltinType::SveBool;
+        else if (VT->getVectorKind() == VectorType::SveFixedLengthDataVector)
+          return VT->getElementType().getCanonicalType() ==
+                 FirstType->getSveEltType(*this);
+      }
+    }
+    return false;
+  };
+
+  return IsValidCast(FirstType, SecondType) ||
+         IsValidCast(SecondType, FirstType);
+}
+
 bool ASTContext::hasDirectOwnershipQualifier(QualType Ty) const {
   while (true) {
     // __strong id
@@ -11329,29 +11418,30 @@ unsigned char ASTContext::getFixedPointIBits(QualType Ty) const {
   }
 }
 
-FixedPointSemantics ASTContext::getFixedPointSemantics(QualType Ty) const {
+llvm::FixedPointSemantics
+ASTContext::getFixedPointSemantics(QualType Ty) const {
   assert((Ty->isFixedPointType() || Ty->isIntegerType()) &&
          "Can only get the fixed point semantics for a "
          "fixed point or integer type.");
   if (Ty->isIntegerType())
-    return FixedPointSemantics::GetIntegerSemantics(getIntWidth(Ty),
-                                                    Ty->isSignedIntegerType());
+    return llvm::FixedPointSemantics::GetIntegerSemantics(
+        getIntWidth(Ty), Ty->isSignedIntegerType());
 
   bool isSigned = Ty->isSignedFixedPointType();
-  return FixedPointSemantics(
+  return llvm::FixedPointSemantics(
       static_cast<unsigned>(getTypeSize(Ty)), getFixedPointScale(Ty), isSigned,
       Ty->isSaturatedFixedPointType(),
       !isSigned && getTargetInfo().doUnsignedFixedPointTypesHavePadding());
 }
 
-APFixedPoint ASTContext::getFixedPointMax(QualType Ty) const {
+llvm::APFixedPoint ASTContext::getFixedPointMax(QualType Ty) const {
   assert(Ty->isFixedPointType());
-  return APFixedPoint::getMax(getFixedPointSemantics(Ty));
+  return llvm::APFixedPoint::getMax(getFixedPointSemantics(Ty));
 }
 
-APFixedPoint ASTContext::getFixedPointMin(QualType Ty) const {
+llvm::APFixedPoint ASTContext::getFixedPointMin(QualType Ty) const {
   assert(Ty->isFixedPointType());
-  return APFixedPoint::getMin(getFixedPointSemantics(Ty));
+  return llvm::APFixedPoint::getMin(getFixedPointSemantics(Ty));
 }
 
 QualType ASTContext::getCorrespondingSignedFixedPointType(QualType Ty) const {
@@ -11446,8 +11536,7 @@ void ASTContext::getFunctionFeatureMap(llvm::StringMap<bool> &FeatureMap,
     std::vector<std::string> Features(FeaturesTmp.begin(), FeaturesTmp.end());
     Target->initFeatureMap(FeatureMap, getDiagnostics(), TargetCPU, Features);
   } else {
-    Target->initFeatureMap(FeatureMap, getDiagnostics(), TargetCPU,
-                           Target->getTargetOpts().Features);
+    FeatureMap = Target->getTargetOpts().FeatureMap;
   }
 }
 
@@ -11464,10 +11553,17 @@ clang::operator<<(const DiagnosticBuilder &DB,
   return DB << "a prior #pragma section";
 }
 
-bool ASTContext::shouldExternalizeStaticVar(const Decl *D) const {
+bool ASTContext::mayExternalizeStaticVar(const Decl *D) const {
   return !getLangOpts().GPURelocatableDeviceCode &&
-         (D->hasAttr<CUDADeviceAttr>() || D->hasAttr<CUDAConstantAttr>()) &&
+         ((D->hasAttr<CUDADeviceAttr>() &&
+           !D->getAttr<CUDADeviceAttr>()->isImplicit()) ||
+          (D->hasAttr<CUDAConstantAttr>() &&
+           !D->getAttr<CUDAConstantAttr>()->isImplicit())) &&
          isa<VarDecl>(D) && cast<VarDecl>(D)->isFileVarDecl() &&
-         cast<VarDecl>(D)->getStorageClass() == SC_Static &&
+         cast<VarDecl>(D)->getStorageClass() == SC_Static;
+}
+
+bool ASTContext::shouldExternalizeStaticVar(const Decl *D) const {
+  return mayExternalizeStaticVar(D) &&
          CUDAStaticDeviceVarReferencedByHost.count(cast<VarDecl>(D));
 }

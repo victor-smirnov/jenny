@@ -1203,7 +1203,7 @@ Decl* InjectionContext::InjectNamespaceDecl(NamespaceDecl *D) {
   SourceLocation &&NamespaceLoc = D->getBeginLoc();
   SourceLocation &&Loc = D->getLocation();
 
-  bool IsInline = D->isInline();
+  bool IsInline = D->isInline() || GetModifiers().addInline();
   bool IsInvalid = false;
   bool IsStd = false;
   bool AddToKnown = false;
@@ -1395,7 +1395,12 @@ Decl *InjectionContext::InjectFunctionDecl(FunctionDecl *D) {
   }
 
   // Set properties.
-  Fn->setInlineSpecified(D->isInlineSpecified());
+  if (D->isInlineSpecified()) {
+    Fn->setInlineSpecified();
+  } else if (D->isInlined() || GetModifiers().addInline()) {
+    Fn->setImplicitlyInline();
+  }
+
   Fn->setInvalidDecl(Fn->isInvalidDecl() || Invalid);
   if (D->getFriendObjectKind() != Decl::FOK_None)
     Fn->setObjectOfFriendDecl();
@@ -1534,7 +1539,7 @@ Decl *InjectionContext::InjectVarDecl(VarDecl *D) {
 
   if (D->isInlineSpecified())
     Var->setInlineSpecified();
-  else if (D->isInline())
+  else if (D->isInline() || GetModifiers().addInline())
     Var->setImplicitlyInline();
 
   InjectVariableInitializer(*this, D, Var);
@@ -1932,6 +1937,9 @@ Decl *InjectionContext::InjectCXXMethodDecl(CXXMethodDecl *D, F FinishBody) {
   }
 
   // Propagate semantic properties.
+  if (D->isInlined())
+    Method->setImplicitlyInline();
+
   Method->setImplicit(D->isImplicit());
   ApplyAccess(GetModifiers(), Method, D);
 
@@ -3524,6 +3532,8 @@ static void PerformInjection(InjectionContext *Ctx, Decl *Injectee, Decl *Inject
   // The logic for block fragments is different, since everything in the fragment
   // is stored in a CompoundStmt.
   if (isa<CXXStmtFragmentDecl>(Injection)) {
+    Sema::SynthesizedFunctionScope Scope(Ctx->getSema(), cast<FunctionDecl>(Injectee));
+
     CXXStmtFragmentDecl *InjectionSFD = cast<CXXStmtFragmentDecl>(Injection);
     CompoundStmt *FragmentBlock = cast<CompoundStmt>(InjectionSFD->getBody());
     for (Stmt *S : FragmentBlock->body()) {
@@ -4043,7 +4053,6 @@ static void InjectPendingDefinition(InjectionContext *Ctx,
   S.ActOnStartOfFunctionDef(nullptr, NewMethod);
 
   Sema::SynthesizedFunctionScope Scope(S, NewMethod);
-  Sema::ContextRAII MethodCtx(S, NewMethod);
 
   StmtResult NewBody = Ctx->TransformStmt(OldMethod->getBody());
   if (NewBody.isInvalid())
@@ -4145,7 +4154,6 @@ static void InjectPendingDefinition(InjectionContext *Ctx,
   S.ActOnStartOfFunctionDef(nullptr, NewMethod);
 
   Sema::SynthesizedFunctionScope Scope(S, NewMethod);
-  Sema::ContextRAII MethodCtx(S, NewMethod);
 
   StmtResult NewBody = Pattern;
   if (D->getInstantiatedFromMemberTemplate()) {

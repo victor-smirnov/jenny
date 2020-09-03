@@ -1587,10 +1587,7 @@ void InitListChecker::CheckScalarType(const InitializedEntity &Entity,
       IList->setInit(Index, ResultExpr);
     }
   }
-  if (hadError)
-    ++StructuredIndex;
-  else
-    UpdateStructuredListElement(StructuredList, StructuredIndex, ResultExpr);
+  UpdateStructuredListElement(StructuredList, StructuredIndex, ResultExpr);
   ++Index;
 }
 
@@ -1645,10 +1642,7 @@ void InitListChecker::CheckReferenceType(const InitializedEntity &Entity,
   if (!VerifyOnly && expr)
     IList->setInit(Index, expr);
 
-  if (hadError)
-    ++StructuredIndex;
-  else
-    UpdateStructuredListElement(StructuredList, StructuredIndex, expr);
+  UpdateStructuredListElement(StructuredList, StructuredIndex, expr);
   ++Index;
 }
 
@@ -1699,11 +1693,7 @@ void InitListChecker::CheckVectorType(const InitializedEntity &Entity,
           IList->setInit(Index, ResultExpr);
         }
       }
-      if (hadError)
-        ++StructuredIndex;
-      else
-        UpdateStructuredListElement(StructuredList, StructuredIndex,
-                                    ResultExpr);
+      UpdateStructuredListElement(StructuredList, StructuredIndex, ResultExpr);
       ++Index;
       return;
     }
@@ -3104,8 +3094,12 @@ void InitListChecker::UpdateStructuredListElement(InitListExpr *StructuredList,
 
   if (Expr *PrevInit = StructuredList->updateInit(SemaRef.Context,
                                                   StructuredIndex, expr)) {
-    // This initializer overwrites a previous initializer. Warn.
-    diagnoseInitOverride(PrevInit, expr->getSourceRange());
+    // This initializer overwrites a previous initializer.
+    // No need to diagnose when `expr` is nullptr because a more relevant
+    // diagnostic has already been issued and this diagnostic is potentially
+    // noise.
+    if (expr)
+      diagnoseInitOverride(PrevInit, expr->getSourceRange());
   }
 
   ++StructuredIndex;
@@ -4238,7 +4232,7 @@ static void TryReferenceListInitialization(Sema &S,
 
   // For parameter types, initialize an object of the underlying type.
   if (const auto *ParamType = dyn_cast<ParameterType>(DestType))
-    DestType = ParamType->getAdjustedType();
+    DestType = ParamType->getAdjustedType(S.Context);
 
   QualType cv1T1 = DestType->castAs<ReferenceType>()->getPointeeType();
   Qualifiers T1Quals;
@@ -4304,7 +4298,7 @@ static void TryListInitialization(Sema &S,
 
   // For parameter types, initialize an object of the underlying type.
   if (const auto *ParamType = dyn_cast<ParameterType>(DestType))
-    DestType = ParamType->getAdjustedType();
+    DestType = ParamType->getAdjustedType(S.Context);
 
   // C++ doesn't allow scalar initialization with more than one argument.
   // But C99 complex numbers are scalars and it makes sense there.
@@ -4691,8 +4685,8 @@ static void TryReferenceInitialization(Sema &S,
   QualType DestType = Entity.getType();
 
   // Adjust parameter types as needed.
-  if (DestType->isParameterType())
-    DestType = cast<ParameterType>(DestType)->getAdjustedType();
+  if (auto *ParamType = dyn_cast<ParameterType>(DestType))
+    DestType = ParamType->getAdjustedType(S.Context);
 
   QualType cv1T1 = DestType->castAs<ReferenceType>()->getPointeeType();
   Qualifiers T1Quals;
@@ -4737,8 +4731,8 @@ static void TryReferenceInitializationCore(Sema &S,
   QualType DestType = Entity.getType();
 
   // Adjust the parameter type as needed.
-  if (DestType->isParameterType())
-    DestType = cast<ParameterType>(DestType)->getAdjustedType();
+  if (auto *ParamType = dyn_cast<ParameterType>(DestType))
+    DestType = ParamType->getAdjustedType(S.Context);
 
   SourceLocation DeclLoc = Initializer->getBeginLoc();
 
@@ -5674,9 +5668,9 @@ void InitializationSequence::InitializeFrom(Sema &S,
   QualType DestType = Entity.getType();
 
   // Adjust destination parameter types as needed.
-  const auto *ParamType = DestType->getAs<ParameterType>();
+  auto *ParamType = DestType->getAs<ParameterType>();
   if (ParamType)
-    DestType = ParamType->getAdjustedType();
+    DestType = ParamType->getAdjustedType(Context);
 
   if (DestType->isDependentType() ||
       Expr::hasAnyTypeDependentArguments(Args) ||

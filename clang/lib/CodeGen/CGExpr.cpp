@@ -1709,7 +1709,7 @@ llvm::Value *CodeGenFunction::EmitLoadOfScalar(Address Addr, bool Volatile,
     if (Ty->isVectorType()) {
       const llvm::Type *EltTy = Addr.getElementType();
 
-      const auto *VTy = cast<llvm::VectorType>(EltTy);
+      const auto *VTy = cast<llvm::FixedVectorType>(EltTy);
 
       // Handle vectors of size 3 like size 4 for better performance.
       if (VTy->getNumElements() == 3) {
@@ -1794,8 +1794,9 @@ static Address MaybeConvertMatrixAddress(Address Addr, CodeGenFunction &CGF,
   auto *VectorTy = dyn_cast<llvm::VectorType>(
       cast<llvm::PointerType>(Addr.getPointer()->getType())->getElementType());
   if (VectorTy && !IsVector) {
-    auto *ArrayTy = llvm::ArrayType::get(VectorTy->getElementType(),
-                                         VectorTy->getNumElements());
+    auto *ArrayTy = llvm::ArrayType::get(
+        VectorTy->getElementType(),
+        cast<llvm::FixedVectorType>(VectorTy)->getNumElements());
 
     return Address(CGF.Builder.CreateElementBitCast(Addr, ArrayTy));
   }
@@ -1826,7 +1827,7 @@ void CodeGenFunction::EmitStoreOfScalar(llvm::Value *Value, Address Addr,
       llvm::Type *SrcTy = Value->getType();
       auto *VecTy = dyn_cast<llvm::VectorType>(SrcTy);
       // Handle vec3 special.
-      if (VecTy && VecTy->getNumElements() == 3) {
+      if (VecTy && cast<llvm::FixedVectorType>(VecTy)->getNumElements() == 3) {
         // Our source is a vec3, do a shuffle vector to make it a vec4.
         Value = Builder.CreateShuffleVector(Value, llvm::UndefValue::get(VecTy),
                                             ArrayRef<int>{0, 1, 2, -1},
@@ -2241,7 +2242,7 @@ void CodeGenFunction::EmitStoreThroughExtVectorComponentLValue(RValue Src,
   if (const VectorType *VTy = Dst.getType()->getAs<VectorType>()) {
     unsigned NumSrcElts = VTy->getNumElements();
     unsigned NumDstElts =
-        cast<llvm::VectorType>(Vec->getType())->getNumElements();
+        cast<llvm::FixedVectorType>(Vec->getType())->getNumElements();
     if (NumDstElts == NumSrcElts) {
       // Use shuffle vector is the src and destination are the same number of
       // elements and restore the vector mask since it is on the side it will be
@@ -2798,8 +2799,8 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
 
     // Get the variable type, adjusting as needed for parameter passing types.
     QualType VarType = VD->getType();
-    // if (VarType->isParameterType())
-    //   VarType = cast<ParameterType>(VarType)->getAdjustedType(getContext());
+    if (auto *ParamType = dyn_cast<ParameterType>(VarType))
+      VarType = ParamType->getAdjustedType(getContext());
 
     // Drill into reference types.
     LValue LV = VarType->isReferenceType() ?
@@ -4722,13 +4723,13 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
 }
 
 LValue CodeGenFunction::EmitOpaqueValueLValue(const OpaqueValueExpr *e) {
-  assert(OpaqueValueMappingData::shouldBindAsLValue(e));
+  assert(OpaqueValueMappingData::shouldBindAsLValue(*this, e));
   return getOrCreateOpaqueLValueMapping(e);
 }
 
 LValue
 CodeGenFunction::getOrCreateOpaqueLValueMapping(const OpaqueValueExpr *e) {
-  assert(OpaqueValueMapping::shouldBindAsLValue(e));
+  assert(OpaqueValueMapping::shouldBindAsLValue(*this, e));
 
   llvm::DenseMap<const OpaqueValueExpr*,LValue>::iterator
       it = OpaqueLValues.find(e);
@@ -4742,7 +4743,7 @@ CodeGenFunction::getOrCreateOpaqueLValueMapping(const OpaqueValueExpr *e) {
 
 RValue
 CodeGenFunction::getOrCreateOpaqueRValueMapping(const OpaqueValueExpr *e) {
-  assert(!OpaqueValueMapping::shouldBindAsLValue(e));
+  assert(!OpaqueValueMapping::shouldBindAsLValue(*this, e));
 
   llvm::DenseMap<const OpaqueValueExpr*,RValue>::iterator
       it = OpaqueRValues.find(e);
@@ -5330,7 +5331,7 @@ static LValueOrRValue emitPseudoObjectExpr(CodeGenFunction &CGF,
       typedef CodeGenFunction::OpaqueValueMappingData OVMA;
       OVMA opaqueData;
       if (ov == resultExpr && ov->isRValue() && !forLValue &&
-          CodeGenFunction::hasAggregateEvaluationKind(ov->getType())) {
+          CGF.hasAggregateEvaluationKind(ov->getType())) {
         CGF.EmitAggExpr(ov->getSourceExpr(), slot);
         LValue LV = CGF.MakeAddrLValue(slot.getAddress(), ov->getType(),
                                        AlignmentSource::Decl);

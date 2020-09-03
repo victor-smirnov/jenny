@@ -1054,7 +1054,12 @@ void ASTFrontendAction::ExecuteAction() {
   if (!CI.hasSema())
     CI.createSema(getTranslationUnitKind(), CompletionConsumer);
 
-  BeforParsing(CI);
+  llvm::Error err = BeforeParsing(CI);
+  if (err) {
+    llvm::errs() << "Error preparing to parse the source: " << err << "\n";
+    llvm::consumeError(std::move(err));
+    return;
+  }
 
   ParseAST(CI.getSema(), CI.getFrontendOpts().ShowStats,
            CI.getFrontendOpts().SkipFunctionBodies);

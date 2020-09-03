@@ -1185,7 +1185,7 @@ void CodeGenAction::ExecuteAction() {
   this->ASTFrontendAction::ExecuteAction();
 }
 
-void CodeGenAction::BeforParsing(CompilerInstance &CI)
+llvm::Error CodeGenAction::BeforeParsing(CompilerInstance &CI)
 {
     auto jit = JennyJIT::Create(
         CI.getASTContext(),
@@ -1196,9 +1196,14 @@ void CodeGenAction::BeforParsing(CompilerInstance &CI)
         CI.getCodeGenOpts()
     );
 
-    CI.getASTContext().SetJennyJIT(jit);
-
-    ASTFrontendAction::BeforParsing(CI);
+    if (jit) {
+      CI.getASTContext().SetJennyJIT(*jit);
+      consumeError(jit.takeError());
+      return ASTFrontendAction::BeforeParsing(CI);
+    }
+    else {
+      return jit.takeError();
+    }
 }
 
 //

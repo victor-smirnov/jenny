@@ -1764,25 +1764,20 @@ static bool ShouldDiagnoseUnusedDecl(const NamedDecl *D) {
   if (D->isInvalidDecl())
     return false;
 
-  bool Referenced = false;
   if (auto *DD = dyn_cast<DecompositionDecl>(D)) {
     // For a decomposition declaration, warn if none of the bindings are
     // referenced, instead of if the variable itself is referenced (which
     // it is, by the bindings' expressions).
-    for (auto *BD : DD->bindings()) {
-      if (BD->isReferenced()) {
-        Referenced = true;
-        break;
-      }
-    }
+    for (auto *BD : DD->bindings())
+      if (BD->isReferenced())
+        return false;
   } else if (!D->getDeclName()) {
     return false;
   } else if (D->isReferenced() || D->isUsed()) {
-    Referenced = true;
+    return false;
   }
 
-  if (Referenced || D->hasAttr<UnusedAttr>() ||
-      D->hasAttr<ObjCPreciseLifetimeAttr>())
+  if (D->hasAttr<UnusedAttr>() || D->hasAttr<ObjCPreciseLifetimeAttr>())
     return false;
 
   if (isa<LabelDecl>(D))
@@ -8042,7 +8037,7 @@ void Sema::CheckVariableDeclarationType(VarDecl *NewVD) {
     return;
   }
 
-  if (!NewVD->hasLocalStorage() && T->isSizelessType() && !T->isVLST()) {
+  if (!NewVD->hasLocalStorage() && T->isSizelessType()) {
     Diag(NewVD->getLocation(), diag::err_sizeless_nonlocal) << T;
     NewVD->setInvalidDecl();
     return;
@@ -12500,18 +12495,23 @@ void Sema::ActOnUninitializedDecl(Decl *RealDecl) {
     }
 
     if (!Var->isInvalidDecl() && RealDecl->hasAttr<LoaderUninitializedAttr>()) {
+      if (Var->getStorageClass() == SC_Extern) {
+        Diag(Var->getLocation(), diag::err_loader_uninitialized_extern_decl)
+            << Var;
+        Var->setInvalidDecl();
+        return;
+      }
+      if (RequireCompleteType(Var->getLocation(), Var->getType(),
+                              diag::err_typecheck_decl_incomplete_type)) {
+        Var->setInvalidDecl();
+        return;
+      }
       if (CXXRecordDecl *RD = Var->getType()->getAsCXXRecordDecl()) {
         if (!RD->hasTrivialDefaultConstructor()) {
           Diag(Var->getLocation(), diag::err_loader_uninitialized_trivial_ctor);
           Var->setInvalidDecl();
           return;
         }
-      }
-      if (Var->getStorageClass() == SC_Extern) {
-        Diag(Var->getLocation(), diag::err_loader_uninitialized_extern_decl)
-            << Var;
-        Var->setInvalidDecl();
-        return;
       }
     }
 
@@ -12908,6 +12908,54 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
       var->addAttr(InitSegAttr::CreateImplicit(Context, CurInitSeg->getString(),
                                                CurInitSegLoc,
                                                AttributeCommonInfo::AS_Pragma));
+  }
+
+  if (!var->getType()->isStructureType() && var->hasInit() &&
+      isa<InitListExpr>(var->getInit())) {
+    const auto *ILE = cast<InitListExpr>(var->getInit());
+    unsigned NumInits = ILE->getNumInits();
+    if (NumInits > 2)
+      for (unsigned I = 0; I < NumInits; ++I) {
+        const auto *Init = ILE->getInit(I);
+        if (!Init)
+          break;
+        const auto *SL = dyn_cast<StringLiteral>(Init->IgnoreImpCasts());
+        if (!SL)
+          break;
+
+        unsigned NumConcat = SL->getNumConcatenated();
+        // Diagnose missing comma in string array initialization.
+        // Do not warn when all the elements in the initializer are concatenated
+        // together. Do not warn for macros too.
+        if (NumConcat == 2 && !SL->getBeginLoc().isMacroID()) {
+          bool OnlyOneMissingComma = true;
+          for (unsigned J = I + 1; J < NumInits; ++J) {
+            const auto *Init = ILE->getInit(J);
+            if (!Init)
+              break;
+            const auto *SLJ = dyn_cast<StringLiteral>(Init->IgnoreImpCasts());
+            if (!SLJ || SLJ->getNumConcatenated() > 1) {
+              OnlyOneMissingComma = false;
+              break;
+            }
+          }
+
+          if (OnlyOneMissingComma) {
+            SmallVector<FixItHint, 1> Hints;
+            for (unsigned i = 0; i < NumConcat - 1; ++i)
+              Hints.push_back(FixItHint::CreateInsertion(
+                  PP.getLocForEndOfToken(SL->getStrTokenLoc(i)), ","));
+
+            Diag(SL->getStrTokenLoc(1),
+                 diag::warn_concatenated_literal_array_init)
+                << Hints;
+            Diag(SL->getBeginLoc(),
+                 diag::note_concatenated_string_literal_silence);
+          }
+          // In any case, stop now.
+          break;
+        }
+      }
   }
 
   // All the following checks are C++ only.
@@ -13558,7 +13606,13 @@ Decl *Sema::ActOnParamDeclarator(Scope *S, Declarator &D) {
   CheckFunctionOrTemplateParamDeclarator(S, D);
 
   TypeSourceInfo *TInfo = GetTypeForDeclarator(D, S);
-  QualType ParmType = CheckParameterPassingMode(*this, PPK, TInfo);
+
+  // Adjust the type based on parameter passing mode.
+  if (PPK != PPK_unspecified) {
+    // FIXME: We can probably do better than trivial soruce info.
+    QualType ParmType = CheckParameterPassingMode(*this, PPK, TInfo);
+    TInfo = Context.getTrivialTypeSourceInfo(ParmType);
+  }
 
   DeclarationNameInfo DNI = FindParamName(*this, S, D);
 
@@ -13567,7 +13621,7 @@ Decl *Sema::ActOnParamDeclarator(Scope *S, Declarator &D) {
   // looking like class members in C++.
   ParmVarDecl *New =
       CheckParameter(Context.getTranslationUnitDecl(), D.getBeginLoc(),
-                     DNI, ParmType, TInfo, SC);
+                     DNI, TInfo->getType(), TInfo, SC);
 
   if (D.isInvalidType())
     New->setInvalidDecl();
@@ -14294,6 +14348,25 @@ static void diagnoseImplicitlyRetainedSelf(Sema &S) {
           << FixItHint::CreateInsertion(P.first, "self->");
 }
 
+// Returns true if D is a movable input parameter, which is only the case
+// when D is nontrivial.
+static bool isMovableInParameter(ASTContext &Ctx, ParmVarDecl *D) {
+  QualType T = D->getType();
+  if (const auto *PT = dyn_cast<ParameterType>(T))
+    if (PT->isInParameter())
+      return !InParameterType::isPassByValue(Ctx, PT->getParameterType());
+  return false;
+}
+
+// Returns true if D has any in parameters that can be moved.
+static bool hasMovableInParameters(ASTContext &Ctx, FunctionDecl *D)
+{
+  for (std::size_t I = 0; I < D->getNumParams(); ++I)
+    if (isMovableInParameter(Ctx, D->getParamDecl(I)))
+      return true;
+  return false;
+}
+
 Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
                                     bool IsInstantiation) {
   FunctionDecl *FD = dcl ? dcl->getAsFunction() : nullptr;
@@ -14322,6 +14395,9 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
   if (FD) {
     FD->setBody(Body);
     FD->setWillHaveBody(false);
+
+    if (hasMovableInParameters(Context, FD))
+      computeMoveOnLastUse(FD);
 
     if (getLangOpts().CPlusPlus14) {
       if (!FD->isInvalidDecl() && Body && !FD->isDependentContext() &&

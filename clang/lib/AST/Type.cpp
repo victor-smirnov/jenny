@@ -2347,11 +2347,42 @@ bool Type::isVLSTBuiltinType() const {
   return false;
 }
 
-bool Type::isVLST() const {
-  if (!isVLSTBuiltinType())
-    return false;
+QualType Type::getSveEltType(const ASTContext &Ctx) const {
+  assert(isVLSTBuiltinType() && "unsupported type!");
 
-  return hasAttr(attr::ArmSveVectorBits);
+  const BuiltinType *BTy = getAs<BuiltinType>();
+  switch (BTy->getKind()) {
+  default:
+    llvm_unreachable("Unknown builtin SVE type!");
+  case BuiltinType::SveInt8:
+    return Ctx.SignedCharTy;
+  case BuiltinType::SveUint8:
+  case BuiltinType::SveBool:
+    // Represent predicates as i8 rather than i1 to avoid any layout issues.
+    // The type is bitcasted to a scalable predicate type when casting between
+    // scalable and fixed-length vectors.
+    return Ctx.UnsignedCharTy;
+  case BuiltinType::SveInt16:
+    return Ctx.ShortTy;
+  case BuiltinType::SveUint16:
+    return Ctx.UnsignedShortTy;
+  case BuiltinType::SveInt32:
+    return Ctx.IntTy;
+  case BuiltinType::SveUint32:
+    return Ctx.UnsignedIntTy;
+  case BuiltinType::SveInt64:
+    return Ctx.LongTy;
+  case BuiltinType::SveUint64:
+    return Ctx.UnsignedLongTy;
+  case BuiltinType::SveFloat16:
+    return Ctx.Float16Ty;
+  case BuiltinType::SveBFloat16:
+    return Ctx.BFloat16Ty;
+  case BuiltinType::SveFloat32:
+    return Ctx.FloatTy;
+  case BuiltinType::SveFloat64:
+    return Ctx.DoubleTy;
+  }
 }
 
 bool QualType::isPODType(const ASTContext &Context) const {
@@ -4503,10 +4534,10 @@ CXXRecordDecl *MemberPointerType::getMostRecentCXXRecordDecl() const {
 
 void clang::FixedPointValueToString(SmallVectorImpl<char> &Str,
                                     llvm::APSInt Val, unsigned Scale) {
-  FixedPointSemantics FXSema(Val.getBitWidth(), Scale, Val.isSigned(),
-                             /*IsSaturated=*/false,
-                             /*HasUnsignedPadding=*/false);
-  APFixedPoint(Val, FXSema).toString(Str);
+  llvm::FixedPointSemantics FXSema(Val.getBitWidth(), Scale, Val.isSigned(),
+                                   /*IsSaturated=*/false,
+                                   /*HasUnsignedPadding=*/false);
+  llvm::APFixedPoint(Val, FXSema).toString(Str);
 }
 
 AutoType::AutoType(QualType DeducedAsType, AutoTypeKeyword Keyword,
@@ -4540,3 +4571,59 @@ void AutoType::Profile(llvm::FoldingSetNodeID &ID, const ASTContext &Context,
     Arg.Profile(ID, Context);
 }
 
+QualType ParameterType::getAdjustedType(const ASTContext &Ctx)  const {
+  QualType T = getParameterType();
+  switch (getParameterPassingMode()) {
+  case PPK_in:
+    if (T->isClassType() && InParameterType::isPassByReference(Ctx, T))
+      T = Ctx.getLValueReferenceType(Ctx.getConstType(T));
+    return T;
+
+  case PPK_out:
+  case PPK_inout:
+    return Ctx.getLValueReferenceType(T);
+
+  case PPK_move:
+    if (T->isClassType() && InParameterType::isPassByReference(Ctx, T))
+      T = Ctx.getRValueReferenceType(T);
+    return T;
+
+  default:
+    break;
+  }
+  llvm_unreachable("Invalid parameter passing mode");
+}
+
+static bool shouldPassByValue(const ASTContext &Ctx, QualType T) {
+  assert(!T->isParameterType());
+
+  // Scalar types are always passed by value.
+  if (T->isScalarType())
+    return true;
+
+  // Function and array types decay to pointers, so those are also passed
+  // by value (presumably).
+  if (T->isFunctionType() || T->isArrayType())
+    return true;
+
+  // Trivially copyable class types whose size is less or equal to that of a
+  // pointer are passed by value.
+  //
+  // TODO: Some ABIs allow certain types to be coerced into multiple integer
+  // registers. By comparing against just the size of a pointer, we might
+  // actually be inhibiting some optimizations in those cases.
+  if (const CXXRecordDecl *Class = T->getAsCXXRecordDecl())
+    if (Class->isTriviallyCopyable())
+      if (Ctx.getTypeSize(T) <= Ctx.getTypeSize(Ctx.VoidPtrTy))
+        return true;
+  
+  return false;
+}
+
+bool InParameterType::isPassByValue(const ASTContext &Ctx, QualType T) {
+  return shouldPassByValue(Ctx, T);
+}
+
+bool MoveParameterType::isPassByValue(const ASTContext &Ctx, QualType T) {
+  return shouldPassByValue(Ctx, T);
+}

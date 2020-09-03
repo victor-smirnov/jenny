@@ -141,12 +141,13 @@ static void addExtParameterInfosForCall(
 
 static CanQualType getAdjustedParameterType(ASTContext &Ctx, CanQualType T) {
   if (auto const *Parm = dyn_cast<ParameterType>(T))
-    T = Ctx.getCanonicalType(Parm->getAdjustedType());
+    T = Ctx.getCanonicalType(Parm->getAdjustedType(Ctx));
   return T;
 }
 
 /// Adds the formal parameters in FPT to the given prefix. If any parameter in
 /// FPT has pass_object_size attrs, then we'll add parameters for those, too.
+/// Same for in- and out-parameters.
 static void appendParameterTypes(const CodeGenTypes &CGT,
                                  SmallVectorImpl<CanQualType> &prefix,
               SmallVectorImpl<FunctionProtoType::ExtParameterInfo> &paramInfos,
@@ -159,8 +160,13 @@ static void appendParameterTypes(const CodeGenTypes &CGT,
            "We have paramInfos, but the prototype doesn't?");
     // Copy out parameters, performing adjustments as needed.
     for (unsigned I = 0, E = FPT->getNumParams(); I != E; ++I) {
-      CanQualType T = getAdjustedParameterType(Ctx, FPT->getParamType(I));
-      prefix.push_back(T);
+      CanQualType PT = FPT->getParamType(I);
+      prefix.push_back(getAdjustedParameterType(Ctx, PT));
+
+      // If the original was an input or output parameter, add a new parameter
+      // to communicate call-site information to function.
+      if (isa<InParameterType>(PT) || isa<OutParameterType>(PT))
+        prefix.push_back(Ctx.BoolTy);
     }
     return;
   }
@@ -1133,12 +1139,13 @@ void CodeGenFunction::ExpandTypeToArgs(
 
 /// Create a temporary allocation for the purposes of coercion.
 static Address CreateTempAllocaForCoercion(CodeGenFunction &CGF, llvm::Type *Ty,
-                                           CharUnits MinAlign) {
+                                           CharUnits MinAlign,
+                                           const Twine &Name = "tmp") {
   // Don't use an alignment that's worse than what LLVM would prefer.
   auto PrefAlign = CGF.CGM.getDataLayout().getPrefTypeAlignment(Ty);
   CharUnits Align = std::max(MinAlign, CharUnits::fromQuantity(PrefAlign));
 
-  return CGF.CreateTempAlloca(Ty, Align);
+  return CGF.CreateTempAlloca(Ty, Align, Name + ".coerce");
 }
 
 /// EnterStructPointerForCoercedAccess - Given a struct pointer that we are
@@ -1244,14 +1251,15 @@ static llvm::Value *CreateCoercedLoad(Address Src, llvm::Type *Ty,
   if (SrcTy == Ty)
     return CGF.Builder.CreateLoad(Src);
 
-  uint64_t DstSize = CGF.CGM.getDataLayout().getTypeAllocSize(Ty);
+  llvm::TypeSize DstSize = CGF.CGM.getDataLayout().getTypeAllocSize(Ty);
 
   if (llvm::StructType *SrcSTy = dyn_cast<llvm::StructType>(SrcTy)) {
-    Src = EnterStructPointerForCoercedAccess(Src, SrcSTy, DstSize, CGF);
+    Src = EnterStructPointerForCoercedAccess(Src, SrcSTy,
+                                             DstSize.getFixedSize(), CGF);
     SrcTy = Src.getElementType();
   }
 
-  uint64_t SrcSize = CGF.CGM.getDataLayout().getTypeAllocSize(SrcTy);
+  llvm::TypeSize SrcSize = CGF.CGM.getDataLayout().getTypeAllocSize(SrcTy);
 
   // If the source and destination are integer or pointer types, just do an
   // extension or truncation to the desired type.
@@ -1262,7 +1270,8 @@ static llvm::Value *CreateCoercedLoad(Address Src, llvm::Type *Ty,
   }
 
   // If load is legal, just bitcast the src pointer.
-  if (SrcSize >= DstSize) {
+  if (!SrcSize.isScalable() && !DstSize.isScalable() &&
+      SrcSize.getFixedSize() >= DstSize.getFixedSize()) {
     // Generally SrcSize is never greater than DstSize, since this means we are
     // losing bits. However, this can happen in cases where the structure has
     // additional padding, for example due to a user specified alignment.
@@ -1275,10 +1284,12 @@ static llvm::Value *CreateCoercedLoad(Address Src, llvm::Type *Ty,
   }
 
   // Otherwise do coercion through memory. This is stupid, but simple.
-  Address Tmp = CreateTempAllocaForCoercion(CGF, Ty, Src.getAlignment());
-  CGF.Builder.CreateMemCpy(Tmp.getPointer(), Tmp.getAlignment().getAsAlign(),
-                           Src.getPointer(), Src.getAlignment().getAsAlign(),
-                           llvm::ConstantInt::get(CGF.IntPtrTy, SrcSize));
+  Address Tmp =
+      CreateTempAllocaForCoercion(CGF, Ty, Src.getAlignment(), Src.getName());
+  CGF.Builder.CreateMemCpy(
+      Tmp.getPointer(), Tmp.getAlignment().getAsAlign(), Src.getPointer(),
+      Src.getAlignment().getAsAlign(),
+      llvm::ConstantInt::get(CGF.IntPtrTy, SrcSize.getKnownMinSize()));
   return CGF.Builder.CreateLoad(Tmp);
 }
 
@@ -1317,10 +1328,11 @@ static void CreateCoercedStore(llvm::Value *Src,
     return;
   }
 
-  uint64_t SrcSize = CGF.CGM.getDataLayout().getTypeAllocSize(SrcTy);
+  llvm::TypeSize SrcSize = CGF.CGM.getDataLayout().getTypeAllocSize(SrcTy);
 
   if (llvm::StructType *DstSTy = dyn_cast<llvm::StructType>(DstTy)) {
-    Dst = EnterStructPointerForCoercedAccess(Dst, DstSTy, SrcSize, CGF);
+    Dst = EnterStructPointerForCoercedAccess(Dst, DstSTy,
+                                             SrcSize.getFixedSize(), CGF);
     DstTy = Dst.getElementType();
   }
 
@@ -1342,10 +1354,12 @@ static void CreateCoercedStore(llvm::Value *Src,
     return;
   }
 
-  uint64_t DstSize = CGF.CGM.getDataLayout().getTypeAllocSize(DstTy);
+  llvm::TypeSize DstSize = CGF.CGM.getDataLayout().getTypeAllocSize(DstTy);
 
   // If store is legal, just bitcast the src pointer.
-  if (SrcSize <= DstSize) {
+  if (isa<llvm::ScalableVectorType>(SrcTy) ||
+      isa<llvm::ScalableVectorType>(DstTy) ||
+      SrcSize.getFixedSize() <= DstSize.getFixedSize()) {
     Dst = CGF.Builder.CreateElementBitCast(Dst, SrcTy);
     CGF.EmitAggregateStore(Src, Dst, DstIsVolatile);
   } else {
@@ -1360,9 +1374,10 @@ static void CreateCoercedStore(llvm::Value *Src,
     // to that information.
     Address Tmp = CreateTempAllocaForCoercion(CGF, SrcTy, Dst.getAlignment());
     CGF.Builder.CreateStore(Src, Tmp);
-    CGF.Builder.CreateMemCpy(Dst.getPointer(), Dst.getAlignment().getAsAlign(),
-                             Tmp.getPointer(), Tmp.getAlignment().getAsAlign(),
-                             llvm::ConstantInt::get(CGF.IntPtrTy, DstSize));
+    CGF.Builder.CreateMemCpy(
+        Dst.getPointer(), Dst.getAlignment().getAsAlign(), Tmp.getPointer(),
+        Tmp.getAlignment().getAsAlign(),
+        llvm::ConstantInt::get(CGF.IntPtrTy, DstSize.getFixedSize()));
   }
 }
 
@@ -2440,17 +2455,17 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
     const VarDecl *Arg = *i;
     const ABIArgInfo &ArgI = info_it->info;
 
+    // We are converting from ABIArgInfo type to VarDecl type directly, unless
+    // the parameter is promoted. In this case we convert to
+    // CGFunctionInfo::ArgInfo type with subsequent argument demotion.
+    //
+    // We are also covnerting if the parameter has parameter passing mode.
     bool isPromoted = false;
     bool isAdjusted = false;
     if (const ParmVarDecl *Parm = dyn_cast<ParmVarDecl>(Arg)) {
       isPromoted = Parm->isKNRPromoted();
       isAdjusted = Parm->hasParameterPassingMode();
     }
-    // We are converting from ABIArgInfo type to VarDecl type directly, unless
-    // the parameter is promoted. In this case we convert to
-    // CGFunctionInfo::ArgInfo type with subsequent argument demotion.
-    //
-    // We are also covnerting if the parameter has parameter passing mode.
     QualType Ty = (isPromoted || isAdjusted) ? info_it->type : Arg->getType();
 
     assert(hasScalarEvaluationKind(Ty) ==
@@ -2540,6 +2555,9 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
             // bytes).
             if (ArrTy->getSizeModifier() == ArrayType::Static) {
               QualType ETy = ArrTy->getElementType();
+              llvm::Align Alignment =
+                  CGM.getNaturalTypeAlignment(ETy).getAsAlign();
+              AI->addAttrs(llvm::AttrBuilder().addAlignmentAttr(Alignment));
               uint64_t ArrSize = ArrTy->getSize().getZExtValue();
               if (!ETy->isIncompleteType() && ETy->isConstantSizeType() &&
                   ArrSize) {
@@ -2559,10 +2577,15 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
             // For C99 VLAs with the static keyword, we don't know the size so
             // we can't use the dereferenceable attribute, but in addrspace(0)
             // we know that it must be nonnull.
-            if (ArrTy->getSizeModifier() == VariableArrayType::Static &&
-                !getContext().getTargetAddressSpace(ArrTy->getElementType()) &&
-                !CGM.getCodeGenOpts().NullPointerIsValid)
-              AI->addAttr(llvm::Attribute::NonNull);
+            if (ArrTy->getSizeModifier() == VariableArrayType::Static) {
+              QualType ETy = ArrTy->getElementType();
+              llvm::Align Alignment =
+                  CGM.getNaturalTypeAlignment(ETy).getAsAlign();
+              AI->addAttrs(llvm::AttrBuilder().addAlignmentAttr(Alignment));
+              if (!getContext().getTargetAddressSpace(ETy) &&
+                  !CGM.getCodeGenOpts().NullPointerIsValid)
+                AI->addAttr(llvm::Attribute::NonNull);
+            }
           }
 
           // Set `align` attribute if any.
@@ -3860,7 +3883,8 @@ void CodeGenFunction::EmitCallArgs(
     assert(InitialArgSize + 1 == Args.size() &&
            "The code below depends on only adding one arg per EmitCallArg");
     (void)InitialArgSize;
-    // Since pointer argument are never emitted as LValue, it is safe to emit
+
+    // Since pointer arguments are never emitted as LValue, it is safe to emit
     // non-null argument check for r-value only.
     if (!Args.back().hasLValue()) {
       RValue RVArg = Args.back().getKnownRValue();
@@ -3870,6 +3894,35 @@ void CodeGenFunction::EmitCallArgs(
       // destruction/cleanups, so we can safely "emit" it after its arg,
       // regardless of right-to-leftness
       MaybeEmitImplicitObjectSize(Idx, *Arg, RVArg);
+    }
+
+    // Insert additional arguments for in- and out-parameters types.
+    if (const auto *PT = dyn_cast<ParameterType>(ArgTypes[Idx])) {
+      const Expr *E = *Arg;
+      llvm::Value *True = llvm::ConstantInt::getTrue(getLLVMContext());
+      llvm::Value *False = llvm::ConstantInt::getFalse(getLLVMContext());
+      llvm::Value *V;
+      if (PT->isInParameter())
+        // An input parameter is finally movable if it is passed as a prvalue
+        // or xvalue.
+        //
+        // TODO: Can we move a const rvalue or xvalue? Can we even get const
+        // expressions in these contexts?
+        V = E->isRValue() || E->isXValue() ? True : False;
+      else if (PT->isOutParameter())
+        // An output parameter is either uninitialized or not.
+        //
+        // TODO: Everything in C++ is initialzed. How would I know whether
+        // something is initialized or not?
+        V = True;
+      else
+        // Inout and move parameters do not have etra parameters.
+        continue;
+
+      // Add the argument, swapping order as needed.
+      Args.add(RValue::get(V), getContext().BoolTy);
+      if (!LeftToRight)
+        std::swap(Args.back(), *(&Args.back() - 1));
     }
   }
 
@@ -3953,6 +4006,10 @@ void CodeGenFunction::EmitCallArg(CallArgList &args, const Expr *E,
     return emitWritebackArg(*this, args, CRE);
   }
 
+  // Get the adjusted parameter type as needed.
+  if (type->isParameterType())
+    type = cast<ParameterType>(type)->getAdjustedType(getContext());
+
   // Ignore parameter adjustments.
   if (const auto *Cast = dyn_cast<ImplicitCastExpr>(E))
     if (Cast->getCastKind() == CK_ParameterQualification)
@@ -3967,10 +4024,6 @@ void CodeGenFunction::EmitCallArg(CallArgList &args, const Expr *E,
   }
 
   bool HasAggregateEvalKind = hasAggregateEvaluationKind(type);
-
-  // Get the adjusted parameter type as needed.
-  if (type->isParameterType())
-    type = cast<ParameterType>(type)->getAdjustedType();
 
   // In the Microsoft C++ ABI, aggregate arguments are destructed by the callee.
   // However, we still have to push an EH-only cleanup in case we unwind before

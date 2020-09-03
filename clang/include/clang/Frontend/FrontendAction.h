@@ -107,7 +107,9 @@ protected:
   /// BeginSourceFileAction (and BeginSourceFile).
   virtual bool shouldEraseOutputFiles();
 
-  virtual void BeforParsing(CompilerInstance &CI) {}
+  virtual llvm::Error BeforeParsing(CompilerInstance &CI) {
+    return llvm::Error::success();
+  }
 
   /// @}
 

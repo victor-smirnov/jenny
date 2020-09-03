@@ -672,12 +672,13 @@ public:
     initFullExprCleanup();
   }
 
-  /// Queue a cleanup to be pushed after finishing the current
-  /// full-expression.
+  /// Queue a cleanup to be pushed after finishing the current full-expression,
+  /// potentially with an active flag.
   template <class T, class... As>
   void pushCleanupAfterFullExpr(CleanupKind Kind, As... A) {
     if (!isInConditionalBranch())
-      return pushCleanupAfterFullExprImpl<T>(Kind, Address::invalid(), A...);
+      return pushCleanupAfterFullExprWithActiveFlag<T>(Kind, Address::invalid(),
+                                                       A...);
 
     Address ActiveFlag = createCleanupActiveFlag();
     assert(!DominatingValue<Address>::needsSaving(ActiveFlag) &&
@@ -687,12 +688,12 @@ public:
     SavedTuple Saved{saveValueInCond(A)...};
 
     typedef EHScopeStack::ConditionalCleanup<T, As...> CleanupType;
-    pushCleanupAfterFullExprImpl<CleanupType>(Kind, ActiveFlag, Saved);
+    pushCleanupAfterFullExprWithActiveFlag<CleanupType>(Kind, ActiveFlag, Saved);
   }
 
   template <class T, class... As>
-  void pushCleanupAfterFullExprImpl(CleanupKind Kind, Address ActiveFlag,
-                                    As... A) {
+  void pushCleanupAfterFullExprWithActiveFlag(CleanupKind Kind,
+                                              Address ActiveFlag, As... A) {
     LifetimeExtendedCleanupHeader Header = {sizeof(T), Kind,
                                             ActiveFlag.isValid()};
 
@@ -1153,7 +1154,7 @@ public:
   public:
     OpaqueValueMappingData() : OpaqueValue(nullptr) {}
 
-    static bool shouldBindAsLValue(const Expr *expr) {
+    static bool shouldBindAsLValue(CodeGenFunction &CGF, const Expr *expr) {
       // gl-values should be bound as l-values for obvious reasons.
       // Records should be bound as l-values because IR generation
       // always keeps them in memory.  Expressions of function type
@@ -1161,13 +1162,13 @@ public:
       // r-values in C.
       return expr->isGLValue() ||
              expr->getType()->isFunctionType() ||
-             hasAggregateEvaluationKind(expr->getType());
+             CGF.hasAggregateEvaluationKind(expr->getType());
     }
 
     static OpaqueValueMappingData bind(CodeGenFunction &CGF,
                                        const OpaqueValueExpr *ov,
                                        const Expr *e) {
-      if (shouldBindAsLValue(ov))
+      if (shouldBindAsLValue(CGF, ov))
         return bind(CGF, ov, CGF.EmitLValue(e));
       return bind(CGF, ov, CGF.EmitAnyExpr(e));
     }
@@ -1175,7 +1176,7 @@ public:
     static OpaqueValueMappingData bind(CodeGenFunction &CGF,
                                        const OpaqueValueExpr *ov,
                                        const LValue &lv) {
-      assert(shouldBindAsLValue(ov));
+      assert(shouldBindAsLValue(CGF, ov));
       CGF.OpaqueLValues.insert(std::make_pair(ov, lv));
       return OpaqueValueMappingData(ov, true);
     }
@@ -1183,7 +1184,7 @@ public:
     static OpaqueValueMappingData bind(CodeGenFunction &CGF,
                                        const OpaqueValueExpr *ov,
                                        const RValue &rv) {
-      assert(!shouldBindAsLValue(ov));
+      assert(!shouldBindAsLValue(CGF, ov));
       CGF.OpaqueRValues.insert(std::make_pair(ov, rv));
 
       OpaqueValueMappingData data(ov, false);
@@ -1217,8 +1218,8 @@ public:
     OpaqueValueMappingData Data;
 
   public:
-    static bool shouldBindAsLValue(const Expr *expr) {
-      return OpaqueValueMappingData::shouldBindAsLValue(expr);
+    static bool shouldBindAsLValue(CodeGenFunction &CGF, const Expr *expr) {
+      return OpaqueValueMappingData::shouldBindAsLValue(CGF, expr);
     }
 
     /// Build the opaque value mapping for the given conditional
@@ -1300,6 +1301,13 @@ private:
   /// parameter.
   llvm::SmallDenseMap<const ParmVarDecl *, const ImplicitParamDecl *, 2>
       SizeArguments;
+
+  /// Provides a mapping from all in/out parameters to their implicit call-site
+  /// information parameters. For input paramteers, this is whether the argument
+  /// can be moved and for output parameters, it's whether the object has been
+  /// initialized.
+  llvm::SmallDenseMap<const ParmVarDecl *, const ImplicitParamDecl *, 2>
+      InOutArguments;
 
   /// Track escaped local variables with auto storage. Used during SEH
   /// outlining to produce a call to llvm.localescape.
@@ -2271,14 +2279,27 @@ public:
   QualType TypeOfSelfObject();
 
   /// getEvaluationKind - Return the TypeEvaluationKind of QualType \c T.
-  static TypeEvaluationKind getEvaluationKind(QualType T);
+  static TypeEvaluationKind getEvaluationKind(ASTContext &Ctx, QualType T);
 
-  static bool hasScalarEvaluationKind(QualType T) {
-    return getEvaluationKind(T) == TEK_Scalar;
+  static bool hasScalarEvaluationKind(ASTContext &Ctx, QualType T) {
+    return getEvaluationKind(Ctx, T) == TEK_Scalar;
   }
 
-  static bool hasAggregateEvaluationKind(QualType T) {
-    return getEvaluationKind(T) == TEK_Aggregate;
+  static bool hasAggregateEvaluationKind(ASTContext& Ctx, QualType T) {
+    return getEvaluationKind(Ctx, T) == TEK_Aggregate;
+  }
+
+  /// getEvaluationKind - Return the TypeEvaluationKind of QualType \c T.
+  TypeEvaluationKind getEvaluationKind(QualType T) {
+    return getEvaluationKind(getContext(), T);
+  }
+
+  bool hasScalarEvaluationKind(QualType T) {
+    return hasScalarEvaluationKind(getContext(), T);
+  }
+
+  bool hasAggregateEvaluationKind(QualType T) {
+    return hasAggregateEvaluationKind(getContext(), T);
   }
 
   /// createBasicBlock - Create an LLVM basic block.
@@ -4585,32 +4606,21 @@ public:
 //              .getTypePtr()->dump();
 
         assert(Arg != ArgRange.end() && "Running over edge of argument list!");
-
-        // Adjust parameter types as needed...
-        QualType PT = *I;
-        if (const auto *ParmType = dyn_cast<ParameterType>(PT))
-          PT = ParmType->getAdjustedType();
-
-        // ... and the initializer also. If this is a parameter qualification,
-        // strip off the implicit cast so we check the actual type of the
-        // argument (other implicit casts are salient).
+        QualType P = *I;
         const Expr *A = *Arg;
-        if (const auto *Cast = dyn_cast<ImplicitCastExpr>(A))
-          if (Cast->getCastKind() == CK_ParameterQualification)
-            A = Cast->getSubExpr();
-
         assert((isGenericMethod ||
-                (PT->isVariablyModifiedType() ||
-                 PT.getNonReferenceType()->isObjCRetainableType() ||
+                (P->isParameterType() || // TODO: Stop ignoring these
+                 P->isVariablyModifiedType() ||
+                 P.getNonReferenceType()->isObjCRetainableType() ||
                  getContext()
-                         .getCanonicalType(PT.getNonReferenceType())
+                         .getCanonicalType(P.getNonReferenceType())
                          .getTypePtr() ==
                  getContext()
                          .getCanonicalType(A->getType())
                          .getTypePtr())) &&
                "type mismatch in call argument!");
 
-        ArgTypes.push_back(PT);
+        ArgTypes.push_back(P);
       }
     }
 
