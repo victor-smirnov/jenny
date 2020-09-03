@@ -76,6 +76,7 @@ set(files
   limits.h
   lwpintrin.h
   lzcntintrin.h
+  meta/compiler.h
   mm3dnow.h
   mmintrin.h
   mm_malloc.h
@@ -132,6 +133,7 @@ set(files
   xsavesintrin.h
   xtestintrin.h
   )
+
 
 set(cuda_wrapper_files
   cuda_wrappers/algorithm

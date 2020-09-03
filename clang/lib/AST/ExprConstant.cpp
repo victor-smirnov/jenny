@@ -59,6 +59,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Error.h"
 
 #include "JennyJITFnAdapter.h"
 
@@ -7717,15 +7718,34 @@ public:
 
     const char* Symbol = E->GetSymbol();
     if (!Symbol) {
-      FunctionDecl* decl = jit.CreateAdapter(E->getOperand(), Adapter.types());
-      std::string fn_name = jit.compile(decl);
-      Symbol = const_cast<JennyMetaCallExpr*>(E)->SetSymbol(Info.ASTCtx, fn_name.c_str());
+      Expected<FunctionDecl*> decl = jit.CreateAdapter(E->getOperand(), Adapter.types());
+      if (decl) {
+        Expected<std::string> fn_name = jit.compile(*decl);
+        if (fn_name) {
+          Symbol = const_cast<JennyMetaCallExpr*>(E)->SetSymbol(Info.ASTCtx, fn_name->c_str());
+        }
+        else {
+          llvm::consumeError(fn_name.takeError());
+          return false;
+        }
+      }
+      else {
+        //decl.getErrorStorage()->
+        Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << "AAA";
+        llvm::consumeError(decl.takeError());
+        return false;
+      }
     }
 
     using AdapterFnTy = JennyJIT::AdapterFn;
 
-    AdapterFnTy fn = (AdapterFnTy)jit.GetSymbol(Symbol);
-    fn(Adapter);
+    if (Expected<void*> fn_v = jit.GetSymbol(Symbol)) {
+      AdapterFnTy fn = (AdapterFnTy)*fn_v;
+      fn(Adapter);
+    }
+    else {
+      return false;
+    }
 
     if (Optional<APValue> result = Adapter.getAPValueResult()) {
         return DerivedSuccess(*result, E);

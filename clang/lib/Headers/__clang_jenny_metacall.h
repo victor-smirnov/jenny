@@ -12,6 +12,8 @@
  * directly.
  */
 
+#pragma once
+
 namespace __jy {
 
 struct JennyMetaCallAdapter {

@@ -13,6 +13,7 @@
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/Error.h"
 
 #include "clang/AST/Type.h"
 
@@ -40,12 +41,12 @@ struct JennyJIT {
 
   using AdapterFn = void (*) (::__jy::JennyMetaCallAdapter&);
 
-  virtual FunctionDecl* CreateAdapter(const CallExpr* call, llvm::ArrayRef<QualType> args) noexcept = 0;
-  virtual std::string compile(FunctionDecl* adapter) noexcept  = 0;
+  virtual Expected<FunctionDecl*> CreateAdapter(const CallExpr* call, llvm::ArrayRef<QualType> args) noexcept = 0;
+  virtual Expected<std::string> compile(FunctionDecl* adapter) noexcept  = 0;
 
-  virtual void* GetSymbol(llvm::StringRef name) noexcept = 0;
+  virtual Expected<void*> GetSymbol(llvm::StringRef name) noexcept = 0;
 
-  static std::shared_ptr<JennyJIT> Create(
+  static Expected<std::shared_ptr<JennyJIT>> Create(
       ASTContext& Ctx,
       const std::vector<std::string>& jitLibs,
       DiagnosticsEngine& diagnostics,

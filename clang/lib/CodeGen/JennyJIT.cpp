@@ -12,6 +12,7 @@
 
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ADT/StringMap.h>
+#include <llvm/Support/FormatVariadic.h>
 
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTConsumer.h"
@@ -30,6 +31,11 @@
 #include <clang/AST/DeclGroup.h>
 #include <clang/AST/Decl.h>
 #include <clang/Sema/Sema.h>
+
+#include <llvm/Object/Archive.h>
+#include <llvm/Object/Binary.h>
+#include <llvm/Object/ObjectFile.h>
+
 
 #include "clang/Basic/JennyJIT.h"
 
@@ -126,13 +132,14 @@ public:
       DiagnosticsEngine& diagnostics,
       HeaderSearchOptions header_search_options,
       PreprocessorOptions preprocessor_options,
-      CodeGenOptions codegen_options
-      ):  ast_context_(&AstCtx),
+      CodeGenOptions codegen_options,
+      Error& error
+  ):  ast_context_(&AstCtx),
     Ctx(AstCtx),
     JitLibs(jitLibs),
     diagnostics_(&diagnostics),
     header_search_options_(header_search_options),
-    codegen_options_(codegen_options),
+    codegen_options_(process(codegen_options)),
     name_gen_(*ast_context_),
     llvm_ctx_(std::make_unique<LLVMContext>()),
     code_generator_(CreateLLVMCodeGen(
@@ -150,15 +157,65 @@ public:
     jit_->getMainJITDylib().addGenerator(std::make_unique<SymbolGenerator>(*this));
 
     for (auto fileName: JitLibs) {
-      cantFail(jit_->addObjectFile(std::move(MemoryBuffer::getFile(fileName).get())));
+      ErrorOr<std::unique_ptr<MemoryBuffer>> buf = MemoryBuffer::getFile(fileName);
+      if (buf) {
+        file_magic magic = identify_magic(buf.get()->getBuffer());
+        switch (magic) {
+        case file_magic::archive : addArchive(std::move(buf.get())); break;
+        case file_magic::elf_shared_object : llvm::sys::DynamicLibrary::LoadLibraryPermanently(fileName.c_str()); break;
+        default: addObjectFile(std::move(buf.get())); break;
+        }
+      }
+      else {
+        llvm::errs() << "Loading metalib: " << fileName << "\n";
+        llvm::errs().flush();
+        llvm_unreachable("Can't load the metalib");
+      }
+    }
+  }
+
+  static CodeGenOptions& process(CodeGenOptions& options) {
+    options.setDebugInfo(codegenoptions::DebugInfoKind::NoDebugInfo);
+    return options;
+  }
+
+  void addObjectFile(std::unique_ptr<MemoryBuffer> buf) {
+    if (Error err = jit_->addObjectFile(std::move(buf))) {
+      llvm::errs() << err << "\n";
+      llvm::errs().flush();
+      llvm_unreachable("Failure to load a metalib");
+    }
+  }
+
+  void addArchive(std::unique_ptr<MemoryBuffer> buf) {
+    Expected<std::unique_ptr<object::Archive>> arr = object::Archive::create(*buf.get());
+    if (arr) {
+      Error err = Error::success();
+      for (auto child: arr.get()->children(err)) {
+        if (!err) {
+          Expected<MemoryBufferRef> bb = child.getMemoryBufferRef();
+          if (bb) {
+            addObjectFile(MemoryBuffer::getMemBuffer(bb.get()));
+          }
+          else {
+            llvm_unreachable("Can't access Archive's child buffer");
+          }
+        }
+        else {
+          llvm_unreachable("Can't iterate on Archive's child buffer");
+        }
+      }
+
+      llvm::consumeError(std::move(err));
+    }
+    else {
+      llvm_unreachable("Can't create Archive object");
     }
   }
 
 
 
-
-
-  FunctionDecl* CreateAdapter(const CallExpr* call, llvm::ArrayRef<QualType> args) noexcept override
+  Expected<FunctionDecl*> CreateAdapter(const CallExpr* call, llvm::ArrayRef<QualType> args) noexcept override
   {
     if (!types_configured_) {
       ConfigureTypes();
@@ -182,7 +239,7 @@ public:
           FunctionTy,
           nullptr,
           SC_None
-          );
+    );
 
     Ctx.getTranslationUnitDecl()->addDecl(fn);
 
@@ -197,7 +254,7 @@ public:
                           nullptr,
                           SC_None,
                           nullptr
-                          ));
+    ));
 
     fn->setParams(ParamVars);
 
@@ -230,7 +287,9 @@ public:
         if (tgtType->isRecordType()) {
           expr = maker.makeCXXCopyConstructExpr(tgtType, deref);
           if (!expr) {
-            llvm_unreachable("Requested record type has no copy constructor");
+            return llvm::make_error<llvm::StringError>(
+                llvm::formatv("Requested record type {0} has no copy constructor", tgtType.getAsString()),
+                llvm::inconvertibleErrorCode());
           }
         }
         else {
@@ -262,7 +321,7 @@ public:
           VK_RValue,
           SourceLocation{},
           call->getFPFeatures()
-          );
+    );
 
     QualType returnType = callee->getReturnType();
     bool isNonVoid = Ctx.getCanonicalType(returnType) != Ctx.VoidTy;
@@ -283,7 +342,11 @@ public:
       Expr* resultArg;
 
       CXXMethodDecl *resultMethod  = maker.findMemberMethod(AdapterClassDecl, "result");
-      assert(resultMethod && "No result(const void*) method is found in __jy::JennyMetaCallAdapter");
+      if (!resultMethod) {
+        return llvm::make_error<llvm::StringError>(
+            llvm::formatv("No result(const void*) method is found in {0}", AdapterClassDecl->getName()),
+            llvm::inconvertibleErrorCode());
+      }
 
       MemberExpr* resultMemberExpr = maker.makeMemberExpression(adapterRefCast, resultMethod);
 
@@ -313,7 +376,7 @@ public:
     return fn;
   }
 
-  std::string compile(FunctionDecl* adapter) noexcept override
+  Expected<std::string> compile(FunctionDecl* adapter) noexcept override
   {
     std::string fn_name = name_gen_.getName(adapter);
 
@@ -327,16 +390,31 @@ public:
 
     //mm.getModuleUnlocked()->dump();
 
+    Function* fn = mm.getModuleUnlocked()->getFunction(fn_name);
+    if (!fn) {
+      return llvm::make_error<llvm::StringError>(
+          llvm::formatv("Cannot compile metacall adapter for: {0}", fn_name),
+          llvm::inconvertibleErrorCode());
+    }
+
     llvm_ctx_ = std::make_unique<LLVMContext>();
     code_generator_->StartModule(std::string("CodeGenModule_") + std::to_string(++fn_cnt_), *llvm_ctx_);
 
-    cantFail(jit_->addLazyIRModule(std::move(mm)));
+    if (Error err = jit_->addLazyIRModule(std::move(mm))) {
+      return std::move(err);
+    }
 
     return fn_name;
   }
 
-  void* GetSymbol(llvm::StringRef name) noexcept override {
-    return (void*)cantFail(jit_->lookup(name)).getAddress();
+  Expected<void*> GetSymbol(llvm::StringRef name) noexcept override {
+    Expected<JITEvaluatedSymbol> sym = jit_->lookup(name);
+    if (sym) {
+      return (void*)sym->getAddress();
+    }
+    else {
+      return sym.takeError();
+    }
   }
 
 private:
@@ -352,14 +430,12 @@ private:
   QualType getFnArgTy() const {
     for (Type* tt: Ctx.getTypes()){
       QualType type(tt, 0);
-      //std::cout << type.getAsString() << std::endl;
       if (type.getAsString() == "struct __jy::JennyMetaCallAdapter") {
         return type;
       }
     }
 
     llvm_unreachable("No __clang_jenny_metacall.h is included");
-    return QualType(static_cast<Type*>(nullptr), 0);
   }
 };
 
@@ -367,18 +443,28 @@ private:
 
 JennyJIT::~JennyJIT() noexcept {}
 
-std::shared_ptr<JennyJIT> JennyJIT::Create(
+Expected<std::shared_ptr<JennyJIT>> JennyJIT::Create(
     ASTContext& Ctx,
     const std::vector<std::string>& jitLibs,
     DiagnosticsEngine& diagnostics,
     const HeaderSearchOptions& header_search_options,
     const PreprocessorOptions& preprocessor_options,
     const CodeGenOptions& codegen_options
-    ) {
-  return std::make_shared<JennyJITImpl>(
+) {
+  Error error = Error::success();
+  auto ptr = std::make_shared<JennyJITImpl>(
         Ctx, jitLibs, diagnostics, header_search_options,
-        preprocessor_options, codegen_options
+        preprocessor_options, codegen_options,
+        error
   );
+
+  if (!error) {
+    consumeError(std::move(error));
+    return ptr;
+  }
+  else {
+    return std::move(error);
+  }
 }
 
 }

@@ -353,7 +353,7 @@ class MemBufferToAPValueConverter {
   // Ideally this will be unreachable.
   llvm::NoneType unsupportedType(QualType Ty) {
     Info.FFDiag(SLoc,
-                diag::note_constexpr_bit_cast_unsupported_type)
+                diag::note_metacall_unsupported_type)
         << Ty;
     return None;
   }
