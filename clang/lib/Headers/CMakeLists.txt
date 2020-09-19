@@ -77,6 +77,7 @@ set(files
   lwpintrin.h
   lzcntintrin.h
   meta/compiler.h
+  meta/cstr.h
   mm3dnow.h
   mmintrin.h
   mm_malloc.h

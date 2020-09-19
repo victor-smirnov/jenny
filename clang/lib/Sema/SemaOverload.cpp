@@ -12608,6 +12608,7 @@ void Sema::AddOverloadedCallCandidates(UnresolvedLookupExpr *ULE,
   }
 #endif
 
+
   // It would be nice to avoid this copy.
   TemplateArgumentListInfo TABuffer;
   TemplateArgumentListInfo *ExplicitTemplateArgs = nullptr;
@@ -12888,6 +12889,13 @@ bool Sema::buildOverloadedCallSet(Scope *S, Expr *Fn,
     assert(getLangOpts().CPlusPlus && "ADL enabled in C");
   }
 #endif
+
+  if (Parent) {
+    Scope* scope = Parent->getScopeForContext(Parent->getASTContext().getTranslationUnitDecl());
+    if (scope && Parent->buildOverloadedCallSet(scope, Fn, ULE, Args, RParenLoc, CandidateSet, Result)) {
+      return true;
+    }
+  }
 
   UnbridgedCastsSet UnbridgedCasts;
   if (checkArgPlaceholdersForOverload(*this, Args, UnbridgedCasts)) {

@@ -51,6 +51,7 @@
 #include "clang/Lex/ScratchBuffer.h"
 #include "clang/Lex/Token.h"
 #include "clang/Lex/TokenLexer.h"
+#include "clang/Parse/Parser.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -81,7 +82,7 @@ Preprocessor::Preprocessor(std::shared_ptr<PreprocessorOptions> PPOpts,
                            SourceManager &SM, HeaderSearch &Headers,
                            ModuleLoader &TheModuleLoader,
                            IdentifierInfoLookup *IILookup, bool OwnsHeaders,
-                           TranslationUnitKind TUKind)
+                           TranslationUnitKind TUKind, Preprocessor* Parent)
     : PPOpts(std::move(PPOpts)), Diags(&diags), LangOpts(opts),
       FileMgr(Headers.getFileMgr()), SourceMgr(SM),
       ScratchBuf(new ScratchBuffer(SourceMgr)), HeaderInfo(Headers),
@@ -91,7 +92,8 @@ Preprocessor::Preprocessor(std::shared_ptr<PreprocessorOptions> PPOpts,
       // deferred to Preprocessor::Initialize().
       Identifiers(IILookup), PragmaHandlers(new PragmaNamespace(StringRef())),
       TUKind(TUKind), SkipMainFilePreamble(0, true),
-      CurSubmoduleState(&NullSubmoduleState) {
+      CurSubmoduleState(&NullSubmoduleState), CurrentParser() {
+  this->Parent = Parent;
   OwnsHeaderSearch = OwnsHeaders;
 
   // Default to discarding comments.
@@ -200,6 +202,7 @@ void Preprocessor::Initialize(const TargetInfo &Target,
                               const TargetInfo *AuxTarget) {
   assert((!this->Target || this->Target == &Target) &&
          "Invalid override of target information");
+
   this->Target = &Target;
 
   assert((!this->AuxTarget || this->AuxTarget == AuxTarget) &&
@@ -212,6 +215,14 @@ void Preprocessor::Initialize(const TargetInfo &Target,
 
   // Populate the identifier table with info about keywords for the current language.
   Identifiers.AddKeywords(LangOpts);
+}
+
+void Preprocessor::SetParser(Parser* parser) {
+  CurrentParser = parser;
+}
+
+Parser& Preprocessor::parser() {
+  return *CurrentParser;
 }
 
 void Preprocessor::InitializeForModelFile() {
@@ -558,6 +569,7 @@ void Preprocessor::EnterMainSourceFile() {
       HeaderInfo.IncrementIncludeCount(FE);
   }
 
+  /*
   // Preprocess Predefines to populate the initial preprocessor state.
   std::unique_ptr<llvm::MemoryBuffer> SB =
     llvm::MemoryBuffer::getMemBufferCopy(Predefines, "<built-in>");
@@ -568,6 +580,9 @@ void Preprocessor::EnterMainSourceFile() {
 
   // Start parsing the predefines.
   EnterSourceFile(FID, nullptr, SourceLocation());
+  */
+
+  InitPredefines();
 
   if (!PPOpts->PCHThroughHeader.empty()) {
     // Lookup and save the FileID for the through header. If it isn't found
@@ -592,6 +607,20 @@ void Preprocessor::EnterMainSourceFile() {
   if ((usingPCHWithThroughHeader() && SkippingUntilPCHThroughHeader) ||
       (usingPCHWithPragmaHdrStop() && SkippingUntilPragmaHdrStop))
     SkipTokensWhileUsingPCH();
+}
+
+void Preprocessor::InitPredefines()
+{
+  // Preprocess Predefines to populate the initial preprocessor state.
+  std::unique_ptr<llvm::MemoryBuffer> SB =
+    llvm::MemoryBuffer::getMemBufferCopy(Predefines, "<built-in>");
+  assert(SB && "Cannot create predefined source buffer");
+  FileID FID = SourceMgr.createFileID(std::move(SB));
+  assert(FID.isValid() && "Could not create FileID for predefines?");
+  setPredefinesFileID(FID);
+
+  // Start parsing the predefines.
+  EnterSourceFile(FID, nullptr, SourceLocation());
 }
 
 void Preprocessor::setPCHThroughHeaderFileID(FileID FID) {
@@ -711,7 +740,6 @@ IdentifierInfo *Preprocessor::LookUpIdentifierInfo(Token &Identifier) const {
     // Cleaning needed, alloca a buffer, clean into it, then use the buffer.
     SmallString<64> IdentifierBuffer;
     StringRef CleanedStr = getSpelling(Identifier, IdentifierBuffer);
-
     if (Identifier.hasUCN()) {
       SmallString<64> UCNIdentifierBuffer;
       expandUCNs(UCNIdentifierBuffer, CleanedStr);

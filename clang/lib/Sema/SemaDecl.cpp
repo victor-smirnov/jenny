@@ -1283,8 +1283,8 @@ Sema::getTemplateNameKindForDiagnostics(TemplateName Name) {
 }
 
 void Sema::PushDeclContext(Scope *S, DeclContext *DC) {
-  assert(DC->getLexicalParent() == CurContext &&
-      "The next DeclContext should be lexically contained in the current one.");
+  //assert(DC->getLexicalParent() == CurContext &&
+  //    "The next DeclContext should be lexically contained in the current one.");
   CurContext = DC;
   S->setEntity(DC);
 }

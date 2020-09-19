@@ -29,8 +29,35 @@
 #include "clang/Sema/SemaInternal.h"
 #include "TypeLocBuilder.h"
 
+#include <unordered_map>
+
 using namespace clang;
 using namespace sema;
+
+namespace {
+
+QualType MapMetacallType(ASTContext& Ctx, QualType srcType) noexcept {
+  //srcType.dump();
+
+  //llvm::errs() << "BEGIN\n";
+
+  //CanQualType ctt = Ctx.getCanonicalType(srcType);
+  //ctt.dump();
+
+  //llvm::errs() << "END\n";
+
+  //llvm::errs() << srcType.getAsString() << "\n";
+
+  if (srcType.getAsString() == "jenny::CStr") {
+    QualType ctt = Ctx.getPointerType(Ctx.getConstType(Ctx.CharTy));
+    //ctt.dump();
+    return ctt;
+  }
+
+  return srcType;
+}
+
+}
 
 ExprResult Sema::ActOnJennyMetaCallExpr(
     SourceLocation KWLoc, CallExpr *E,
@@ -39,7 +66,7 @@ ExprResult Sema::ActOnJennyMetaCallExpr(
 {
     JennyMetaCallExpr* CE = JennyMetaCallExpr::Create(
                 Context,
-                E->getType(),
+                MapMetacallType(Context, E->getType()),
                 KWLoc,
                 E,
                 StartLoc, EndLoc);

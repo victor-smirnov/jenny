@@ -67,6 +67,7 @@ class Parser : public CodeCompletionHandler {
   friend class ParenBraceBracketBalancer;
   friend class BalancedDelimiterTracker;
   friend class CXXFragmentParseRAII;
+  friend class Preprocessor;
 
   Preprocessor &PP;
 
@@ -583,6 +584,8 @@ private:
   // Low-Level token peeking and consumption methods.
   //
 
+  void SetCurToken(Token& token) { Tok = token; }
+
   /// isTokenParen - Return true if the cur token is '(' or ')'.
   bool isTokenParen() const {
     return Tok.isOneOf(tok::l_paren, tok::r_paren);
@@ -969,6 +972,7 @@ private:
   /// Get the TemplateIdAnnotation from the token.
   TemplateIdAnnotation *takeTemplateIdAnnotation(const Token &tok);
 
+public:
   /// TentativeParsingAction - An object that is used as a kind of "tentative
   /// parsing transaction". It gets instantiated to mark the token position and
   /// after the token consumption is done, Commit() or Revert() is called to
@@ -1035,6 +1039,7 @@ private:
 
   class UnannotatedTentativeParsingAction;
 
+private:
   /// ObjCDeclContextSwitch - An object used to switch context from
   /// an objective-c decl context to its enclosing decl context and
   /// back.
@@ -1183,16 +1188,16 @@ public:
     }
   };
 
+  /// Re-enter the template scopes for a declaration that might be a template.
+  unsigned ReenterTemplateScopes(MultiParseScope &S, Decl *D);
+
+private:
   /// EnterScope - Start a new scope.
   void EnterScope(unsigned ScopeFlags);
 
   /// ExitScope - Pop a scope off the scope stack.
   void ExitScope();
 
-  /// Re-enter the template scopes for a declaration that might be a template.
-  unsigned ReenterTemplateScopes(MultiParseScope &S, Decl *D);
-
-private:
   /// RAII object used to modify the scope flags for the current scope.
   class ParseScopeFlags {
     Scope *CurScope;
@@ -3404,6 +3409,10 @@ public:
   /// Expected format:
   /// '(' { <allocator> [ '(' <allocator_traits> ')' ] }+ ')'
   OMPClause *ParseOpenMPUsesAllocatorClause(OpenMPDirectiveKind DKind);
+
+
+  void saveToken();
+  void restoreToken();
 
 public:
   /// Parses simple expression in parens for single-expression clauses of OpenMP

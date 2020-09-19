@@ -18,6 +18,7 @@
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/MacroInfo.h"
+#include "clang/Parse/Parser.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -61,7 +62,6 @@ PreprocessorLexer *Preprocessor::getCurrentFileLexer() const {
 //===----------------------------------------------------------------------===//
 // Methods for Entering and Callbacks for leaving various contexts
 //===----------------------------------------------------------------------===//
-
 /// EnterSourceFile - Add a source file to the top of the include stack and
 /// start lexing tokens from it instead of the current buffer.
 bool Preprocessor::EnterSourceFile(FileID FID, const DirectoryLookup *CurDir,

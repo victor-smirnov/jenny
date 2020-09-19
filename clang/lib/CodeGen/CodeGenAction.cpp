@@ -1187,23 +1187,31 @@ void CodeGenAction::ExecuteAction() {
 
 llvm::Error CodeGenAction::BeforeParsing(CompilerInstance &CI)
 {
-    auto jit = JennyJIT::Create(
+  LangOptions LangOpts;
+
+  LangOpts.Exceptions = true;
+
+  auto jit = JennyJIT::Create(
+        CI.getSema(),
         CI.getASTContext(),
+        CI.getPCHContainerReader(),
+        CI.getFrontendOpts(),
         CI.getFrontendOpts().JennyJITLibraries,
         CI.getDiagnostics(),
         CI.getHeaderSearchOpts(),
         CI.getPreprocessorOpts(),
-        CI.getCodeGenOpts()
-    );
+        CI.getCodeGenOpts(),
+        LangOpts
+  );
 
-    if (jit) {
-      CI.getASTContext().SetJennyJIT(*jit);
-      consumeError(jit.takeError());
-      return ASTFrontendAction::BeforeParsing(CI);
-    }
-    else {
-      return jit.takeError();
-    }
+  if (jit) {
+    CI.getASTContext().SetJennyJIT(*jit);
+    consumeError(jit.takeError());
+    return ASTFrontendAction::BeforeParsing(CI);
+  }
+  else {
+    return jit.takeError();
+  }
 }
 
 //

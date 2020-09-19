@@ -23,6 +23,7 @@
 #include "Interp/State.h"
 
 #include "../Headers/__clang_jenny_metacall.h"
+#include "../Headers/meta/compiler.h"
 
 #include <tuple>
 #include <unordered_map>
@@ -46,11 +47,11 @@ class JennyMetaCallAdapterImpl final: public __jy::JennyMetaCallAdapter {
 
   ParamsTy Params;
   ParamsTypesTy ParamTypes;
-  MemTy Result;
 
   QualType ReturnType;
-  size_t data_size_;
+  QualType CalleeReturnType;
 
+  Optional<APValue> Result;
 
   jenny::MetaCallAllocator Allocator;
   jenny::MetaCallAllocationMap AllocationMap;
@@ -61,15 +62,30 @@ class JennyMetaCallAdapterImpl final: public __jy::JennyMetaCallAdapter {
   interp::State& Info;
   SourceLocation SLoc;
 
+  std::string* Exception;
+
 public:
 
   struct ParamDescr {
     bool isConst;
   };
 
-  JennyMetaCallAdapterImpl(QualType returnType, Expr::EvalContext& Ctx0, interp::State& Info, SourceLocation SLoc):
-    Result{nullptr}, ReturnType(returnType), data_size_(), Ctx(Ctx0), Info(Info), SLoc(SLoc)
+  JennyMetaCallAdapterImpl(
+      QualType returnType, QualType calleeReturnType,
+      Expr::EvalContext& Ctx0, interp::State& Info,
+      SourceLocation SLoc
+  ) noexcept :
+    ReturnType(returnType), CalleeReturnType(calleeReturnType), Result(),
+    Ctx(Ctx0), Info(Info), SLoc(SLoc), Exception(nullptr)
   {
+  }
+
+  ~JennyMetaCallAdapterImpl() noexcept {
+    if (Exception) delete Exception;
+  }
+
+  const std::string* exception() const noexcept {
+    return Exception;
   }
 
   ArrayRef<QualType> types() const {
@@ -87,19 +103,17 @@ public:
   }
 
   bool addParam(const APValue& value, QualType type);
-  Optional<APValue> getAPValueResult() const;
 
-  void result(const void* value) noexcept override
-  {
-      data_size_ = Ctx.ASTCtx.getTypeSizeInChars(ReturnType).getQuantity();
-      Result.Ptr = Allocator.Allocate(data_size_, llvm::Align(Ctx.ASTCtx.getTypeAlignInChars(ReturnType).getQuantity()));
-
-      std::memcpy(Result.Ptr, value, data_size_);
+  Optional<APValue> getResult() const {
+    return Result;
   }
 
-  const void* getResult() const {
-    return Result.Ptr;
-  }
+  void result(void* value) noexcept override;
+
+  void except(::jenny::MetaExceptionBase& exception) noexcept override;
+  void except_unknown() noexcept override;
 };
+
+
 
 }

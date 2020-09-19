@@ -155,6 +155,8 @@ public:
   Lexer(const Lexer &) = delete;
   Lexer &operator=(const Lexer &) = delete;
 
+  ~Lexer();
+
   /// Create_PragmaLexer: Lexer constructor - Create a new lexer object for
   /// _Pragma expansion.  This has a variety of magic semantics that this method
   /// sets up.  It returns a new'd Lexer that must be delete'd when done.

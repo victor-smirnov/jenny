@@ -2411,7 +2411,12 @@ Sema::ActOnIdExpression(Scope *S, CXXScopeSpec &SS,
                                         IsAddressOfOperand, TemplateArgs);
   } else {
     bool IvarLookupFollowUp = II && !SS.isSet() && getCurMethodDecl();
-    LookupParsedName(R, S, &SS, !IvarLookupFollowUp);
+    if (!LookupParsedName(R, S, &SS, !IvarLookupFollowUp)) {
+      if (Parent) {
+        Scope* TUScope = Parent->getScopeForContext(Context.getTranslationUnitDecl());
+        Parent->LookupParsedName(R, TUScope, &SS, !IvarLookupFollowUp);
+      }
+    }
 
     // If the result might be in a dependent base class, this is a dependent
     // id-expression.

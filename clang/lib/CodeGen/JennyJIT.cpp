@@ -26,16 +26,21 @@
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/PreprocessorOptions.h"
+#include <clang/Parse/Parser.h>
 #include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/Utils.h"
+
 
 #include <clang/AST/DeclGroup.h>
 #include <clang/AST/Decl.h>
 #include <clang/Sema/Sema.h>
 
+
+
 #include <llvm/Object/Archive.h>
 #include <llvm/Object/Binary.h>
 #include <llvm/Object/ObjectFile.h>
-
+#include <llvm/Support/CrashRecoveryContext.h>
 
 #include "clang/Basic/JennyJIT.h"
 
@@ -52,6 +57,9 @@ using namespace llvm::orc;
 
 namespace clang {
 namespace {
+
+
+class DummyASTConsumer: public ASTConsumer {};
 
 class JennyJITImpl: public JennyJIT {
 
@@ -113,6 +121,8 @@ class JennyJITImpl: public JennyJIT {
   std::unique_ptr<LLLazyJIT> jit_;
   ASTNameGenerator name_gen_;
   std::unique_ptr<LLVMContext> llvm_ctx_;
+  LangOptions mainLangOpts;
+  LangOptions jitLangOpts;
   std::unique_ptr<CodeGenerator> code_generator_;
   std::function<void ()> module_builder_;
   std::unordered_map<std::string, FunctionDecl*> functions_;
@@ -123,18 +133,28 @@ class JennyJITImpl: public JennyJIT {
   QualType AdapterClassTy;
   QualType FnArgTy;
   QualType FunctionTy;
+  QualType MetaExceptionBaseTy;
 
+  std::unique_ptr<Preprocessor> PP0;
+  std::unique_ptr<Sema> SM0;
+
+  DummyASTConsumer Consumer;
 
 public:
   JennyJITImpl(
+      Sema& S,
       ASTContext& AstCtx,
+      const PCHContainerReader& PCHCtrReader,
+      const FrontendOptions& FEOptions,
       const std::vector<std::string>& jitLibs,
       DiagnosticsEngine& diagnostics,
       HeaderSearchOptions header_search_options,
       PreprocessorOptions preprocessor_options,
       CodeGenOptions codegen_options,
+      LangOptions lang_options,
       Error& error
-  ):  ast_context_(&AstCtx),
+  ):
+    ast_context_(&AstCtx),
     Ctx(AstCtx),
     JitLibs(jitLibs),
     diagnostics_(&diagnostics),
@@ -142,15 +162,20 @@ public:
     codegen_options_(process(codegen_options)),
     name_gen_(*ast_context_),
     llvm_ctx_(std::make_unique<LLVMContext>()),
+    jitLangOpts(lang_options),
     code_generator_(CreateLLVMCodeGen(
                       *diagnostics_,
                       "CodeGenModule_0",
                       header_search_options_,
                       preprocessor_options_,
                       codegen_options_,
+                      jitLangOpts,
                       *llvm_ctx_
                       ))
   {
+    (void)PCHCtrReader;
+    (void)FEOptions;
+
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
 
     jit_ = cantFail(LLLazyJITBuilder().create());
@@ -161,17 +186,71 @@ public:
       if (buf) {
         file_magic magic = identify_magic(buf.get()->getBuffer());
         switch (magic) {
-        case file_magic::archive : addArchive(std::move(buf.get())); break;
-        case file_magic::elf_shared_object : llvm::sys::DynamicLibrary::LoadLibraryPermanently(fileName.c_str()); break;
-        default: addObjectFile(std::move(buf.get())); break;
+        case file_magic::archive : {
+          Error err = addArchive(std::move(buf.get()));
+          if (err) {
+            error = std::move(err);
+            return;
+          }
+          break;
+        }
+        case file_magic::elf_shared_object : {
+          std::string errStr;
+          if (llvm::sys::DynamicLibrary::LoadLibraryPermanently(fileName.c_str(), &errStr)) {
+              error = createStringError(
+                    std::errc::not_supported,
+                    "Can't load shared metalib: %s. Reason: %s", fileName.c_str(), errStr.c_str());
+          }
+          break;
+        }
+        default: {
+          Error err = addObjectFile(std::move(buf.get()));
+          if (err) {
+            error = std::move(err);
+            return;
+          }
+          break;
+        }
         }
       }
       else {
-        llvm::errs() << "Loading metalib: " << fileName << "\n";
-        llvm::errs().flush();
-        llvm_unreachable("Can't load the metalib");
+        error = createStringError(buf.getError(), "Can't load metalib file %s", fileName.c_str());
+        break;
       }
     }
+
+    Preprocessor& PP = S.getPreprocessor();
+    mainLangOpts = PP.getLangOpts();
+
+    PP0 = std::make_unique<Preprocessor>(
+          std::make_shared<PreprocessorOptions>(PP.getPreprocessorOpts()),
+          PP.getDiagnostics(),
+          mainLangOpts,
+          S.getSourceManager(),
+          PP.getHeaderSearchInfo(),
+          PP.getModuleLoader(),
+          nullptr, false, TU_Prefix, &PP
+    );
+
+    PP0->Initialize(PP.getTargetInfo(), PP.getAuxTargetInfo());
+    InitializePreprocessor(*PP0.get(), PP.getPreprocessorOpts(), PCHCtrReader, FEOptions);
+
+    SM0 = std::make_unique<Sema>(
+          *PP0.get(),
+          Ctx, Consumer,
+          TU_Prefix, nullptr, &S
+    );
+
+    PP0->InitPredefines();
+
+    Parser P(*PP0.get(), *SM0.get(), false);
+    P.Initialize();
+
+    Parser::DeclGroupPtrTy ADecl;
+    for (bool AtEOF = P.ParseFirstTopLevelDecl(ADecl);
+         !AtEOF;
+         AtEOF = P.ParseTopLevelDecl(ADecl))
+    {}
   }
 
   static CodeGenOptions& process(CodeGenOptions& options) {
@@ -179,15 +258,11 @@ public:
     return options;
   }
 
-  void addObjectFile(std::unique_ptr<MemoryBuffer> buf) {
-    if (Error err = jit_->addObjectFile(std::move(buf))) {
-      llvm::errs() << err << "\n";
-      llvm::errs().flush();
-      llvm_unreachable("Failure to load a metalib");
-    }
+  Error addObjectFile(std::unique_ptr<MemoryBuffer> buf) {
+    return jit_->addObjectFile(std::move(buf));
   }
 
-  void addArchive(std::unique_ptr<MemoryBuffer> buf) {
+  Error addArchive(std::unique_ptr<MemoryBuffer> buf) {
     Expected<std::unique_ptr<object::Archive>> arr = object::Archive::create(*buf.get());
     if (arr) {
       Error err = Error::success();
@@ -195,28 +270,61 @@ public:
         if (!err) {
           Expected<MemoryBufferRef> bb = child.getMemoryBufferRef();
           if (bb) {
-            addObjectFile(MemoryBuffer::getMemBuffer(bb.get()));
+            if (Error bbErr = addObjectFile(MemoryBuffer::getMemBuffer(bb.get()))) {
+              return bbErr;
+            }
           }
           else {
-            llvm_unreachable("Can't access Archive's child buffer");
+            return bb.takeError();
           }
         }
         else {
-          llvm_unreachable("Can't iterate on Archive's child buffer");
+          return err;
         }
       }
-
-      llvm::consumeError(std::move(err));
+      return err;
     }
     else {
-      llvm_unreachable("Can't create Archive object");
+      return arr.takeError();
     }
   }
 
-
-
-  Expected<FunctionDecl*> CreateAdapter(const CallExpr* call, llvm::ArrayRef<QualType> args) noexcept override
+  Expected<Decl*> parseTopLevelDecl(const std::string& data) noexcept
   {
+    std::unique_ptr<MemoryBuffer> buffer = MemoryBuffer::getMemBufferCopy(data, "<JennyJIT>");
+    FileID fid = Ctx.getSourceManager().createFileID(std::move(buffer));
+
+    Parser P(*PP0.get(), *SM0.get(), false);
+
+    Sema::ContextRAII CtxRAII(*SM0.get(), Ctx.getTranslationUnitDecl());
+
+    PP0->EnterSourceFile(fid, PP0->GetCurDirLookup(), SourceLocation{});
+
+    P.Initialize();
+
+    Decl* result = nullptr;
+    Parser::DeclGroupPtrTy ADecl;
+    for (bool AtEOF = P.ParseFirstTopLevelDecl(ADecl); !AtEOF;
+         AtEOF = P.ParseTopLevelDecl(ADecl)) {
+      // If we got a null return and something *was* parsed, ignore it.  This
+      // is due to a top-level semicolon, an action override, or a parse error
+      // skipping something.
+      if (ADecl) {
+        result = ADecl.get().getSingleDecl();
+        if (result && !dyn_cast<EmptyDecl>(result)) {
+          break;
+        }
+        else {
+          result = nullptr;
+          break;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  Expected<FunctionDecl*> CreateAdapter(const CallExpr* call, llvm::ArrayRef<QualType> args) noexcept override {
     if (!types_configured_) {
       ConfigureTypes();
       types_configured_ = true;
@@ -225,156 +333,53 @@ public:
     const FunctionDecl* callee = call->getDirectCallee();
     assert(callee && "callee is null");
 
-    std::string name = callee->getName().str();
-    name = "__metacall_" + name + "__" + std::to_string(fn_cnt_.fetch_add(1));
+    std::string calleName = callee->getName().str();
+    std::string fnName = "__metacall_" + calleName + "__" + std::to_string(fn_cnt_.fetch_add(1));
 
-    const IdentifierInfo* fnNameInfo = &ast_context_->Idents.get(name);
+    std::string buffer = "void " + fnName + "(__jy::JennyMetaCallAdapter& adapter) {\n";
+    buffer += "  try {\n";
 
-    FunctionDecl* fn = FunctionDecl::Create(
-          Ctx,
-          Ctx.getTranslationUnitDecl(),
-          SourceLocation{},
-          SourceLocation{},
-          fnNameInfo,
-          FunctionTy,
-          nullptr,
-          SC_None
-    );
+    std::string calleQName = callee->getQualifiedNameAsString();
 
-    Ctx.getTranslationUnitDecl()->addDecl(fn);
-
-    IdentifierInfo* adapterII = &Ctx.Idents.get("adapter");
-    llvm::SmallVector<ParmVarDecl*, 1> ParamVars;
-    ParamVars.push_back(ParmVarDecl::Create(
-                          Ctx,
-                          fn,
-                          SourceLocation(), SourceLocation(),
-                          adapterII,
-                          FnArgTy,
-                          nullptr,
-                          SC_None,
-                          nullptr
-    ));
-
-    fn->setParams(ParamVars);
-
-    JennyASTMaker maker(Ctx);
-
-    SmallVector<Stmt*, 2> statements;
-    SmallVector<Expr*, 8> Args;
-
-    DeclRefExpr* adapterRefCast = maker.makeDeclRefExpr(ParamVars[0]);
-
-    CXXRecordDecl *AdapterClassDecl = AdapterClassTy->getAsCXXRecordDecl();
-    CXXMethodDecl *paramMethod = maker.findMemberMethod(AdapterClassDecl, "param");
-    MemberExpr* memberExpr = maker.makeMemberExpression(adapterRefCast, paramMethod);
-
-    size_t idx{};
-    size_t callee_params = callee->parameters().size();
-    for (QualType valType: args)
-    {
-      Expr* expr;
-      IntegerLiteral* paramNum = maker.makeIntegerLiteral(idx, Ctx.IntTy);
-      CXXMemberCallExpr* memberCall = maker.makeCXXMemberCall(memberExpr, paramNum, Ctx.VoidPtrTy, VK_RValue);
-
-      if (idx < callee_params)
-      {
-        ParmVarDecl* arg = callee->parameters()[idx];
-        QualType tgtType = Ctx.getCanonicalParamType(arg->getType());
-
-        CStyleCastExpr* castExpr = maker.makeCStyleCastExpr(Ctx.getPointerType(tgtType), VK_RValue, CK_BitCast, memberCall);
-        UnaryOperator *deref = maker.makeDereference(castExpr, tgtType);
-        if (tgtType->isRecordType()) {
-          expr = maker.makeCXXCopyConstructExpr(tgtType, deref);
-          if (!expr) {
-            return llvm::make_error<llvm::StringError>(
-                llvm::formatv("Requested record type {0} has no copy constructor", tgtType.getAsString()),
-                llvm::inconvertibleErrorCode());
-          }
-        }
-        else {
-          expr = maker.makeLvalueToRvalue(deref, tgtType);
-        }
-      }
-      else {
-        QualType tgtType = valType;
-
-        if (tgtType->isPointerType()) {
-          expr = maker.makeCStyleCastExpr(tgtType, VK_RValue, CK_BitCast, memberCall);
-        }
-        else {
-          CStyleCastExpr* castExpr = maker.makeCStyleCastExpr(Ctx.getPointerType(tgtType), VK_RValue, CK_BitCast, memberCall);
-          UnaryOperator *deref = maker.makeDereference(castExpr, tgtType);
-          expr = maker.makeLvalueToRvalue(deref, tgtType);
-        }
-      }
-
-      Args.push_back(expr);
-      ++idx;
-    }
-
-    CallExpr* tgtCallee = CallExpr::Create(
-          Ctx,
-          const_cast<Expr*>(call->getCallee()),
-          Args,
-          callee->getType(),
-          VK_RValue,
-          SourceLocation{},
-          call->getFPFeatures()
-    );
-
-    QualType returnType = callee->getReturnType();
-    bool isNonVoid = Ctx.getCanonicalType(returnType) != Ctx.VoidTy;
-    if (isNonVoid)
-    {
-      VarDecl* retVal = VarDecl::Create(
-            Ctx, fn, SourceLocation{}, SourceLocation{},
-            &Ctx.Idents.get("res"),
-            returnType, nullptr, StorageClass::SC_None);
-
-      retVal->setInit(tgtCallee);
-
-      DeclStmt* retValStmt = new (Ctx) DeclStmt(DeclGroupRef{retVal}, SourceLocation{}, SourceLocation{});
-      statements.push_back(retValStmt);
-
-      DeclRefExpr* retValRef = maker.makeDeclRefExpr(retVal);
-
-      Expr* resultArg;
-
-      CXXMethodDecl *resultMethod  = maker.findMemberMethod(AdapterClassDecl, "result");
-      if (!resultMethod) {
-        return llvm::make_error<llvm::StringError>(
-            llvm::formatv("No result(const void*) method is found in {0}", AdapterClassDecl->getName()),
-            llvm::inconvertibleErrorCode());
-      }
-
-      MemberExpr* resultMemberExpr = maker.makeMemberExpression(adapterRefCast, resultMethod);
-
-
-      if (returnType->isPointerType()){
-        resultArg = maker.makeLvalueToRvalue(retValRef, returnType);
-      }
-      else {
-        resultArg = UnaryOperator::Create(Ctx, retValRef, UO_AddrOf,
-                                          Ctx.getPointerType(returnType),
-                                          VK_RValue, OK_Ordinary,
-                                          SourceLocation{},
-                                          false, FPOptionsOverride{});
-      }
-
-      QualType constVoidPtr = Ctx.getPointerType(Ctx.VoidTy.withConst());
-      ImplicitCastExpr* cast2 = maker.makeImplicitCast(resultArg, constVoidPtr, CK_BitCast);
-      CXXMemberCallExpr* reslutExpr = maker.makeCXXMemberCall(resultMemberExpr, cast2, Ctx.VoidTy, VK_RValue);
-      statements.push_back(reslutExpr);
+    if (callee->getReturnType() == Ctx.VoidTy) {
+      buffer += "    " + calleQName + "(\n";
+      AppendArgs(buffer, args);
+      buffer += "    );\n";
     }
     else {
-      statements.push_back(tgtCallee);
+      buffer += "    auto res = " + calleQName + "(\n";
+      AppendArgs(buffer, args);
+      buffer += "    );\n";
+
+      buffer += "    adapter.result(&res);\n";
     }
 
-    fn->setBody(maker.makeCompound(statements));
-
-    return fn;
+    buffer += R"(  }
+  catch (::jenny::MetaExceptionBase& ex) {
+    adapter.except(ex);
   }
+  catch (...) {
+    adapter.except_unknown();
+  }
+})";
+
+    Expected<Decl*> decl = parseTopLevelDecl(buffer);
+    if (decl) {
+      if (decl.get()) {
+        assert(isa<FunctionDecl>(decl.get()) && "Metacall adapter is not a FunctionCall");
+        return dyn_cast<FunctionDecl>(decl.get());
+      }
+      else {
+        return llvm::make_error<llvm::StringError>(
+            llvm::formatv("Cannot compile metacall adapter for: {0}, the adapter is null.", calleQName),
+            llvm::inconvertibleErrorCode());
+      }
+    }
+    else {
+      return decl.takeError();
+    }
+  }
+
 
   Expected<std::string> compile(FunctionDecl* adapter) noexcept override
   {
@@ -418,6 +423,21 @@ public:
   }
 
 private:
+  void AppendArgs(std::string& buffer, llvm::ArrayRef<QualType> argTypes) {
+    size_t idx{};
+    for (QualType valType: argTypes) {
+      buffer += std::string("    *(") + valType.getAsString() + "*) adapter.param(" + std::to_string(idx) + ")";
+
+      if (idx < argTypes.size() - 1) {
+        buffer += ",";
+      }
+
+      buffer += "\n";
+
+      idx++;
+    }
+  }
+
   void ConfigureTypes() {
     AdapterClassTy = Ctx.getCanonicalType(getFnArgTy());
     FnArgTy = Ctx.getLValueReferenceType(AdapterClassTy);
@@ -425,12 +445,25 @@ private:
     SmallVector<QualType, 1> ArgTys;
     ArgTys.push_back(FnArgTy);
     FunctionTy = Ctx.getFunctionType(Ctx.VoidTy, ArgTys, {});
+
+    MetaExceptionBaseTy = Ctx.getCanonicalType(getMetaExceptionBaseTy());
   }
 
   QualType getFnArgTy() const {
     for (Type* tt: Ctx.getTypes()){
       QualType type(tt, 0);
       if (type.getAsString() == "struct __jy::JennyMetaCallAdapter") {
+        return type;
+      }
+    }
+
+    llvm_unreachable("No __clang_jenny_metacall.h is included");
+  }
+
+  QualType getMetaExceptionBaseTy() const {
+    for (Type* tt: Ctx.getTypes()){
+      QualType type(tt, 0);
+      if (type.getAsString() == "struct jenny::MetaExceptionBase") {
         return type;
       }
     }
@@ -444,17 +477,23 @@ private:
 JennyJIT::~JennyJIT() noexcept {}
 
 Expected<std::shared_ptr<JennyJIT>> JennyJIT::Create(
+    Sema& S,
     ASTContext& Ctx,
+    const PCHContainerReader& PCHCtrReader,
+    const FrontendOptions& FEOptions,
     const std::vector<std::string>& jitLibs,
     DiagnosticsEngine& diagnostics,
     const HeaderSearchOptions& header_search_options,
     const PreprocessorOptions& preprocessor_options,
-    const CodeGenOptions& codegen_options
+    const CodeGenOptions& codegen_options,
+    const LangOptions& lang_options
 ) {
   Error error = Error::success();
-  auto ptr = std::make_shared<JennyJITImpl>(
-        Ctx, jitLibs, diagnostics, header_search_options,
-        preprocessor_options, codegen_options,
+  (void)(bool)error;
+  auto ptr = std::make_shared<JennyJITImpl>(        
+        S, Ctx, PCHCtrReader, FEOptions,
+        jitLibs, diagnostics, header_search_options,
+        preprocessor_options, codegen_options, lang_options,
         error
   );
 
@@ -466,5 +505,7 @@ Expected<std::shared_ptr<JennyJIT>> JennyJIT::Create(
     return std::move(error);
   }
 }
+
+
 
 }

@@ -35,6 +35,8 @@ class HeaderSearchOptions;
 class PreprocessorOptions;
 class CodeGenOptions;
 class DiagnosticsEngine;
+class PCHContainerReader;
+class FrontendOptions;
 
 struct JennyJIT {
   virtual ~JennyJIT() noexcept;
@@ -47,13 +49,19 @@ struct JennyJIT {
   virtual Expected<void*> GetSymbol(llvm::StringRef name) noexcept = 0;
 
   static Expected<std::shared_ptr<JennyJIT>> Create(
+      Sema& S,
       ASTContext& Ctx,
+      const PCHContainerReader& PCHCtrReader,
+      const FrontendOptions& FEOptions,
       const std::vector<std::string>& jitLibs,
       DiagnosticsEngine& diagnostics,
       const HeaderSearchOptions& header_search_options,
       const PreprocessorOptions& preprocessor_options,
-      const CodeGenOptions& codegen_options
+      const CodeGenOptions& codegen_options,
+      const LangOptions& LangOpts
   );
 };
+
+std::string strErrorAndConsume(llvm::Error&& error);
 
 }

@@ -79,6 +79,7 @@ class PreprocessorLexer;
 class PreprocessorOptions;
 class ScratchBuffer;
 class TargetInfo;
+class Parser;
 
 namespace Builtin {
 class Context;
@@ -128,6 +129,7 @@ enum MacroUse {
 class Preprocessor {
   friend class VAOptDefinitionContext;
   friend class VariadicMacroScopeGuard;
+  friend class Lexer;
 
   llvm::unique_function<void(const clang::Token &)> OnToken;
   std::shared_ptr<PreprocessorOptions> PPOpts;
@@ -876,6 +878,10 @@ private:
   /// of that list.
   MacroInfoChain *MIChainHead = nullptr;
 
+  Parser* CurrentParser;
+
+  Preprocessor* Parent;
+
   void updateOutOfDateIdentifier(IdentifierInfo &II) const;
 
 public:
@@ -884,7 +890,7 @@ public:
                HeaderSearch &Headers, ModuleLoader &TheModuleLoader,
                IdentifierInfoLookup *IILookup = nullptr,
                bool OwnsHeaderSearch = false,
-               TranslationUnitKind TUKind = TU_Complete);
+               TranslationUnitKind TUKind = TU_Complete, Preprocessor* Parent = nullptr);
 
   ~Preprocessor();
 
@@ -896,6 +902,11 @@ public:
   /// the lifetime of the preprocessor.
   void Initialize(const TargetInfo &Target,
                   const TargetInfo *AuxTarget = nullptr);
+
+  bool HasParser() const {return CurrentParser != nullptr;}
+  void SetParser(Parser* parser);
+
+  Parser& parser();
 
   /// Initialize the preprocessor to parse a model file
   ///
@@ -1194,7 +1205,20 @@ public:
   /// Return information about the specified preprocessor
   /// identifier token.
   IdentifierInfo *getIdentifierInfo(StringRef Name) const {
-    return &Identifiers.get(Name);
+    if (Identifiers.find(Name) != Identifiers.end()) {
+      return &Identifiers.get(Name);
+    }
+    else if (Parent) {
+      if (Parent->Identifiers.find(Name) != Parent->Identifiers.end()) {
+        return &Parent->Identifiers.get(Name);
+      }
+      else {
+        return &Identifiers.get(Name);
+      }
+    }
+    else {
+      return &Identifiers.get(Name);
+    }
   }
 
   /// Add the specified pragma handler to this preprocessor.
@@ -1307,6 +1331,8 @@ public:
   /// Enter the specified FileID as the main source file,
   /// which implicitly adds the builtin defines etc.
   void EnterMainSourceFile();
+
+  void InitPredefines();
 
   /// Inform the preprocessor callbacks that processing is complete.
   void EndSourceFile();
@@ -2034,6 +2060,7 @@ private:
     CurPPLexer = nullptr;
   }
 
+public:
   void PopIncludeMacroStack() {
     CurLexer = std::move(IncludeMacroStack.back().TheLexer);
     CurPPLexer = IncludeMacroStack.back().ThePPLexer;
@@ -2044,6 +2071,7 @@ private:
     IncludeMacroStack.pop_back();
   }
 
+private:
   void PropagateLineStartLeadingSpaceInfo(Token &Result);
 
   /// Determine whether we need to create module macros for #defines in the
@@ -2172,11 +2200,14 @@ private:
   /// start lexing tokens from it instead of the current buffer.
   void EnterSourceFileWithLexer(Lexer *TheLexer, const DirectoryLookup *Dir);
 
+
   /// Set the FileID for the preprocessor predefines.
   void setPredefinesFileID(FileID FID) {
     assert(PredefinesFileID.isInvalid() && "PredefinesFileID already set!");
     PredefinesFileID = FID;
   }
+private:
+
 
   /// Set the FileID for the PCH through header.
   void setPCHThroughHeaderFileID(FileID FID);

@@ -50,3 +50,4 @@ void PreprocessorLexer::LexIncludeFilename(Token &FilenameTok) {
 const FileEntry *PreprocessorLexer::getFileEntry() const {
   return PP->getSourceManager().getFileEntryForID(getFileID());
 }
+

@@ -3510,7 +3510,6 @@ bool Expr::HasSideEffects(const EvalContext &Ctx,
   case CXXOperatorCallExprClass:
   case CXXMemberCallExprClass:
   case CUDAKernelCallExprClass:
-  case JennyMetaCallExprClass:
   case UserDefinedLiteralClass: {
     // We don't know a call definitely has side effects, except for calls
     // to pure/const functions that definitely don't.
@@ -3520,6 +3519,10 @@ bool Expr::HasSideEffects(const EvalContext &Ctx,
     if (IsPure || !IncludePossibleEffects)
       break;
     return true;
+  }
+
+  case JennyMetaCallExprClass: {
+    return false;
   }
 
   case BlockExprClass:

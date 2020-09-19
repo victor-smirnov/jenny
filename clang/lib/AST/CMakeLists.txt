@@ -81,6 +81,8 @@ add_clang_library(clangAST
   ItaniumMangle.cpp
   JSONNodeDumper.cpp
   JennyJITFnAdapter.cpp
+  JennyMetaLib.cpp
+  JennyCStrLib.cpp
   Mangle.cpp
   MicrosoftCXXABI.cpp
   MicrosoftMangle.cpp

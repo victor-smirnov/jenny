@@ -53,10 +53,15 @@ Parser::Parser(Preprocessor &pp, Sema &actions, bool skipFunctionBodies)
     GreaterThanIsOperator(true), ColonIsSacred(false),
     InMessageExpression(false), TemplateParameterDepth(0),
     ParsingInObjCContainer(false) {
+  //assert(!PP.HasParser() && "Parser has been alredy dreated for the Preprocessor");
+  //PP.SetParser(this);
+
   SkipFunctionBodies = pp.isCodeCompletionEnabled() || skipFunctionBodies;
   Tok.startToken();
   Tok.setKind(tok::eof);
+
   Actions.CurScope = nullptr;
+
   NumCachedScopes = 0;
   CurParsedObjCImpl = nullptr;
 
@@ -452,6 +457,7 @@ Parser::ParseScopeFlags::~ParseScopeFlags() {
 
 Parser::~Parser() {
   // If we still have scopes active, delete the scope tree.
+
   delete getCurScope();
   Actions.CurScope = nullptr;
 
@@ -460,9 +466,7 @@ Parser::~Parser() {
     delete ScopeCache[i];
 
   resetPragmaHandlers();
-
   PP.removeCommentHandler(CommentSemaHandler.get());
-
   PP.clearCodeCompletionHandler();
 
   DestroyTemplateIds();

@@ -63,7 +63,13 @@ ExprResult Parser::ParseJennyMetaCallExpression() {
         sLoc = StartLoc;
     }
 
-    if (CallExpr* callExpr = dyn_cast_or_null<CallExpr>(Operand.get())) {
+    Expr* expr = Operand.get();
+
+    if (CXXBindTemporaryExpr* bindExpr = dyn_cast_or_null<CXXBindTemporaryExpr>(expr)) {
+      expr = bindExpr->getSubExpr();
+    }
+
+    if (CallExpr* callExpr = dyn_cast_or_null<CallExpr>(expr)) {
         return Actions.ActOnJennyMetaCallExpr(StartLoc, callExpr, sLoc, eLoc);
     }
     else {

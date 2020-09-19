@@ -168,7 +168,7 @@ public:
     M.reset(new llvm::Module(MainFileName, *VMContext));
     M->setDataLayout(Ctx->getTargetInfo().getDataLayout());
     Builder.reset(new CodeGen::CodeGenModule(
-        *Ctx, HeaderSearchOpts, PreprocessorOpts, CodeGenOpts, *M, Diags));
+        *Ctx, Ctx->getLangOpts(), HeaderSearchOpts, PreprocessorOpts, CodeGenOpts, *M, Diags));
 
     // Prepare CGDebugInfo to emit debug info for a clang module.
     auto *DI = Builder->getModuleDebugInfo();

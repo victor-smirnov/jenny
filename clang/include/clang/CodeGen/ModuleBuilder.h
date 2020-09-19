@@ -100,6 +100,15 @@ CodeGenerator *CreateLLVMCodeGen(DiagnosticsEngine &Diags,
                                  llvm::LLVMContext& C,
                                  CoverageSourceInfo *CoverageInfo = nullptr);
 
+CodeGenerator *CreateLLVMCodeGen(DiagnosticsEngine &Diags,
+                                 llvm::StringRef ModuleName,
+                                 const HeaderSearchOptions &HeaderSearchOpts,
+                                 const PreprocessorOptions &PreprocessorOpts,
+                                 const CodeGenOptions &CGO,
+                                 const LangOptions& LangOpts,
+                                 llvm::LLVMContext& C,
+                                 CoverageSourceInfo *CoverageInfo = nullptr);
+
 } // end namespace clang
 
 #endif

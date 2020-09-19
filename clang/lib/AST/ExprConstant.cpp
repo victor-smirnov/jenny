@@ -7725,7 +7725,10 @@ public:
         return true;
     }
 
-    JennyMetaCallAdapterImpl Adapter(E->getType(), Info.Ctx, Info, E->getOperand()->getBeginLoc());
+    JennyMetaCallAdapterImpl Adapter(
+          E->getType(), Callee->getReturnType(),
+          Info.Ctx, Info, E->getOperand()->getBeginLoc()
+    );
 
     for (size_t cnt = 0; cnt < Args.size(); cnt++) {
         if (!Adapter.addParam(ArgValues[cnt], Args[cnt]->getType())) {
@@ -7744,14 +7747,12 @@ public:
           Symbol = const_cast<JennyMetaCallExpr*>(E)->SetSymbol(Info.ASTCtx, fn_name->c_str());
         }
         else {
-          llvm::consumeError(fn_name.takeError());
+          Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << strErrorAndConsume(fn_name.takeError());
           return false;
         }
       }
       else {
-        //decl.getErrorStorage()->
-        Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << "AAA";
-        llvm::consumeError(decl.takeError());
+        Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << strErrorAndConsume(decl.takeError());
         return false;
       }
     }
@@ -7763,14 +7764,19 @@ public:
       fn(Adapter);
     }
     else {
+      Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << strErrorAndConsume(fn_v.takeError());
       return false;
     }
 
-    if (Optional<APValue> result = Adapter.getAPValueResult()) {
-        return DerivedSuccess(*result, E);
+    if (Adapter.exception()) {
+      Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << *Adapter.exception();
+      return false;
+    }
+    else if (Optional<APValue> result = Adapter.getResult()) {
+      return DerivedSuccess(*result, E);
     }
     else {
-        return false;
+      return false;
     }
   }
 

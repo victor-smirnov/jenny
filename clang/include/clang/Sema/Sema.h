@@ -1476,15 +1476,21 @@ public:
 
   bool WarnedStackExhausted = false;
 
+  Sema* Parent;
+
 public:
   Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
        TranslationUnitKind TUKind = TU_Complete,
-       CodeCompleteConsumer *CompletionConsumer = nullptr);
+       CodeCompleteConsumer *CompletionConsumer = nullptr, Sema* Parent = nullptr);
   ~Sema();
 
   /// Perform initialization that occurs after the parser has been
   /// initialized but before it parses anything.
   void Initialize();
+
+  Sema* getParentSema() {
+    return Parent;
+  }
 
   const LangOptions &getLangOpts() const { return LangOpts; }
   OpenCLOptions &getOpenCLOptions() { return OpenCLFeatures; }

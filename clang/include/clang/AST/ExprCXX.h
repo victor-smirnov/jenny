@@ -6185,13 +6185,8 @@ public:
 private:
 
   JennyMetaCallExpr(QualType T, CallExpr *Arg);
-
-
   JennyMetaCallExpr(EmptyShell Empty)
     : Expr(CXXReflectExprClass, Empty), Ref() {}
-
-
-
 
 public:
 

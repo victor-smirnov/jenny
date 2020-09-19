@@ -69,6 +69,14 @@ public:
   const char* data() const {
     return Bytes;
   }
+
+  char* data(CharUnits offset) {
+    return Bytes + offset.getQuantity();
+  }
+
+  const char* data(CharUnits offset) const {
+    return Bytes + offset.getQuantity();
+  }
 };
 
 /// Traverse an APValue to produce an BitCastBuffer, emulating how the current
@@ -331,6 +339,9 @@ private:
   }
 };
 
+
+
+
 /// Write an BitCastBuffer into an APValue.
 class MemBufferToAPValueConverter {
   ASTContext& ASTCtx;
@@ -405,6 +416,11 @@ class MemBufferToAPValueConverter {
   }
 
   Optional<APValue> visit(const RecordType *RTy, CharUnits Offset) {
+
+    if (Optional<APValue> vv = visitSpecial(RTy, Offset)) {
+      return vv;
+    }
+
     const RecordDecl *RD = RTy->getAsRecordDecl();
     const ASTRecordLayout &Layout = ASTCtx.getASTRecordLayout(RD);
 
@@ -487,8 +503,32 @@ class MemBufferToAPValueConverter {
     return ArrayValue;
   }
 
+  Optional<APValue> visitSpecial(const TagType *Ty, CharUnits Offset) {
+    //QualType qTy(Ty, 0);
+    //QualType Can = qTy.getCanonicalType();
+
+    //llvm::errs() << Ty->getDecl()->getQualifiedNameAsString() << "\n";
+
+    if (Ty->getDecl()->getQualifiedNameAsString() == "jenny::CStr") {
+      const ::jenny::CStr& str = *(const ::jenny::CStr*) Buffer.data(Offset);
+      return makeStringLiteral(str);
+      str.data();
+    }
+
+    return None;
+  }
+
+  APValue makeStringLiteral(const ::jenny::CStr& str) {
+    QualType strType = ASTCtx.getConstantArrayType(ASTCtx.CharTy, llvm::APInt(64, str.length()), nullptr, ArrayType::Normal, 0);
+    StringLiteral* slit = StringLiteral::Create(ASTCtx, StringRef(str.data(), str.length()),
+                          StringLiteral::Ascii, false, strType, SLoc);
+
+    return APValue(APValue::LValueBase(slit), CharUnits::Zero(), APValue::NoLValuePath{});
+  }
+
   Optional<APValue> visit(const Type *Ty, CharUnits Offset) {
-    return unsupportedType(QualType(Ty, 0));
+    QualType qualType(Ty, 0);
+    return unsupportedType(qualType);
   }
 
   Optional<APValue> visitType(QualType Ty, CharUnits Offset) {
@@ -496,18 +536,18 @@ class MemBufferToAPValueConverter {
 
     switch (Can->getTypeClass()) {
 #define TYPE(Class, Base)                                                      \
-    case Type::Class:                                                            \
+    case Type::Class:                                                          \
   return visit(cast<Class##Type>(Can.getTypePtr()), Offset);
 #define ABSTRACT_TYPE(Class, Base)
 #define NON_CANONICAL_TYPE(Class, Base)                                        \
-    case Type::Class:                                                            \
+    case Type::Class:                                                          \
   llvm_unreachable("non-canonical type should be impossible!");
 #define DEPENDENT_TYPE(Class, Base)                                            \
-    case Type::Class:                                                            \
-  llvm_unreachable(                                                          \
+    case Type::Class:                                                          \
+  llvm_unreachable(                                                            \
   "dependent types aren't supported in the constant evaluator!");
 #define NON_CANONICAL_UNLESS_DEPENDENT(Class, Base)                            \
-    case Type::Class:                                                            \
+    case Type::Class:                                                          \
   llvm_unreachable("either dependent or not canonical!");
 #include "clang/AST/TypeNodes.inc"
     }
@@ -538,14 +578,27 @@ bool JennyMetaCallAdapterImpl::addParam(const APValue& value, QualType type) {
   return false;
 }
 
-Optional<APValue> JennyMetaCallAdapterImpl::getAPValueResult() const {
-  if (ReturnType == Ctx.ASTCtx.VoidTy) {
-    return APValue{};
-  }
-  else {
-    ValueBuffer Buffer((char*)Result.Ptr, CharUnits::fromQuantity(data_size_));
-    return MemBufferToAPValueConverter::convert(Ctx.ASTCtx, Info, Buffer, ReturnType, SLoc);
-  }
+void JennyMetaCallAdapterImpl::result(void* value) noexcept
+{
+    size_t data_size = Ctx.ASTCtx.getTypeSizeInChars(CalleeReturnType).getQuantity();
+    ValueBuffer Buffer((char*)value, CharUnits::fromQuantity(data_size));
+    Result = MemBufferToAPValueConverter::convert(Ctx.ASTCtx, Info, Buffer, CalleeReturnType, SLoc);
+}
+
+std::string strErrorAndConsume(llvm::Error&& error) {
+  std::string ss;
+  llvm::raw_string_ostream os(ss);
+  os << error;
+  llvm::consumeError(std::move(error));
+  return ss;
+}
+
+void JennyMetaCallAdapterImpl::except(::jenny::MetaExceptionBase& exception) noexcept {
+  Exception = new std::string(exception.reason());
+}
+
+void JennyMetaCallAdapterImpl::except_unknown() noexcept {
+  Exception = new std::string("Unknown exception");
 }
 
 }

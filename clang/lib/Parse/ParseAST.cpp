@@ -23,6 +23,7 @@
 #include "clang/Sema/TemplateInstCallback.h"
 #include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/TimeProfiler.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include <cstdio>
 #include <memory>
 
@@ -159,8 +160,9 @@ void clang::ParseAST(Sema &S, bool PrintStats, bool SkipFunctionBodies) {
       // If we got a null return and something *was* parsed, ignore it.  This
       // is due to a top-level semicolon, an action override, or a parse error
       // skipping something.
-      if (ADecl && !Consumer->HandleTopLevelDecl(ADecl.get()))
+      if (ADecl && !Consumer->HandleTopLevelDecl(ADecl.get())) {
         return;
+      }
     }
   }
 

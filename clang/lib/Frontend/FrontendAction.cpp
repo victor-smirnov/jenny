@@ -1056,7 +1056,10 @@ void ASTFrontendAction::ExecuteAction() {
 
   llvm::Error err = BeforeParsing(CI);
   if (err) {
-    llvm::errs() << "Error preparing to parse the source: " << err << "\n";
+    std::string ss;
+    llvm::raw_string_ostream os(ss);
+    os << err;
+    CI.getDiagnostics().Report(diag::err_fe_error_backend) << ss;
     llvm::consumeError(std::move(err));
     return;
   }

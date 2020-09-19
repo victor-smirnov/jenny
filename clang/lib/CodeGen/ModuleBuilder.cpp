@@ -35,6 +35,7 @@ namespace {
     const HeaderSearchOptions &HeaderSearchOpts; // Only used for debug info.
     const PreprocessorOptions &PreprocessorOpts; // Only used for debug info.
     const CodeGenOptions CodeGenOpts;  // Intentionally copied in.
+    const LangOptions* LangOpts;
 
     unsigned HandlingTopLevelDecls;
 
@@ -76,6 +77,7 @@ namespace {
     CodeGeneratorImpl(DiagnosticsEngine &diags, llvm::StringRef ModuleName,
                       const HeaderSearchOptions &HSO,
                       const PreprocessorOptions &PPO, const CodeGenOptions &CGO,
+                      const LangOptions* LangOpts,
                       llvm::LLVMContext &C,
                       CoverageSourceInfo *CoverageInfo = nullptr)
         : Diags(diags), Ctx(nullptr), HeaderSearchOpts(HSO),
@@ -142,7 +144,9 @@ namespace {
       const auto &SDKVersion = Ctx->getTargetInfo().getSDKVersion();
       if (!SDKVersion.empty())
         M->setSDKVersion(SDKVersion);
-      Builder.reset(new CodeGen::CodeGenModule(Context, HeaderSearchOpts,
+
+      const LangOptions& LangOpts0 = LangOpts? *LangOpts : Context.getLangOpts();
+      Builder.reset(new CodeGen::CodeGenModule(Context, LangOpts0, HeaderSearchOpts,
                                                PreprocessorOpts, CodeGenOpts,
                                                *M, Diags, CoverageInfo));
 
@@ -342,5 +346,15 @@ CodeGenerator *clang::CreateLLVMCodeGen(
     const PreprocessorOptions &PreprocessorOpts, const CodeGenOptions &CGO,
     llvm::LLVMContext &C, CoverageSourceInfo *CoverageInfo) {
   return new CodeGeneratorImpl(Diags, ModuleName, HeaderSearchOpts,
-                               PreprocessorOpts, CGO, C, CoverageInfo);
+                               PreprocessorOpts, CGO, nullptr, C, CoverageInfo);
+}
+
+CodeGenerator *clang::CreateLLVMCodeGen(
+    DiagnosticsEngine &Diags, llvm::StringRef ModuleName,
+    const HeaderSearchOptions &HeaderSearchOpts,
+    const PreprocessorOptions &PreprocessorOpts, const CodeGenOptions &CGO,
+    const LangOptions& LangOpts,
+    llvm::LLVMContext &C, CoverageSourceInfo *CoverageInfo) {
+  return new CodeGeneratorImpl(Diags, ModuleName, HeaderSearchOpts,
+                               PreprocessorOpts, CGO, &LangOpts, C, CoverageInfo);
 }

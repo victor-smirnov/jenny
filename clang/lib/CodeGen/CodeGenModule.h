@@ -555,7 +555,7 @@ private:
   MetadataTypeMap GeneralizedMetadataIdMap;
 
 public:
-  CodeGenModule(ASTContext &C, const HeaderSearchOptions &headersearchopts,
+  CodeGenModule(ASTContext &C, const LangOptions& LangOpts, const HeaderSearchOptions &headersearchopts,
                 const PreprocessorOptions &ppopts,
                 const CodeGenOptions &CodeGenOpts, llvm::Module &M,
                 DiagnosticsEngine &Diags,

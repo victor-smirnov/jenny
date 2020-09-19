@@ -149,7 +149,7 @@ const unsigned Sema::MaxAlignmentExponent;
 const unsigned Sema::MaximumAlignment;
 
 Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
-           TranslationUnitKind TUKind, CodeCompleteConsumer *CodeCompleter)
+           TranslationUnitKind TUKind, CodeCompleteConsumer *CodeCompleter, Sema* Parent)
     : ExternalSource(nullptr), isMultiplexExternalSource(false),
       CurFPFeatures(pp.getLangOpts()), LangOpts(pp.getLangOpts()), PP(pp),
       Context(ctxt), Consumer(consumer), Diags(PP.getDiagnostics()),
@@ -184,6 +184,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
       ReflectionCallbackObj(ReflectionCallbackImpl(*this)),
       VarDataSharingAttributesStack(nullptr), CurScope(nullptr),
       Ident_super(nullptr), Ident___float128(nullptr) {
+  this->Parent = Parent;
   TUScope = nullptr;
   isConstantEvaluatedOverride = false;
 
