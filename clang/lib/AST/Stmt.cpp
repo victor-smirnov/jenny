@@ -13,11 +13,12 @@
 #include "clang/AST/Stmt.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTDiagnostic.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclGroup.h"
 #include "clang/AST/Expr.h"
-#include "clang/AST/ExprConcepts.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/ExprConcepts.h"
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/ExprOpenMP.h"
 #include "clang/AST/StmtCXX.h"
@@ -41,8 +42,8 @@
 #include <cassert>
 #include <cstring>
 #include <string>
-#include <utility>
 #include <type_traits>
+#include <utility>
 
 using namespace clang;
 
@@ -129,6 +130,51 @@ void Stmt::EnableStatistics() {
   StatisticsEnabled = true;
 }
 
+static std::pair<Stmt::Likelihood, const Attr *> getLikelihood(const Stmt *S) {
+  if (const auto *AS = dyn_cast_or_null<AttributedStmt>(S))
+    for (const auto *A : AS->getAttrs()) {
+      if (isa<LikelyAttr>(A))
+        return std::make_pair(Stmt::LH_Likely, A);
+
+      if (isa<UnlikelyAttr>(A))
+        return std::make_pair(Stmt::LH_Unlikely, A);
+    }
+
+  return std::make_pair(Stmt::LH_None, nullptr);
+}
+
+Stmt::Likelihood Stmt::getLikelihood(const Stmt *S) {
+  return ::getLikelihood(S).first;
+}
+
+Stmt::Likelihood Stmt::getLikelihood(const Stmt *Then, const Stmt *Else) {
+  Likelihood LHT = ::getLikelihood(Then).first;
+  Likelihood LHE = ::getLikelihood(Else).first;
+  if (LHE == LH_None)
+    return LHT;
+
+  // If the same attribute is used on both branches there's a conflict.
+  if (LHT == LHE)
+    return LH_None;
+
+  if (LHT != LH_None)
+    return LHT;
+
+  // Invert the value of Else to get the value for Then.
+  return LHE == LH_Likely ? LH_Unlikely : LH_Likely;
+}
+
+std::tuple<bool, const Attr *, const Attr *>
+Stmt::determineLikelihoodConflict(const Stmt *Then, const Stmt *Else) {
+  std::pair<Likelihood, const Attr *> LHT = ::getLikelihood(Then);
+  std::pair<Likelihood, const Attr *> LHE = ::getLikelihood(Else);
+  // If the same attribute is used on both branches there's a conflict.
+  if (LHT.first != LH_None && LHT.first == LHE.first)
+    return std::make_tuple(true, LHT.second, LHE.second);
+
+  return std::make_tuple(false, nullptr, nullptr);
+}
+
 /// Skip no-op (attributed, compound) container stmts and skip captured
 /// stmt at the top, if \a IgnoreCaptured is true.
 Stmt *Stmt::IgnoreContainers(bool IgnoreCaptured) {
@@ -175,7 +221,8 @@ namespace {
   // These silly little functions have to be static inline to suppress
   // unused warnings, and they have to be defined to suppress other
   // warnings.
-  static good is_good(good) { return good(); }
+  static inline good is_good(good) { return good(); }
+  static inline bad is_good(bad) { return bad(); }
 
   typedef Stmt::child_range children_t();
   template <class T> good implements_children(children_t T::*) {

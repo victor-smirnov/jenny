@@ -660,7 +660,8 @@ clang::MakeDeductionFailureInfo(ASTContext &Context,
   case Sema::TDK_IncompletePack:
     // FIXME: It's slightly wasteful to allocate two TemplateArguments for this.
   case Sema::TDK_Inconsistent:
-  case Sema::TDK_Underqualified: {
+  case Sema::TDK_Underqualified: 
+  case Sema::TDK_UnexpectedDeduction: {
     // FIXME: Should allocate from normal heap so that we can free this later.
     DFIParamWithArguments *Saved = new (Context) DFIParamWithArguments;
     Saved->Param = Info.Param;
@@ -715,6 +716,7 @@ void DeductionFailureInfo::Destroy() {
   case Sema::TDK_DeducedMismatch:
   case Sema::TDK_DeducedMismatchNested:
   case Sema::TDK_NonDeducedMismatch:
+  case Sema::TDK_UnexpectedDeduction:
     // FIXME: Destroy the data?
     Data = nullptr;
     break;
@@ -772,6 +774,7 @@ TemplateParameter DeductionFailureInfo::getTemplateParameter() {
   case Sema::TDK_IncompletePack:
   case Sema::TDK_Inconsistent:
   case Sema::TDK_Underqualified:
+  case Sema::TDK_UnexpectedDeduction:
     return static_cast<DFIParamWithArguments*>(Data)->Param;
 
   // Unhandled
@@ -797,6 +800,7 @@ TemplateArgumentList *DeductionFailureInfo::getTemplateArgumentList() {
   case Sema::TDK_NonDeducedMismatch:
   case Sema::TDK_CUDATargetMismatch:
   case Sema::TDK_NonDependentConversionFailure:
+  case Sema::TDK_UnexpectedDeduction:
     return nullptr;
 
   case Sema::TDK_DeducedMismatch:
@@ -838,6 +842,7 @@ const TemplateArgument *DeductionFailureInfo::getFirstArg() {
   case Sema::TDK_DeducedMismatch:
   case Sema::TDK_DeducedMismatchNested:
   case Sema::TDK_NonDeducedMismatch:
+  case Sema::TDK_UnexpectedDeduction:
     return &static_cast<DFIArguments*>(Data)->FirstArg;
 
   // Unhandled
@@ -862,6 +867,7 @@ const TemplateArgument *DeductionFailureInfo::getSecondArg() {
   case Sema::TDK_CUDATargetMismatch:
   case Sema::TDK_NonDependentConversionFailure:
   case Sema::TDK_ConstraintsNotSatisfied:
+  case Sema::TDK_UnexpectedDeduction:
     return nullptr;
 
   case Sema::TDK_Inconsistent:
@@ -1499,17 +1505,9 @@ Sema::TryImplicitConversion(Expr *From, QualType ToType,
 /// converted expression. Flavor is the kind of conversion we're
 /// performing, used in the error message. If @p AllowExplicit,
 /// explicit user-defined conversions are permitted.
-ExprResult
-Sema::PerformImplicitConversion(Expr *From, QualType ToType,
-                                AssignmentAction Action, bool AllowExplicit) {
-  ImplicitConversionSequence ICS;
-  return PerformImplicitConversion(From, ToType, Action, AllowExplicit, ICS);
-}
-
-ExprResult
-Sema::PerformImplicitConversion(Expr *From, QualType ToType,
-                                AssignmentAction Action, bool AllowExplicit,
-                                ImplicitConversionSequence& ICS) {
+ExprResult Sema::PerformImplicitConversion(Expr *From, QualType ToType,
+                                           AssignmentAction Action,
+                                           bool AllowExplicit) {
   if (checkPlaceholderForOverload(*this, From))
     return ExprError();
 
@@ -1520,13 +1518,13 @@ Sema::PerformImplicitConversion(Expr *From, QualType ToType,
   if (getLangOpts().ObjC)
     CheckObjCBridgeRelatedConversions(From->getBeginLoc(), ToType,
                                       From->getType(), From);
-  ICS = ::TryImplicitConversion(*this, From, ToType,
-                                /*SuppressUserConversions=*/false,
-                                AllowExplicit ? AllowedExplicit::All
-                                              : AllowedExplicit::None,
-                                /*InOverloadResolution=*/false,
-                                /*CStyle=*/false, AllowObjCWritebackConversion,
-                                /*AllowObjCConversionOnExplicit=*/false);
+  ImplicitConversionSequence ICS = ::TryImplicitConversion(
+      *this, From, ToType,
+      /*SuppressUserConversions=*/false,
+      AllowExplicit ? AllowedExplicit::All : AllowedExplicit::None,
+      /*InOverloadResolution=*/false,
+      /*CStyle=*/false, AllowObjCWritebackConversion,
+      /*AllowObjCConversionOnExplicit=*/false);
   return PerformImplicitConversion(From, ToType, ICS, Action);
 }
 
@@ -5941,7 +5939,8 @@ diagnoseNoViableConversion(Sema &SemaRef, SourceLocation Loc, Expr *&From,
     // Record usage of conversion in an implicit cast.
     From = ImplicitCastExpr::Create(SemaRef.Context, Result.get()->getType(),
                                     CK_UserDefinedConversion, Result.get(),
-                                    nullptr, Result.get()->getValueKind());
+                                    nullptr, Result.get()->getValueKind(),
+                                    SemaRef.CurFPFeatureOverrides());
   }
   return false;
 }
@@ -5970,7 +5969,8 @@ static bool recordConversion(Sema &SemaRef, SourceLocation Loc, Expr *&From,
   // Record usage of conversion in an implicit cast.
   From = ImplicitCastExpr::Create(SemaRef.Context, Result.get()->getType(),
                                   CK_UserDefinedConversion, Result.get(),
-                                  nullptr, Result.get()->getValueKind());
+                                  nullptr, Result.get()->getValueKind(),
+                                  SemaRef.CurFPFeatureOverrides());
   return false;
 }
 
@@ -7378,8 +7378,8 @@ void Sema::AddConversionCandidate(
                             VK_LValue, From->getBeginLoc());
   ImplicitCastExpr ConversionFn(ImplicitCastExpr::OnStack,
                                 Context.getPointerType(Conversion->getType()),
-                                CK_FunctionToPointerDecay,
-                                &ConversionRef, VK_RValue);
+                                CK_FunctionToPointerDecay, &ConversionRef,
+                                VK_RValue, FPOptionsOverride());
 
   QualType ConversionType = Conversion->getConversionType();
   if (!isCompleteType(From->getBeginLoc(), ConversionType)) {
@@ -10947,6 +10947,14 @@ static void DiagnoseBadDeduction(Sema &S, NamedDecl *Found, Decl *Templated,
     S.Diag(Templated->getLocation(),
            diag::note_cuda_ovl_candidate_target_mismatch);
     return;
+  case Sema::TDK_UnexpectedDeduction: {
+    TemplateTypeParmDecl *TParam = cast<TemplateTypeParmDecl>(ParamD);
+    QualType Param = DeductionFailure.getFirstArg()->getAsType();
+
+    S.Diag(Templated->getLocation(), diag::note_ovl_candidate_unexpected_deduction)
+      << TParam->getExpectedDeduction() << Param;
+    return;
+  }
   }
 }
 
@@ -11299,6 +11307,7 @@ static unsigned RankDeductionFailure(const DeductionFailureInfo &DFI) {
   case Sema::TDK_NonDeducedMismatch:
   case Sema::TDK_MiscellaneousDeductionFailure:
   case Sema::TDK_CUDATargetMismatch:
+  case Sema::TDK_UnexpectedDeduction:
     return 3;
 
   case Sema::TDK_InstantiationDepth:
@@ -14520,9 +14529,9 @@ Sema::BuildCallToObjectOfClassType(Scope *S, Expr *Obj,
     if (Call.isInvalid())
       return ExprError();
     // Record usage of conversion in an implicit cast.
-    Call = ImplicitCastExpr::Create(Context, Call.get()->getType(),
-                                    CK_UserDefinedConversion, Call.get(),
-                                    nullptr, VK_RValue);
+    Call = ImplicitCastExpr::Create(
+        Context, Call.get()->getType(), CK_UserDefinedConversion, Call.get(),
+        nullptr, VK_RValue, CurFPFeatureOverrides());
 
     return BuildCallExpr(S, Call.get(), LParenLoc, Args, RParenLoc);
   }
@@ -14974,10 +14983,9 @@ Expr *Sema::FixOverloadedFunctionReference(Expr *E, DeclAccessPair Found,
     if (SubExpr == ICE->getSubExpr())
       return ICE;
 
-    return ImplicitCastExpr::Create(Context, ICE->getType(),
-                                    ICE->getCastKind(),
-                                    SubExpr, nullptr,
-                                    ICE->getValueKind());
+    return ImplicitCastExpr::Create(Context, ICE->getType(), ICE->getCastKind(),
+                                    SubExpr, nullptr, ICE->getValueKind(),
+                                    CurFPFeatureOverrides());
   }
 
   if (auto *GSE = dyn_cast<GenericSelectionExpr>(E)) {

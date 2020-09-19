@@ -2220,6 +2220,13 @@ void CodeGenModule::ConstructAttributeList(
       if (AI.getIndirectByVal())
         Attrs.addByValAttr(getTypes().ConvertTypeForMem(ParamType));
 
+      auto *Decl = ParamType->getAsRecordDecl();
+      if (CodeGenOpts.PassByValueIsNoAlias && Decl &&
+          Decl->getArgPassingRestrictions() == RecordDecl::APK_CanPassInRegs)
+        // When calling the function, the pointer passed in will be the only
+        // reference to the underlying object. Mark it accordingly.
+        Attrs.addAttribute(llvm::Attribute::NoAlias);
+
       // TODO: We could add the byref attribute if not byval, but it would
       // require updating many testcases.
 
@@ -3902,13 +3909,14 @@ void CodeGenFunction::EmitCallArgs(
       llvm::Value *True = llvm::ConstantInt::getTrue(getLLVMContext());
       llvm::Value *False = llvm::ConstantInt::getFalse(getLLVMContext());
       llvm::Value *V;
-      if (PT->isInParameter())
+      if (PT->isInParameter()) {
         // An input parameter is finally movable if it is passed as a prvalue
         // or xvalue.
         //
         // TODO: Can we move a const rvalue or xvalue? Can we even get const
         // expressions in these contexts?
         V = E->isRValue() || E->isXValue() ? True : False;
+      }
       else if (PT->isOutParameter())
         // An output parameter is either uninitialized or not.
         //

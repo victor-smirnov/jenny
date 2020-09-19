@@ -1388,7 +1388,7 @@ llvm::Constant *ConstantEmitter::tryEmitConstantExpr(const ConstantExpr *CE) {
 
 llvm::Constant *ConstantEmitter::tryEmitConstantExpr(const JennyMetaCallExpr *CE) {
   const CallExpr *Inner = CE->getOperand();
-  QualType RetType = Inner->getCallReturnType(CGF->getContext());
+  QualType RetType = CE->getType();
 
   Expr::EvalContext ECtx(CGM.getContext(), nullptr);
   Expr::EvalResult Result;

@@ -977,6 +977,8 @@ void TextNodeDumper::VisitCastExpr(const CastExpr *Node) {
   }
   dumpBasePath(OS, Node);
   OS << ">";
+  if (Node->hasStoredFPFeatures())
+    printFPOptions(Node->getFPFeatures());
 }
 
 void TextNodeDumper::VisitImplicitCastExpr(const ImplicitCastExpr *Node) {
@@ -1145,6 +1147,14 @@ void TextNodeDumper::VisitCXXFunctionalCastExpr(
     const CXXFunctionalCastExpr *Node) {
   OS << " functional cast to " << Node->getTypeAsWritten().getAsString() << " <"
      << Node->getCastKindName() << ">";
+  if (Node->hasStoredFPFeatures())
+    printFPOptions(Node->getFPFeatures());
+}
+
+void TextNodeDumper::VisitCXXStaticCastExpr(const CXXStaticCastExpr *Node) {
+  VisitCXXNamedCastExpr(Node);
+  if (Node->hasStoredFPFeatures())
+    printFPOptions(Node->getFPFeatures());
 }
 
 void TextNodeDumper::VisitCXXUnresolvedConstructExpr(
@@ -1532,6 +1542,26 @@ void TextNodeDumper::VisitObjCInterfaceType(const ObjCInterfaceType *T) {
 void TextNodeDumper::VisitPackExpansionType(const PackExpansionType *T) {
   if (auto N = T->getNumExpansions())
     OS << " expansions " << *N;
+}
+
+void TextNodeDumper::VisitInParameterType(const InParameterType *T) {
+  if (Context)
+    Visit(T->getAdjustedType(*Context));
+}
+
+void TextNodeDumper::VisitOutParameterType(const OutParameterType *T) {
+  if (Context)
+    Visit(T->getAdjustedType(*Context));
+}
+
+void TextNodeDumper::VisitInOutParameterType(const InOutParameterType *T) {
+  if (Context)
+    Visit(T->getAdjustedType(*Context));
+}
+
+void TextNodeDumper::VisitMoveParameterType(const MoveParameterType *T) {
+  if (Context)
+    Visit(T->getAdjustedType(*Context));
 }
 
 void TextNodeDumper::VisitLabelDecl(const LabelDecl *D) { dumpName(D); }

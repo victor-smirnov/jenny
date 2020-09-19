@@ -1185,7 +1185,8 @@ static bool checkTupleLikeDecomposition(Sema &S,
     //   an xvalue otherwise
     if (!Src->getType()->isLValueReferenceType())
       E = ImplicitCastExpr::Create(S.Context, E.get()->getType(), CK_NoOp,
-                                   E.get(), nullptr, VK_XValue);
+                                   E.get(), nullptr, VK_XValue,
+                                   FPOptionsOverride());
 
     TemplateArgumentListInfo Args(Loc, Loc);
     Args.addArgument(
@@ -11041,7 +11042,7 @@ Decl *Sema::ActOnStartNamespaceDef(
     // declarations semantically contained within an anonymous
     // namespace internal linkage.
 
-    if (!PrevNS) {
+    if (!PrevNS && !Parent->isFragment()) {
       UD = UsingDirectiveDecl::Create(Context, Parent,
                                       /* 'using' */ LBrace,
                                       /* 'namespace' */ SourceLocation(),
@@ -15040,9 +15041,9 @@ void Sema::DefineImplicitLambdaToBlockPointerConversion(
   // (since it's unusable otherwise); in the case where we inline the
   // block literal, it has block literal lifetime semantics.
   if (!BuildBlock.isInvalid() && !getLangOpts().ObjCAutoRefCount)
-    BuildBlock = ImplicitCastExpr::Create(Context, BuildBlock.get()->getType(),
-                                          CK_CopyAndAutoreleaseBlockObject,
-                                          BuildBlock.get(), nullptr, VK_RValue);
+    BuildBlock = ImplicitCastExpr::Create(
+        Context, BuildBlock.get()->getType(), CK_CopyAndAutoreleaseBlockObject,
+        BuildBlock.get(), nullptr, VK_RValue, FPOptionsOverride());
 
   if (BuildBlock.isInvalid()) {
     Diag(CurrentLocation, diag::note_lambda_to_block_conv);

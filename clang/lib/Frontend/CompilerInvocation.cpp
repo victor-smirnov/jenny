@@ -1033,7 +1033,7 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.ThinLinkBitcodeFile =
       std::string(Args.getLastArgValue(OPT_fthin_link_bitcode_EQ));
 
-  Opts.HeapProf = Args.hasArg(OPT_fmemprof);
+  Opts.MemProf = Args.hasArg(OPT_fmemory_profile);
 
   Opts.MSVolatile = Args.hasArg(OPT_fms_volatile);
 
@@ -1453,6 +1453,8 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
       std::string(Args.getLastArgValue(OPT_fsymbol_partition_EQ));
 
   Opts.ForceAAPCSBitfieldLoad = Args.hasArg(OPT_ForceAAPCSBitfieldLoad);
+
+  Opts.PassByValueIsNoAlias = Args.hasArg(OPT_fpass_by_value_is_noalias);
   return Success;
 }
 
@@ -2767,6 +2769,9 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   if (Args.hasArg(OPT_fvisibility_inlines_hidden))
     Opts.InlineVisibilityHidden = 1;
 
+  if (Args.hasArg(OPT_fvisibility_inlines_hidden_static_local_var))
+    Opts.VisibilityInlinesHiddenStaticLocalVar = 1;
+
   if (Args.hasArg(OPT_fvisibility_global_new_delete_hidden))
     Opts.GlobalAllocationFunctionVisibilityHidden = 1;
 
@@ -2811,15 +2816,6 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
 
   // [Meta] Determine if C++ reflection is supported.
   Opts.Reflection = Args.hasArg(OPT_freflection);
-  if (Opts.Reflection) {
-    const Arg *A = Args.getLastArg(OPT_fdollars_in_identifiers,
-                                   OPT_fno_dollars_in_identifiers);
-    if (A && A->getOption().matches(OPT_fdollars_in_identifiers))
-      Diags.Report(diag::err_drv_argument_not_allowed_with)
-          << A->getSpelling() << "-freflection";
-    else
-      Opts.DollarIdents = 0; // Disable '$' in identifiers.
-  }
 
   Opts.PascalStrings = Args.hasArg(OPT_fpascal_strings);
   Opts.setVtorDispMode(

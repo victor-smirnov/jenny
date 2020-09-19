@@ -1306,8 +1306,17 @@ private:
   /// information parameters. For input paramteers, this is whether the argument
   /// can be moved and for output parameters, it's whether the object has been
   /// initialized.
-  llvm::SmallDenseMap<const ParmVarDecl *, const ImplicitParamDecl *, 2>
+  llvm::SmallDenseMap<const ValueDecl *, const ImplicitParamDecl *, 2>
       InOutArguments;
+
+  public:
+    const ImplicitParamDecl *getParameterInfoDecl(const ValueDecl *D) {
+      assert(InOutArguments.find(D) != InOutArguments.end() &&
+             "no matching parameter info");
+      return InOutArguments.find(D)->second;
+    }
+
+  private:
 
   /// Track escaped local variables with auto storage. Used during SEH
   /// outlining to produce a call to llvm.localescape.
@@ -4387,7 +4396,8 @@ public:
   /// TrueCount should be the number of times we expect the condition to
   /// evaluate to true based on PGO data.
   void EmitBranchOnBoolExpr(const Expr *Cond, llvm::BasicBlock *TrueBlock,
-                            llvm::BasicBlock *FalseBlock, uint64_t TrueCount);
+                            llvm::BasicBlock *FalseBlock, uint64_t TrueCount,
+                            llvm::MDNode *Weights = nullptr);
 
   /// Given an assignment `*LHS = RHS`, emit a test that checks if \p RHS is
   /// nonnull, if \p LHS is marked _Nonnull.

@@ -76,7 +76,7 @@ ImplicitCastExpr *JennyASTMaker::makeImplicitCast(const Expr *Arg, QualType Ty,
                                   /* CastKind=*/ CK,
                                   /* Expr=*/ const_cast<Expr *>(Arg),
                                   /* CXXCastPath=*/ nullptr,
-                                  /* ExprValueKind=*/ VK_RValue);
+                                  /* ExprValueKind=*/ VK_RValue, FPOptionsOverride{});
 }
 
 Expr *JennyASTMaker::makeIntegralCast(const Expr *Arg, QualType Ty) {
@@ -84,12 +84,12 @@ Expr *JennyASTMaker::makeIntegralCast(const Expr *Arg, QualType Ty) {
     return const_cast<Expr*>(Arg);
 
   return ImplicitCastExpr::Create(C, Ty, CK_IntegralCast,
-                                  const_cast<Expr*>(Arg), nullptr, VK_RValue);
+                                  const_cast<Expr*>(Arg), nullptr, VK_RValue, FPOptionsOverride{});
 }
 
 ImplicitCastExpr *JennyASTMaker::makeIntegralCastToBoolean(const Expr *Arg) {
   return ImplicitCastExpr::Create(C, C.BoolTy, CK_IntegralToBoolean,
-                                  const_cast<Expr*>(Arg), nullptr, VK_RValue);
+                                  const_cast<Expr*>(Arg), nullptr, VK_RValue, FPOptionsOverride{});
 }
 
 
@@ -168,7 +168,8 @@ CStyleCastExpr *JennyASTMaker::makeCStyleCastExpr(QualType T,
                                                   Expr *Op)
 {
     return CStyleCastExpr::Create(C, T, VK, K, Op,
-                                  nullptr, C.getTrivialTypeSourceInfo(T),
+                                  nullptr, FPOptionsOverride{},
+                                  C.getTrivialTypeSourceInfo(T),
                                   SourceLocation{}, SourceLocation{});
 }
 
