@@ -459,23 +459,7 @@ public:
       const TypedValue &TV = Iter->second;
       Expr *Opaque = new (getContext()) OpaqueValueExpr(
           E->getLocation(), TV.Type, VK_RValue, OK_Ordinary, E);
-      auto *CE = ConstantExpr::Create(getContext(), Opaque, TV.Value);
-
-      // Override dependence.
-      //
-      // By passing the DeclRefExpr onto OpaqueValueExpr we inherit
-      // its dependence flags, and that is then inherited by the ConstantExpr.
-      // Rather than causing conflict with upstream and changing
-      // semantics of OpaqueValueExpr
-      // (to allow us to traffic the DeclRefExpr for diagnostics),
-      // override this behavior for the ConstantExpr.
-      //
-      // This is fine as we should only be using the ConstantExpr's value
-      // rather than the expression which created it.
-
-      CE->setDependence(ExprDependence::None);
-
-      return CE;
+      return CXXInjectedValueExpr::Create(getContext(), Opaque, TV.Value);
     } else {
       return nullptr;
     }
@@ -496,7 +480,7 @@ public:
 
     // Apply the captured value via a ConstantExpr.
     APValue &CapturedVal = CurInjection->CapturedValues[E->getOffset()];
-    return ConstantExpr::Create(getContext(), E, CapturedVal);
+    return CXXInjectedValueExpr::Create(getContext(), E, CapturedVal);
   }
 
   QualType GetRequiredType(const CXXRequiredTypeDecl *D) {
@@ -2628,7 +2612,7 @@ Decl *InjectionContext::InjectTemplateTemplateParmDecl(
     if (!TName.isNull())
       Parm->setDefaultArgument(
           getSema().Context,
-          TemplateArgumentLoc(TemplateArgument(TName),
+          TemplateArgumentLoc(getSema().Context, TemplateArgument(TName),
                               QualifierLoc,
                               D->getDefaultArgument().getTemplateNameLoc()));
   }
@@ -4398,7 +4382,7 @@ EvaluateMetaDeclCall(Sema &Sema, MetaType *MD, CallExpr *Call) {
       Sema, Sema::ExpressionEvaluationContext::ConstantEvaluated);
 
   Expr::EvalContext EvalCtx(Context, Sema.GetReflectionCallbackObj());
-  bool Folded = Call->EvaluateAsRValue(Result, EvalCtx);
+  bool Folded = Call->EvaluateAsConstantExpr(Result, Expr::EvaluateForCodeGen, EvalCtx);
   if (!Folded) {
     // If the only error is that we didn't initialize a (void) value, that's
     // actually okay. APValue doesn't know how to do this anyway.

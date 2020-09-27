@@ -112,6 +112,7 @@ public:
 
   llvm::Constant *tryEmitConstantExpr(const ConstantExpr *CE);
   llvm::Constant *tryEmitConstantExpr(const JennyMetaCallExpr *CE);
+  llvm::Constant *tryEmitInjectedValueExpr(const CXXInjectedValueExpr *CE);
 
   llvm::Constant *emitNullForMemory(QualType T) {
     return emitNullForMemory(CGM, T);

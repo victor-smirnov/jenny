@@ -466,6 +466,10 @@ ExprDependence clang::computeDependence(CXXFragmentCaptureExpr *E) {
   return ExprDependence::TypeValue;
 }
 
+ExprDependence clang::computeDependence(CXXInjectedValueExpr *E) {
+  return ExprDependence::None;
+}
+
 ExprDependence clang::computeDependence(ObjCBoxedExpr *E) {
   return E->getSubExpr()->getDependence();
 }
@@ -827,6 +831,10 @@ ExprDependence clang::computeDependence(CXXConstructExpr *E) {
   for (auto *A : E->arguments())
     D |= A->getDependence() & ~ExprDependence::Type;
   return D;
+}
+
+ExprDependence clang::computeDependence(CXXDefaultInitExpr *E) {
+  return E->getExpr()->getDependence();
 }
 
 ExprDependence clang::computeDependence(LambdaExpr *E,

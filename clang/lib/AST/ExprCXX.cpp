@@ -146,6 +146,18 @@ bool CXXTypeidExpr::isPotentiallyEvaluated() const {
   return false;
 }
 
+bool CXXTypeidExpr::isMostDerived(ASTContext &Context) const {
+  assert(!isTypeOperand() && "Cannot call isMostDerived for typeid(type)");
+  const Expr *E = getExprOperand()->IgnoreParenNoopCasts(Context);
+  if (const auto *DRE = dyn_cast<DeclRefExpr>(E)) {
+    QualType Ty = DRE->getDecl()->getType();
+    if (!Ty->isPointerType() && !Ty->isReferenceType())
+      return true;
+  }
+
+  return false;
+}
+
 QualType CXXTypeidExpr::getTypeOperand(ASTContext &Context) const {
   assert(isTypeOperand() && "Cannot call getTypeOperand for typeid(expr)");
   Qualifiers Quals;
@@ -988,7 +1000,7 @@ CXXDefaultInitExpr::CXXDefaultInitExpr(const ASTContext &Ctx,
   CXXDefaultInitExprBits.Loc = Loc;
   assert(Field->hasInClassInitializer());
 
-  setDependence(ExprDependence::None);
+  setDependence(computeDependence(this));
 }
 
 CXXTemporary *CXXTemporary::Create(const ASTContext &C,
@@ -2053,6 +2065,7 @@ CXXFragmentCaptureExpr *CXXFragmentCaptureExpr::CreateEmpty(
 }
 
 
+
 // [Jenny] stuff.
 
 JennyMetaCallExpr::JennyMetaCallExpr(QualType T, CallExpr *Arg)
@@ -2088,4 +2101,23 @@ const char* JennyMetaCallExpr::SetSymbol(ASTContext& Context, const char* Symbol
   }
 
   return this->SymbolName;
+}
+CXXInjectedValueExpr *CXXInjectedValueExpr::Create(
+    const ASTContext &C, Expr *E, const APValue &Result) {
+  void *Mem = C.Allocate(totalSizeToAlloc<APValue>(1),
+                         alignof(CXXInjectedValueExpr));
+
+  auto *IVE = new (Mem) CXXInjectedValueExpr(E);
+  IVE->APValueResult() = Result;
+  return IVE;
+}
+
+CXXInjectedValueExpr *CXXInjectedValueExpr::CreateEmpty(
+    const ASTContext &C, EmptyShell Empty) {
+  void *Mem = C.Allocate(totalSizeToAlloc<APValue>(1),
+                         alignof(CXXInjectedValueExpr));
+
+  auto *E = new (Mem) CXXInjectedValueExpr(Empty);
+  E->APValueResult() = { };
+  return E;
 }

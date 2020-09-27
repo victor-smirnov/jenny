@@ -7226,6 +7226,10 @@ public:
     return StmtVisitorTy::Visit(E->getSubExpr());
   }
 
+  bool VisitCXXInjectedValueExpr(const CXXInjectedValueExpr *E) {
+    return DerivedSuccess(E->getAPValueResult(), E);
+  }
+
   bool VisitParenExpr(const ParenExpr *E)
     { return StmtVisitorTy::Visit(E->getSubExpr()); }
   bool VisitUnaryExtension(const UnaryOperator *E)
@@ -15470,6 +15474,7 @@ static ICEDiag CheckICE(const Expr* E, const Expr::EvalContext &Ctx) {
   case Expr::CXXDependentVariadicReifierExprClass:
   case Expr::CXXFragmentExprClass:
   case Expr::CXXFragmentCaptureExprClass:
+  case Expr::CXXInjectedValueExprClass:
     return ICEDiag(IK_NotICE, E->getBeginLoc());
 
   case Expr::InitListExprClass: {

@@ -56,7 +56,6 @@ namespace clang {
   class StringLiteral;
   class TargetInfo;
   class ValueDecl;
-  class InjectionContext;
   struct InjectionEffect;
 
 /// A simple array of base specifiers.
@@ -985,6 +984,11 @@ public:
            T->getStmtClass() <= lastExprConstant;
   }
 };
+// PointerLikeTypeTraits is specialized so it can be used with a forward-decl of
+// Expr. Verify that we got it right.
+static_assert(llvm::PointerLikeTypeTraits<Expr *>::NumLowBitsAvailable <=
+                  llvm::detail::ConstantLog2<alignof(Expr)>::value,
+              "PointerLikeTypeTraits<Expr*> assumes too much alignment.");
 
 //===----------------------------------------------------------------------===//
 // Wrapper Expressions.
@@ -1028,7 +1032,6 @@ class ConstantExpr final
   friend TrailingObjects;
   friend class ASTStmtReader;
   friend class ASTStmtWriter;
-  friend class InjectionContext;
 
 public:
   /// Describes the kind of result that can be tail-allocated.

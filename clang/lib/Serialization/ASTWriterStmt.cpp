@@ -457,7 +457,12 @@ void ASTStmtWriter::VisitCXXFragmentCaptureExpr(CXXFragmentCaptureExpr *E) {
   llvm_unreachable("not implemented");
 }
 
+
 void ASTStmtWriter::VisitJennyMetaCallExpr(JennyMetaCallExpr *E) {
+  llvm_unreachable("not implemented");
+}
+
+void ASTStmtWriter::VisitCXXInjectedValueExpr(CXXInjectedValueExpr *E) {
   llvm_unreachable("not implemented");
 }
 
