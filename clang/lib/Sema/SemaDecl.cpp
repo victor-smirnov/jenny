@@ -274,6 +274,7 @@ static ParsedType recoverFromTypeInKnownDependentBase(Sema &S,
   return S.CreateParsedType(T, Builder.getTypeSourceInfo(Context, T));
 }
 
+
 /// If the identifier refers to a type name within this scope,
 /// return the declaration of that type.
 ///
@@ -347,7 +348,11 @@ ParsedType Sema::getTypeName(const IdentifierInfo &II, SourceLocation NameLoc,
     // computed, which is either the type of the base of a member access
     // expression or the declaration context associated with a prior
     // nested-name-specifier.
-    LookupQualifiedName(Result, LookupCtx);
+    if (!LookupQualifiedName(Result, LookupCtx)) {
+      if (ExternalSource) {
+        ExternalSource->LookupQualified(Result, SS, false);
+      }
+    }
 
     if (ObjectTypePtr && Result.empty()) {
       // C++ [basic.lookup.classref]p3:
@@ -669,6 +674,8 @@ void Sema::DiagnoseUnknownTypeName(IdentifierInfo *&II,
     return;
   // We don't have anything to suggest (yet).
   SuggestedType = nullptr;
+
+  llvm::errs() << II->getName() << "\n";
 
   // There may have been a typo in the name of the type. Look up typo
   // results, in case we have something that we can suggest.

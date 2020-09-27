@@ -37,21 +37,12 @@ using namespace sema;
 namespace {
 
 QualType MapMetacallType(ASTContext& Ctx, QualType srcType) noexcept {
-  //srcType.dump();
-
-  //llvm::errs() << "BEGIN\n";
-
-  //CanQualType ctt = Ctx.getCanonicalType(srcType);
-  //ctt.dump();
-
-  //llvm::errs() << "END\n";
-
-  //llvm::errs() << srcType.getAsString() << "\n";
-
   if (srcType.getAsString() == "jenny::CStr") {
     QualType ctt = Ctx.getPointerType(Ctx.getConstType(Ctx.CharTy));
-    //ctt.dump();
     return ctt;
+  }
+  else if (srcType.getAsString() == "class jenny::PCxxDecl") {
+    return Ctx.MetaInfoTy;
   }
 
   return srcType;

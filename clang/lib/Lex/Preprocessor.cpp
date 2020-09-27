@@ -1446,6 +1446,25 @@ bool Preprocessor::HandleComment(Token &result, SourceRange Comment) {
   return true;
 }
 
+IdentifierInfo *Preprocessor::getIdentifierInfo(StringRef Name) const {
+  auto ii0 = Identifiers.find(Name);
+  if (ii0 != Identifiers.end()) {
+    return ii0->second;
+  }
+  else if (Parent) {
+    auto ii1 = Parent->Identifiers.find(Name);
+    if (ii1 != Parent->Identifiers.end()) {
+      return ii1->second;
+    }
+  }
+
+  return &Identifiers.get(Name);
+}
+
+void Preprocessor::addJennyPredefines() {
+  Predefines += "\n#include <__clang_jenny_metacall.h>";
+}
+
 ModuleLoader::~ModuleLoader() = default;
 
 CommentHandler::~CommentHandler() = default;
@@ -1458,4 +1477,17 @@ void Preprocessor::createPreprocessingRecord() {
 
   Record = new PreprocessingRecord(getSourceManager());
   addPPCallbacks(std::unique_ptr<PPCallbacks>(Record));
+}
+
+void Preprocessor::ExportIdentifiersTo(Preprocessor& TgtPP) {
+  for (auto& II: Identifiers) {
+    auto tgtII = TgtPP.Identifiers.find(II.getKey());
+    if (tgtII == TgtPP.Identifiers.end()) {
+      IdentifierInfo& tgt =
+          TgtPP.Identifiers.get(II.getKey());
+
+      IdentifierInfo& src = *II.getValue();
+      tgt.populateFrom(src);
+    }
+  }
 }

@@ -12899,13 +12899,6 @@ bool Sema::buildOverloadedCallSet(Scope *S, Expr *Fn,
   }
 #endif
 
-  if (Parent) {
-    Scope* scope = Parent->getScopeForContext(Parent->getASTContext().getTranslationUnitDecl());
-    if (scope && Parent->buildOverloadedCallSet(scope, Fn, ULE, Args, RParenLoc, CandidateSet, Result)) {
-      return true;
-    }
-  }
-
   UnbridgedCastsSet UnbridgedCasts;
   if (checkArgPlaceholdersForOverload(*this, Args, UnbridgedCasts)) {
     *Result = ExprError();

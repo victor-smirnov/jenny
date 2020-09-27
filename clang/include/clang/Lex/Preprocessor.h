@@ -880,9 +880,9 @@ private:
 
   Parser* CurrentParser;
 
-  Preprocessor* Parent;
-
   void updateOutOfDateIdentifier(IdentifierInfo &II) const;
+
+  Preprocessor* Parent;
 
 public:
   Preprocessor(std::shared_ptr<PreprocessorOptions> PPOpts,
@@ -922,11 +922,14 @@ public:
   /// Retrieve the preprocessor options used to initialize this
   /// preprocessor.
   PreprocessorOptions &getPreprocessorOpts() const { return *PPOpts; }
+  const std::shared_ptr<PreprocessorOptions> &getPreprocessorOptsPtr() const { return PPOpts; }
 
   DiagnosticsEngine &getDiagnostics() const { return *Diags; }
   void setDiagnostics(DiagnosticsEngine &D) { Diags = &D; }
 
   const LangOptions &getLangOpts() const { return LangOpts; }
+  LangOptions &getLangOpts() { return LangOpts; }
+
   const TargetInfo &getTargetInfo() const { return *Target; }
   const TargetInfo *getAuxTargetInfo() const { return AuxTarget; }
   FileManager &getFileManager() const { return FileMgr; }
@@ -1201,25 +1204,11 @@ public:
   /// These predefines are automatically injected when parsing the main file.
   void setPredefines(const char *P) { Predefines = P; }
   void setPredefines(StringRef P) { Predefines = std::string(P); }
+  void addJennyPredefines();
 
   /// Return information about the specified preprocessor
   /// identifier token.
-  IdentifierInfo *getIdentifierInfo(StringRef Name) const {
-    if (Identifiers.find(Name) != Identifiers.end()) {
-      return &Identifiers.get(Name);
-    }
-    else if (Parent) {
-      if (Parent->Identifiers.find(Name) != Parent->Identifiers.end()) {
-        return &Parent->Identifiers.get(Name);
-      }
-      else {
-        return &Identifiers.get(Name);
-      }
-    }
-    else {
-      return &Identifiers.get(Name);
-    }
-  }
+  IdentifierInfo *getIdentifierInfo(StringRef Name) const;
 
   /// Add the specified pragma handler to this preprocessor.
   ///
@@ -2357,6 +2346,8 @@ public:
   llvm::Optional<PreambleSkipInfo> getPreambleSkipInfo() const {
     return PreambleConditionalStack.SkipInfo;
   }
+
+  void ExportIdentifiersTo(Preprocessor& TgtPP);
 
 private:
   /// After processing predefined file, initialize the conditional stack from

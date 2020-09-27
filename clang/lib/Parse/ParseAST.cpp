@@ -141,6 +141,8 @@ void clang::ParseAST(Sema &S, bool PrintStats, bool SkipFunctionBodies) {
   llvm::CrashRecoveryContextCleanupRegistrar<Parser>
     CleanupParser(ParseOP.get());
 
+  S.getPreprocessor().addJennyPredefines();
+
   S.getPreprocessor().EnterMainSourceFile();
   ExternalASTSource *External = S.getASTContext().getExternalSource();
   if (External)

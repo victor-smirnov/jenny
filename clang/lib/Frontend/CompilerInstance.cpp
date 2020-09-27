@@ -2211,3 +2211,39 @@ void CompilerInstance::setExternalSemaSource(
     IntrusiveRefCntPtr<ExternalSemaSource> ESS) {
   ExternalSemaSrc = std::move(ESS);
 }
+
+namespace {
+
+CompilerInstance* getCI(CompilerInstance* CI) {
+  static thread_local CompilerInstance* tlCI = nullptr;
+
+  if (CI) {
+    tlCI = CI;
+    return CI;
+  }
+  else {
+    return tlCI;
+  }
+}
+
+}
+
+namespace clang {
+
+CompilerInstance& currentThreadLocalCompilerInstance()
+{
+  CompilerInstance* CI = getCI(nullptr);
+  assert(CI && "CompilerInstance is not set for this thread");
+  return *CI;
+}
+
+bool hasThreadLocalCompilerInstance() {
+  return (bool)getCI(nullptr);
+}
+
+void setThreadLocalCompilerInstance(CompilerInstance& instance) {
+  assert((!hasThreadLocalCompilerInstance()) && "CompilerInstance has been already set for this thread");
+  getCI(&instance);
+}
+
+}

@@ -1064,6 +1064,8 @@ void ASTFrontendAction::ExecuteAction() {
     return;
   }
 
+  clang::setThreadLocalCompilerInstance(CI);
+
   ParseAST(CI.getSema(), CI.getFrontendOpts().ShowStats,
            CI.getFrontendOpts().SkipFunctionBodies);
 }

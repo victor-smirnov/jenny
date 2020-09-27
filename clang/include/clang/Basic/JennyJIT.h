@@ -37,6 +37,7 @@ class CodeGenOptions;
 class DiagnosticsEngine;
 class PCHContainerReader;
 class FrontendOptions;
+class FileManager;
 
 struct JennyJIT {
   virtual ~JennyJIT() noexcept;
@@ -44,7 +45,7 @@ struct JennyJIT {
   using AdapterFn = void (*) (::__jy::JennyMetaCallAdapter&);
 
   virtual Expected<FunctionDecl*> CreateAdapter(const CallExpr* call, llvm::ArrayRef<QualType> args) noexcept = 0;
-  virtual Expected<std::string> compile(FunctionDecl* adapter) noexcept  = 0;
+  virtual Expected<std::string> compile(FunctionDecl* adapter) noexcept = 0;
 
   virtual Expected<void*> GetSymbol(llvm::StringRef name) noexcept = 0;
 

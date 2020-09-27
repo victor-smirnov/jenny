@@ -97,6 +97,22 @@ public:
   /// \return true to tell Sema to recover using the LookupResult.
   virtual bool LookupUnqualified(LookupResult &R, Scope *S) { return false; }
 
+  /// Do last resort, qualified lookup on a LookupResult that
+  /// Sema cannot find.
+  ///
+  /// \param R a LookupResult that is being recovered.
+  ///
+  /// \param SS the CXXScopeSpec of the identifier occurrence.
+  ///
+  /// \param InUnqualifiedLookup true if this is qualified name lookup that
+  /// occurs as part of unqualified name lookup.
+  ///
+  /// \return true to tell Sema to recover using the LookupResult.
+  virtual bool LookupQualified(LookupResult &R, CXXScopeSpec *SS, bool InUnqualifiedLookup) {
+    return false;
+  }
+
+
   /// Read the set of tentative definitions known to the external Sema
   /// source.
   ///

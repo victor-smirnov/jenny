@@ -145,6 +145,8 @@ public:
   IdentifierInfo(IdentifierInfo &&) = delete;
   IdentifierInfo &operator=(IdentifierInfo &&) = delete;
 
+  void populateFrom(const IdentifierInfo& src);
+
   /// Return true if this is the identifier for the specified string.
   ///
   /// This is intended to be used for string literals only: II->isStr("foo").

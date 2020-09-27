@@ -481,7 +481,6 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
 
   if (LangOpts.Reflection) {
       Builder.defineMacro("__jenny__"); // Jenny Frontend
-      Builder.append("#include <__clang_jenny_metacall.h>");
   }
 }
 

@@ -364,6 +364,28 @@ tok::PPKeywordKind IdentifierInfo::getPPKeywordID() const {
   }
 }
 
+void IdentifierInfo::populateFrom(const IdentifierInfo& src) {
+  TokenID         = src.TokenID;
+  ObjCOrBuiltinID = src.ObjCOrBuiltinID;
+  HasMacro        = src.HasMacro;
+  HadMacro        = src.HadMacro;
+  IsExtension     = src.IsExtension;
+  IsFutureCompatKeyword = src.IsFutureCompatKeyword;
+  IsPoisoned      = src.IsPoisoned;
+  IsCPPOperatorKeyword  = src.IsCPPOperatorKeyword;
+  NeedsHandleIdentifier = src.NeedsHandleIdentifier;
+  IsFromAST       = src.IsFromAST;
+  ChangedAfterLoad      = src.ChangedAfterLoad;
+  FEChangedAfterLoad    = src.FEChangedAfterLoad;
+  RevertedTokenID = src.RevertedTokenID;
+  OutOfDate       = src.OutOfDate;
+  IsModulesImport = src.IsModulesImport;
+  IsMangledOpenMPVariantName = src.IsMangledOpenMPVariantName;
+  IsSplice        = src.IsSplice;
+  FETokenInfo     = src.FETokenInfo;
+}
+
+
 //===----------------------------------------------------------------------===//
 // Stats Implementation
 //===----------------------------------------------------------------------===//
@@ -762,3 +784,5 @@ StringRef clang::getNullabilitySpelling(NullabilityKind kind,
   }
   llvm_unreachable("Unknown nullability kind.");
 }
+
+

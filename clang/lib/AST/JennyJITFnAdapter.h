@@ -30,11 +30,17 @@
 
 namespace clang {
 
+
+class FileManager;
+class SourceManager;
+class DiagnosticsEngine;
+class Preprocessor;
+class NamedDecl;
+
 namespace jenny {
 using MetaCallAllocator = llvm::BumpPtrAllocatorImpl<llvm::MallocAllocator, 512>;
 using MetaCallAllocationMap = std::unordered_map<void*, void*>;
 }
-
 
 class JennyMetaCallAdapterImpl final: public __jy::JennyMetaCallAdapter {
 
@@ -112,6 +118,16 @@ public:
 
   void except(::jenny::MetaExceptionBase& exception) noexcept override;
   void except_unknown() noexcept override;
+};
+
+
+struct CxxDeclImplBase: public ::jenny::ICxxDecl {
+  virtual const NamedDecl* namedDecl() const noexcept = 0;
+  virtual ASTContext& context() noexcept              = 0;
+  virtual Preprocessor& preprocessor() noexcept       = 0;
+  virtual SourceManager& sourceManager() noexcept     = 0;
+  virtual FileManager& fileManager() noexcept         = 0;
+  virtual DiagnosticsEngine& diag() noexcept          = 0;
 };
 
 

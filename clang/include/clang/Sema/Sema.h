@@ -1476,21 +1476,15 @@ public:
 
   bool WarnedStackExhausted = false;
 
-  Sema* Parent;
-
 public:
   Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
        TranslationUnitKind TUKind = TU_Complete,
-       CodeCompleteConsumer *CompletionConsumer = nullptr, Sema* Parent = nullptr);
+       CodeCompleteConsumer *CompletionConsumer = nullptr);
   ~Sema();
 
   /// Perform initialization that occurs after the parser has been
   /// initialized but before it parses anything.
   void Initialize();
-
-  Sema* getParentSema() {
-    return Parent;
-  }
 
   const LangOptions &getLangOpts() const { return LangOpts; }
   OpenCLOptions &getOpenCLOptions() { return OpenCLFeatures; }
@@ -2141,6 +2135,7 @@ public:
                          bool WantNontrivialTypeSourceInfo = false,
                          bool IsClassTemplateDeductionContext = true,
                          IdentifierInfo **CorrectedII = nullptr);
+
   TypeSpecifierType isTagName(IdentifierInfo &II, Scope *S);
   bool isMicrosoftMissingTypename(const CXXScopeSpec *SS, Scope *S);
   void DiagnoseUnknownTypeName(IdentifierInfo *&II,
@@ -3905,6 +3900,7 @@ public:
                            bool InUnqualifiedLookup = false);
   bool LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
                            CXXScopeSpec &SS);
+
   bool LookupParsedName(LookupResult &R, Scope *S, CXXScopeSpec *SS,
                         bool AllowBuiltinCreation = false,
                         bool EnteringContext = false);

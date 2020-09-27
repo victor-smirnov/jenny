@@ -22,8 +22,10 @@
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/CodeGen/ModuleBuilder.h"
 #include "clang/Sema/Sema.h"
+#include "clang/Sema/Lookup.h"
 
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/ExternalPreprocessorSource.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/PreprocessorOptions.h"
 #include <clang/Parse/Parser.h>
@@ -56,8 +58,47 @@ using namespace llvm::orc;
 
 
 namespace clang {
-namespace {
 
+struct CompilationError: public ErrorInfo<CompilationError> {
+
+  static char ID;
+
+  virtual void log(raw_ostream &OS) const {
+    OS << "CompilationError";
+  }
+
+  virtual std::error_code convertToErrorCode() const {
+    return std::error_code();
+  }
+};
+
+char CompilationError::ID = 123;
+
+
+
+class ParentSemaSource final: public ExternalSemaSource {
+  Sema& ParentSema;
+  Scope* SS;
+public:
+  ParentSemaSource(Sema& ParentSema): ParentSema(ParentSema)
+  {
+    TranslationUnitDecl* tu = ParentSema.getASTContext().getTranslationUnitDecl();
+    SS = ParentSema.getScopeForContext(tu);
+  }
+
+  bool LookupQualified(LookupResult &R, CXXScopeSpec *SS, bool InUnqualifiedLookup) override {
+    DeclContext* ctx = ParentSema.computeDeclContext(*SS);
+    bool res = ParentSema.LookupQualifiedName(R, ctx, InUnqualifiedLookup);
+    return res;
+  }
+
+  bool LookupUnqualified(LookupResult &R, Scope *S) override {
+    bool res = ParentSema.LookupName(R, SS);
+    return res;
+  }
+};
+
+namespace {
 
 class DummyASTConsumer: public ASTConsumer {};
 
@@ -106,6 +147,8 @@ class JennyJITImpl: public JennyJIT {
 
   friend class SymbolGenerator;
 
+  Sema& MainSema;
+
   IntrusiveRefCntPtr<ASTContext> ast_context_;
   ASTContext& Ctx;
 
@@ -135,14 +178,16 @@ class JennyJITImpl: public JennyJIT {
   QualType FunctionTy;
   QualType MetaExceptionBaseTy;
 
-  std::unique_ptr<Preprocessor> PP0;
-  std::unique_ptr<Sema> SM0;
-
   DummyASTConsumer Consumer;
+
+  const PCHContainerReader& PCHCtrReader;
+  const FrontendOptions& FEOptions;
+
+  std::vector<std::unique_ptr<Preprocessor>> Preprocessors;
 
 public:
   JennyJITImpl(
-      Sema& S,
+      Sema& MainSema,
       ASTContext& AstCtx,
       const PCHContainerReader& PCHCtrReader,
       const FrontendOptions& FEOptions,
@@ -154,6 +199,7 @@ public:
       LangOptions lang_options,
       Error& error
   ):
+    MainSema(MainSema),
     ast_context_(&AstCtx),
     Ctx(AstCtx),
     JitLibs(jitLibs),
@@ -171,10 +217,12 @@ public:
                       codegen_options_,
                       jitLangOpts,
                       *llvm_ctx_
-                      ))
+                      )),
+    PCHCtrReader(PCHCtrReader),
+    FEOptions(FEOptions)
   {
-    (void)PCHCtrReader;
-    (void)FEOptions;
+//    (void)PCHCtrReader;
+//    (void)FEOptions;
 
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
 
@@ -219,38 +267,8 @@ public:
       }
     }
 
-    Preprocessor& PP = S.getPreprocessor();
-    mainLangOpts = PP.getLangOpts();
-
-    PP0 = std::make_unique<Preprocessor>(
-          std::make_shared<PreprocessorOptions>(PP.getPreprocessorOpts()),
-          PP.getDiagnostics(),
-          mainLangOpts,
-          S.getSourceManager(),
-          PP.getHeaderSearchInfo(),
-          PP.getModuleLoader(),
-          nullptr, false, TU_Prefix, &PP
-    );
-
-    PP0->Initialize(PP.getTargetInfo(), PP.getAuxTargetInfo());
-    InitializePreprocessor(*PP0.get(), PP.getPreprocessorOpts(), PCHCtrReader, FEOptions);
-
-    SM0 = std::make_unique<Sema>(
-          *PP0.get(),
-          Ctx, Consumer,
-          TU_Prefix, nullptr, &S
-    );
-
-    PP0->InitPredefines();
-
-    Parser P(*PP0.get(), *SM0.get(), false);
-    P.Initialize();
-
-    Parser::DeclGroupPtrTy ADecl;
-    for (bool AtEOF = P.ParseFirstTopLevelDecl(ADecl);
-         !AtEOF;
-         AtEOF = P.ParseTopLevelDecl(ADecl))
-    {}
+    Preprocessor& MainPP = MainSema.getPreprocessor();
+    mainLangOpts = MainPP.getLangOpts();
   }
 
   static CodeGenOptions& process(CodeGenOptions& options) {
@@ -291,14 +309,38 @@ public:
 
   Expected<Decl*> parseTopLevelDecl(const std::string& data) noexcept
   {
+    Preprocessor& MainPP = MainSema.getPreprocessor();
+    std::unique_ptr<Preprocessor> PP = std::make_unique<Preprocessor>(
+          std::make_shared<PreprocessorOptions>(MainPP.getPreprocessorOpts()),
+          MainPP.getDiagnostics(),
+          mainLangOpts,
+          MainSema.getSourceManager(),
+          MainPP.getHeaderSearchInfo(),
+          MainPP.getModuleLoader(),
+          nullptr, false, TU_Complete, &MainPP
+    );
+
+    PP->Initialize(MainPP.getTargetInfo(), MainPP.getAuxTargetInfo());
+
+    Sema S(
+          *PP,
+          Ctx, Consumer,
+          TU_Prefix, nullptr
+    );
+
+    S.Initialize();
+    S.addExternalSource(new ParentSemaSource(MainSema));
+
     std::unique_ptr<MemoryBuffer> buffer = MemoryBuffer::getMemBufferCopy(data, "<JennyJIT>");
     FileID fid = Ctx.getSourceManager().createFileID(std::move(buffer));
 
-    Parser P(*PP0.get(), *SM0.get(), false);
+    Parser P(*PP, S, false);
+    Sema::ContextRAII CtxRAII(S, Ctx.getTranslationUnitDecl());
 
-    Sema::ContextRAII CtxRAII(*SM0.get(), Ctx.getTranslationUnitDecl());
+    PP->EnterSourceFile(fid, PP->GetCurDirLookup(), SourceLocation{});
+    PP->InitPredefines();
 
-    PP0->EnterSourceFile(fid, PP0->GetCurDirLookup(), SourceLocation{});
+    Preprocessors.push_back(std::move(PP));
 
     P.Initialize();
 
@@ -319,6 +361,10 @@ public:
           break;
         }
       }
+    }
+
+    if (S.getDiagnostics().hasErrorOccurred()) {
+      return make_error<CompilationError>();
     }
 
     return result;
@@ -355,8 +401,8 @@ public:
     }
 
     buffer += R"(  }
-  catch (::jenny::MetaExceptionBase& ex) {
-    adapter.except(ex);
+  catch (::jenny::MetaExceptionBase& ____ex) {
+    adapter.except(____ex);
   }
   catch (...) {
     adapter.except_unknown();

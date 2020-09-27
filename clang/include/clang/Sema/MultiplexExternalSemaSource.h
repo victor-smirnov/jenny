@@ -236,6 +236,8 @@ public:
   /// \return true to tell Sema to recover using the LookupResult.
   bool LookupUnqualified(LookupResult &R, Scope *S) override;
 
+  bool LookupQualified(LookupResult &R, CXXScopeSpec *SS, bool InUnqualifiedLookup) override;
+
   /// Read the set of tentative definitions known to the external Sema
   /// source.
   ///

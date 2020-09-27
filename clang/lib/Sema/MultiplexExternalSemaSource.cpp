@@ -244,6 +244,17 @@ bool MultiplexExternalSemaSource::LookupUnqualified(LookupResult &R, Scope *S){
   return !R.empty();
 }
 
+bool MultiplexExternalSemaSource::LookupQualified(LookupResult &R, CXXScopeSpec *SS, bool InUnqualifiedLookup)
+{
+  for(size_t i = 0; i < Sources.size(); ++i)
+    Sources[i]->LookupQualified(R, SS, InUnqualifiedLookup);
+
+  return !R.empty();
+}
+
+
+
+
 void MultiplexExternalSemaSource::ReadTentativeDefinitions(
                                      SmallVectorImpl<VarDecl*> &TentativeDefs) {
   for(size_t i = 0; i < Sources.size(); ++i)

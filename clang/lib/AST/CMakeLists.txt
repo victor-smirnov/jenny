@@ -83,6 +83,7 @@ add_clang_library(clangAST
   JennyJITFnAdapter.cpp
   JennyMetaLib.cpp
   JennyCStrLib.cpp
+  JennyCxxDeclLib.cpp
   Mangle.cpp
   MicrosoftCXXABI.cpp
   MicrosoftMangle.cpp

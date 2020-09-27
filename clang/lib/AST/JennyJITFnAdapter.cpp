@@ -11,8 +11,12 @@
 
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/ASTImporter.h"
 #include "clang/AST/APValue.h"
+#include "clang/AST/Decl.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/Basic/FileManager.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/Basic/TargetInfo.h"
 
@@ -71,6 +75,10 @@ public:
   }
 
   char* data(CharUnits offset) {
+    return Bytes + offset.getQuantity();
+  }
+
+  char* data_nc(CharUnits offset) {
     return Bytes + offset.getQuantity();
   }
 
@@ -292,7 +300,6 @@ private:
     const auto *CAT =
         dyn_cast_or_null<ArrayType>(Ty->getAsArrayTypeUnsafe());
     if (!CAT) {
-      Ty.dump();
       return false;
     }
 
@@ -346,12 +353,12 @@ private:
 class MemBufferToAPValueConverter {
   ASTContext& ASTCtx;
   interp::State& Info;
-  const ValueBuffer &Buffer;
+  ValueBuffer &Buffer;
   SourceLocation SLoc;
 
   MemBufferToAPValueConverter(ASTContext& ASTCtx0,
                               interp::State &Info,
-                              const ValueBuffer &Buffer,
+                              ValueBuffer &Buffer,
                               SourceLocation SLoc)
     : ASTCtx(ASTCtx0), Info(Info),
       Buffer(Buffer),
@@ -503,17 +510,46 @@ class MemBufferToAPValueConverter {
     return ArrayValue;
   }
 
-  Optional<APValue> visitSpecial(const TagType *Ty, CharUnits Offset) {
-    //QualType qTy(Ty, 0);
-    //QualType Can = qTy.getCanonicalType();
+  Optional<APValue> visitSpecial(const TagType *Ty, CharUnits Offset) noexcept
+  {
+    std::string name = Ty->getDecl()->getQualifiedNameAsString();
 
-    //llvm::errs() << Ty->getDecl()->getQualifiedNameAsString() << "\n";
-
-    if (Ty->getDecl()->getQualifiedNameAsString() == "jenny::CStr") {
+    if (name == "jenny::CStr") {
       const ::jenny::CStr& str = *(const ::jenny::CStr*) Buffer.data(Offset);
       return makeStringLiteral(str);
-      str.data();
     }
+    else if (name == "jenny::PCxxDecl") {
+      ::jenny::PCxxDecl pdecl = std::move(*(::jenny::PCxxDecl*) Buffer.data_nc(Offset));
+      return makeMetaInfo(std::move(pdecl));
+    }
+
+    return None;
+  }
+
+  Optional<APValue> makeMetaInfo(::jenny::PCxxDecl decl) noexcept {
+    CxxDeclImplBase* foreignDecl = static_cast<CxxDeclImplBase*>(decl.get());
+
+    ASTImporter importer(
+          ASTCtx, ASTCtx.getSourceManager().getFileManager(),
+          foreignDecl->context(), foreignDecl->fileManager(),
+          false
+    );
+
+    Expected<const Decl*> res0 = importer.Import(foreignDecl->namedDecl());
+
+    if (!res0) {
+      llvm::consumeError(res0.takeError());
+      Info.FFDiag(SLoc,
+                  diag::note_metacall_unsupported_type);
+    }
+    else {
+      if (const TagDecl* TD = dyn_cast_or_null<TagDecl>(*res0)) {
+        QualType type = ASTCtx.getTagDeclType(TD);
+        return APValue{RK_type, type.getTypePtr()};
+      }
+      return APValue::IndeterminateValue();
+    }
+
 
     return None;
   }
@@ -556,7 +592,7 @@ class MemBufferToAPValueConverter {
 
 public:
   // Pull out a full value of type DstType.
-  static Optional<APValue> convert(ASTContext& ASTCtx, interp::State& Info, const ValueBuffer &Buffer,
+  static Optional<APValue> convert(ASTContext& ASTCtx, interp::State& Info, ValueBuffer &Buffer,
                                    QualType type, SourceLocation SLoc) {
     MemBufferToAPValueConverter Converter(ASTCtx, Info, Buffer, SLoc);
     return Converter.visitType(type, CharUnits::fromQuantity(0));
