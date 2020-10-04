@@ -1,4 +1,4 @@
-/*===---- meta/cstr.h - Jenny Metaprogramming Support ----------------------===
+/*===---- jenny/meta/cstr.h - Jenny Metaprogramming Support ----------------===
  *
  * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
  * See https://llvm.org/LICENSE.txt for license information.

@@ -37,11 +37,14 @@ using namespace sema;
 namespace {
 
 QualType MapMetacallType(ASTContext& Ctx, QualType srcType) noexcept {
-  if (srcType.getAsString() == "jenny::CStr") {
+
+  std::string rtnTypeName = srcType.getCanonicalType().getAsString();
+
+  if (rtnTypeName.find("basic_string<char, struct std::char_traits<char>, class std::allocator<char>") != std::string::npos) {
     QualType ctt = Ctx.getPointerType(Ctx.getConstType(Ctx.CharTy));
     return ctt;
   }
-  else if (srcType.getAsString() == "class jenny::PCxxDecl") {
+  else if (rtnTypeName == "class jenny::PCxxDecl") {
     return Ctx.MetaInfoTy;
   }
 

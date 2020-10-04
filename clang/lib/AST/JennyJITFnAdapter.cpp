@@ -190,13 +190,15 @@ private:
     case APValue::Struct:
       return visitRecord(Val, Ty, Offset);
 
+    case APValue::Reflection:
+      return visitReflection(Val, Ty, Offset);
+
     case APValue::ComplexInt:
     case APValue::ComplexFloat:
     case APValue::Vector:
     case APValue::FixedPoint:
       // FIXME: We should support these.
 
-    case APValue::Reflection:
     case APValue::Fragment:
     case APValue::Union:
     case APValue::MemberPointer:
@@ -252,6 +254,31 @@ private:
     StringRef ss = str->getString();
     char* ptr = allocateString(ss);
     uint64_t ptr_val = reinterpret_cast<uint64_t>(ptr);
+    APSInt uval = APSInt::getUnsigned(ptr_val);
+    return visitInt(uval, Ctx.ASTCtx.UnsignedLongLongTy, Offset);
+  }
+
+  bool visitReflection(const APValue &Val, QualType Ty, CharUnits Offset)
+  {
+    ::jenny::MetaInfo* info{};
+    using MI_Type = ::jenny::MetaInfo::Type;
+
+    switch (Val.getReflectionKind()) {
+    case RK_type:
+      info = new (Ctx.ASTCtx) ::jenny::MetaInfo(Ctx.ASTCtx, Val.getReflectedType().getAsOpaquePtr(), MI_Type::TYPE); break;
+    case RK_expression:
+      info = new (Ctx.ASTCtx) ::jenny::MetaInfo(Ctx.ASTCtx, Val.getReflectedExpression(), MI_Type::EXPRESSION); break;
+    case RK_declaration:
+      info = new (Ctx.ASTCtx) ::jenny::MetaInfo(Ctx.ASTCtx, Val.getReflectedDeclaration(), MI_Type::DECLARATION); break;
+    case RK_base_specifier:
+      info = new (Ctx.ASTCtx) ::jenny::MetaInfo(Ctx.ASTCtx, Val.getReflectedBaseSpecifier(), MI_Type::BASE_SPECIFIER); break;
+    default:
+        return false;
+    }
+
+    Ctx.ASTCtx.addDestruction(info);
+
+    uint64_t ptr_val = reinterpret_cast<uint64_t>(info);
     APSInt uval = APSInt::getUnsigned(ptr_val);
     return visitInt(uval, Ctx.ASTCtx.UnsignedLongLongTy, Offset);
   }
@@ -514,8 +541,8 @@ class MemBufferToAPValueConverter {
   {
     std::string name = Ty->getDecl()->getQualifiedNameAsString();
 
-    if (name == "jenny::CStr") {
-      const ::jenny::CStr& str = *(const ::jenny::CStr*) Buffer.data(Offset);
+    if (name.find("basic_string") != name.npos) {
+      const std::string& str = *(const std::string*) Buffer.data(Offset);
       return makeStringLiteral(str);
     }
     else if (name == "jenny::PCxxDecl") {
@@ -554,9 +581,9 @@ class MemBufferToAPValueConverter {
     return None;
   }
 
-  APValue makeStringLiteral(const ::jenny::CStr& str) {
-    QualType strType = ASTCtx.getConstantArrayType(ASTCtx.CharTy, llvm::APInt(64, str.length()), nullptr, ArrayType::Normal, 0);
-    StringLiteral* slit = StringLiteral::Create(ASTCtx, StringRef(str.data(), str.length()),
+  APValue makeStringLiteral(const ::std::string& str) {
+    QualType strType = ASTCtx.getConstantArrayType(ASTCtx.CharTy, llvm::APInt(64, str.length() + 1), nullptr, ArrayType::Normal, 0);
+    StringLiteral* slit = StringLiteral::Create(ASTCtx, StringRef(str.data(), str.length() + 1),
                           StringLiteral::Ascii, false, strType, SLoc);
 
     return APValue(APValue::LValueBase(slit), CharUnits::Zero(), APValue::NoLValuePath{});

@@ -221,8 +221,10 @@ public:
     PCHCtrReader(PCHCtrReader),
     FEOptions(FEOptions)
   {
-//    (void)PCHCtrReader;
-//    (void)FEOptions;
+    (void)PCHCtrReader;
+    (void)FEOptions;
+
+    jitLangOpts.CPlusPlus20 = true;
 
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
 
@@ -472,7 +474,17 @@ private:
   void AppendArgs(std::string& buffer, llvm::ArrayRef<QualType> argTypes) {
     size_t idx{};
     for (QualType valType: argTypes) {
-      buffer += std::string("    *(") + valType.getAsString() + "*) adapter.param(" + std::to_string(idx) + ")";
+
+      std::string TypeName;
+
+      if (valType == Ctx.MetaInfoTy) {
+        TypeName = "::jenny::MetaInfo*";
+      }
+      else {
+        TypeName = valType.getAsString();
+      }
+
+      buffer += std::string("    *(") + TypeName + "*) adapter.param(" + std::to_string(idx) + ")";
 
       if (idx < argTypes.size() - 1) {
         buffer += ",";

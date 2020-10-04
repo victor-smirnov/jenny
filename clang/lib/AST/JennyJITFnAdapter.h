@@ -23,7 +23,7 @@
 #include "Interp/State.h"
 
 #include "../Headers/__clang_jenny_metacall.h"
-#include "../Headers/meta/compiler.h"
+#include "../Headers/jenny/meta/compiler.h"
 
 #include <tuple>
 #include <unordered_map>

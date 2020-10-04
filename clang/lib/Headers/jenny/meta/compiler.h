@@ -1,4 +1,4 @@
-/*===---- meta/compiler.h - Jenny Metaprogramming Support ------------------===
+/*===---- jenny/meta/compiler.h - Jenny Metaprogramming Support ------------===
  *
  * Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
  * See https://llvm.org/LICENSE.txt for license information.
@@ -9,13 +9,11 @@
 
 #pragma once
 
-#include "../__clang_jenny_metacall.h"
-#include "cstr.h"
+#include "metacall.h"
 
 #include <cstdlib>
 #include <cstring>
 #include <string>
-#include <memory>
 
 namespace jenny {
 
@@ -86,13 +84,5 @@ public:
 void swap(PCxxDecl& one, PCxxDecl& two) noexcept;
 
 PCxxDecl parse_cxx_top_level_decl(const char* decl_name, const char* code);
-
-struct Compiler {
-  virtual ~Compiler() noexcept {}
-};
-
-Compiler& compiler() noexcept;
-
-
 
 }

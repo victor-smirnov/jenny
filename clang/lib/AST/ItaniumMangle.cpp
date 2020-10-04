@@ -2695,6 +2695,7 @@ void CXXNameMangler::mangleType(const BuiltinType *T) {
   //                 ::= Ds # char16_t
   //                 ::= Dn # std::nullptr_t (i.e., decltype(nullptr))
   //                 ::= Dm # std::meta::info (i.e., typename(reflexpr(void)))
+  //                 ::= Dj # jenny::info (i.e., __jy_metainfo(reflexpr(void))) // ^^^^^^^^^^^^^
   //                 ::= u <source-name>    # vendor extended type
   std::string type_name;
   switch (T->getKind()) {

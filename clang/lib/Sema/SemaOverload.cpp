@@ -1481,6 +1481,22 @@ TryImplicitConversion(Sema &S, Expr *From, QualType ToType,
     return ICS;
   }
 
+  if (ToType->isPointerType()) {
+    QualType tt = ToType.getCanonicalType().getUnqualifiedType();
+
+    std::string TypeName = tt.getAsString();
+    if (TypeName == "class jenny::MetaInfo *" || TypeName == "const class jenny::MetaInfo *") {
+      if (S.Context.MetaInfoTy == FromType) {
+        ICS.setStandard();
+        ICS.Standard.setAsIdentityConversion();
+        ICS.Standard.setFromType(FromType);
+        ICS.Standard.setAllToTypes(ToType);
+        return ICS;
+      }
+    }
+  }
+
+
   return TryUserDefinedConversion(S, From, ToType, SuppressUserConversions,
                                   AllowExplicit, InOverloadResolution, CStyle,
                                   AllowObjCWritebackConversion,

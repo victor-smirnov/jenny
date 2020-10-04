@@ -28,7 +28,7 @@
 #include "clang/ASTMatchers/ASTMatchers.h"
 
 
-#include "../Headers/meta/compiler.h"
+#include "../Headers/jenny/meta/compiler.h"
 
 #include "JennyJITFnAdapter.h"
 

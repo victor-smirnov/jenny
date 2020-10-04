@@ -73,11 +73,12 @@ set(files
   inttypes.h
   invpcidintrin.h
   iso646.h
+  jenny/meta/compiler.h
+  jenny/meta/ctstr.h
+  jenny/meta/metacall.h
   limits.h
   lwpintrin.h
   lzcntintrin.h
-  meta/compiler.h
-  meta/cstr.h
   mm3dnow.h
   mmintrin.h
   mm_malloc.h

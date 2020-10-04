@@ -675,8 +675,6 @@ void Sema::DiagnoseUnknownTypeName(IdentifierInfo *&II,
   // We don't have anything to suggest (yet).
   SuggestedType = nullptr;
 
-  llvm::errs() << II->getName() << "\n";
-
   // There may have been a typo in the name of the type. Look up typo
   // results, in case we have something that we can suggest.
   TypeNameValidatorCCC CCC(/*AllowInvalid=*/false, /*WantClass=*/false,

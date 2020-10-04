@@ -1197,6 +1197,7 @@ llvm::Error CodeGenAction::BeforeParsing(CompilerInstance &CI)
 
   LangOpts.Exceptions = true;
 
+
   auto jit = JennyJIT::Create(
         CI.getSema(),
         CI.getASTContext(),
