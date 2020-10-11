@@ -1404,10 +1404,17 @@ llvm::Constant *ConstantEmitter::tryEmitConstantExpr(const JennyMetaCallExpr *CE
 
   Expr::EvalContext ECtx(CGM.getContext(), nullptr);
   Expr::EvalResult Result;
+  SmallVector<PartialDiagnosticAt, 10> Diag;
+  Result.Diag = &Diag;
   if (CE->EvaluateAsRValue(Result, ECtx, true)) {
     llvm::Constant *Res =
       emitAbstract(CE->getBeginLoc(), Result.Val, RetType);
     return Res;
+  }
+
+  for (auto diag: Diag) {
+    DiagnosticBuilder DB = CGM.getDiags().Report(diag.first, diag.second.getDiagID());
+    diag.second.Emit(DB);
   }
 
   return nullptr;

@@ -441,15 +441,11 @@ public:
 
           return Result;
         }
-        else {
-            CGF.CGM.Error(E->getBeginLoc(), "Can't evaluate arguments of the metacall");
-        }
     }
     else {
         Expr::EvalContext ECtx(CGF.getContext(), nullptr);
         Expr::EvalResult Result;
         if (!E->EvaluateAsConstantExpr(Result, Expr::EvaluateForCodeGen, ECtx, true)) {
-            CGF.CGM.Error(E->getBeginLoc(), "Can't evaluate arguments of the metacall");
         }
     }
 

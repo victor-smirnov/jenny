@@ -1065,6 +1065,12 @@ namespace {
       return true;
     }
 
+    PartialDiagnostic& addDiag(SourceLocation Loc, diag::kind DiagId) {
+      PartialDiagnostic PD(DiagId, getCtx().getDiagAllocator());
+      getEvalStatus().Diag->push_back(std::make_pair(Loc, PD));
+      return getEvalStatus().Diag->back().second;
+    }
+
   private:
     interp::Frame *getCurrentFrame() override { return CurrentCall; }
     const interp::Frame *getBottomFrame() const override { return &BottomFrame; }
@@ -5945,6 +5951,10 @@ static bool EvaluateArgs(ArrayRef<const Expr *> Args, ArgVector &ArgValues,
   // called via operator syntax.
   for (unsigned Idx = 0; Idx < Args.size(); Idx++) {
     if (!Evaluate(ArgValues[Idx], Info, Args[Idx])) {
+      if (ReportFailure) {
+        Info.addDiag(Args[Idx]->getBeginLoc(), diag::err_metacall_nonconsteval_argument1);
+      }
+
       // If we're checking for a potential constant expression, evaluate all
       // initializers even if some of them fail.
       if (!Info.noteFailure())
@@ -7803,7 +7813,7 @@ public:
 
     ArgVector ArgValues(Args.size());
 
-    if (!EvaluateArgs(Args, ArgValues, Info, Callee)) {
+    if (!EvaluateArgs(Args, ArgValues, Info, Callee, true)) {
         return false;
     }
 

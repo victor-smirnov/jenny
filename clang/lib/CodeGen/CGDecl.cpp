@@ -772,6 +772,16 @@ void CodeGenFunction::EmitScalarInit(const Expr *init, const ValueDecl *D,
   Qualifiers::ObjCLifetime lifetime = lvalue.getObjCLifetime();
   if (!lifetime) {
     llvm::Value *value = EmitScalarExpr(init);
+    if (!value
+          && (
+          CGM.getDiags().hasUnrecoverableErrorOccurred()
+          || CGM.getDiags().hasErrorOccurred()
+          || CGM.getDiags().hasUncompilableErrorOccurred())
+        )
+    {
+      return;
+    }
+
     if (capturedByInit)
       drillIntoBlockVariable(*this, lvalue, cast<VarDecl>(D));
     EmitNullabilityCheck(lvalue, value, init->getExprLoc());
