@@ -23,8 +23,6 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APFloat.h"
 
-#include "Interp/State.h"
-
 #include "JennyJITFnAdapter.h"
 
 
@@ -630,7 +628,7 @@ public:
 }
 
 
-bool JennyMetaCallAdapterImpl::addParam(const APValue& value, QualType type) {
+bool JennyMetaCallAdapterImpl::addParam(const APValue& value, QualType type) noexcept {
   Optional<ValueBuffer> buf = APValueToMemBufferConverter::convert(Ctx, Info, Allocator, value, type, SLoc);
   if (buf) {
     Params.push_back(MemTy{buf->data()});
@@ -648,13 +646,7 @@ void JennyMetaCallAdapterImpl::result(void* value) noexcept
     Result = MemBufferToAPValueConverter::convert(Ctx.ASTCtx, Info, Buffer, CalleeReturnType, SLoc);
 }
 
-std::string strErrorAndConsume(llvm::Error&& error) {
-  std::string ss;
-  llvm::raw_string_ostream os(ss);
-  os << error;
-  llvm::consumeError(std::move(error));
-  return ss;
-}
+
 
 void JennyMetaCallAdapterImpl::except(::jenny::MetaExceptionBase& exception) noexcept {
   Exception = new std::string(exception.reason());
@@ -663,6 +655,8 @@ void JennyMetaCallAdapterImpl::except(::jenny::MetaExceptionBase& exception) noe
 void JennyMetaCallAdapterImpl::except_unknown() noexcept {
   Exception = new std::string("Unknown exception");
 }
+
+MetacallArgsAdapter::~MetacallArgsAdapter() noexcept {}
 
 }
 

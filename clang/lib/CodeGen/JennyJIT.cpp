@@ -37,8 +37,6 @@
 #include <clang/AST/Decl.h>
 #include <clang/Sema/Sema.h>
 
-
-
 #include <llvm/Object/Archive.h>
 #include <llvm/Object/Binary.h>
 #include <llvm/Object/ObjectFile.h>
@@ -46,8 +44,13 @@
 
 #include "clang/Basic/JennyJIT.h"
 
-#include "../Headers/__clang_jenny_metacall.h"
+
 #include "JennyASTMaker.h"
+#include "JennyJITFnAdapter.h"
+
+#include "../Headers/__clang_jenny_metacall.h"
+#include <../AST/Interp/State.h>
+
 
 #include <memory>
 #include <iostream>
@@ -228,7 +231,9 @@ public:
 
     llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
 
-    jit_ = cantFail(LLLazyJITBuilder().create());
+    LLLazyJITBuilder JitBuilder;
+
+    jit_ = cantFail(JitBuilder.create());
     jit_->getMainJITDylib().addGenerator(std::make_unique<SymbolGenerator>(*this));
 
     for (auto fileName: JitLibs) {
@@ -271,6 +276,16 @@ public:
 
     Preprocessor& MainPP = MainSema.getPreprocessor();
     mainLangOpts = MainPP.getLangOpts();
+  }
+
+  std::unique_ptr<MetacallArgsAdapter> CreateMetacallArgsAdapter(
+      QualType returnType, QualType calleeReturnType,
+      Expr::EvalContext& Ctx0, interp::State& Info,
+      SourceLocation SLoc
+  ) noexcept override {
+    return std::make_unique<JennyMetaCallAdapterImpl>(
+      returnType, calleeReturnType, Ctx0, Info, SLoc
+    );
   }
 
   static CodeGenOptions& process(CodeGenOptions& options) {
@@ -531,6 +546,10 @@ private:
 };
 
 }
+
+
+
+
 
 JennyJIT::~JennyJIT() noexcept {}
 

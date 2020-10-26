@@ -61,8 +61,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Error.h"
 
-#include "JennyJITFnAdapter.h"
-
 #include <cstring>
 #include <functional>
 
@@ -5952,7 +5950,7 @@ static bool EvaluateArgs(ArrayRef<const Expr *> Args, ArgVector &ArgValues,
   for (unsigned Idx = 0; Idx < Args.size(); Idx++) {
     if (!Evaluate(ArgValues[Idx], Info, Args[Idx])) {
       if (ReportFailure) {
-        Info.addDiag(Args[Idx]->getBeginLoc(), diag::err_metacall_nonconsteval_argument1);
+        Info.addDiag(Args[Idx]->getBeginLoc(), diag::err_metacall_nonconsteval_argument);
       }
 
       // If we're checking for a potential constant expression, evaluate all
@@ -7821,22 +7819,24 @@ public:
         return true;
     }
 
-    JennyMetaCallAdapterImpl Adapter(
+    JennyJIT& jit = Info.ASTCtx.GetJennyJIT();
+
+    auto Adapter = jit.CreateMetacallArgsAdapter(
           E->getType(), Callee->getReturnType(),
           Info.Ctx, Info, E->getOperand()->getBeginLoc()
     );
 
     for (size_t cnt = 0; cnt < Args.size(); cnt++) {
-        if (!Adapter.addParam(ArgValues[cnt], Args[cnt]->getType())) {
+        if (!Adapter->addParam(ArgValues[cnt], Args[cnt]->getType())) {
             return false;
         }
     }
 
-    JennyJIT& jit = Info.ASTCtx.GetJennyJIT();
+
 
     const char* Symbol = E->GetSymbol();
     if (!Symbol) {
-      Expected<FunctionDecl*> decl = jit.CreateAdapter(E->getOperand(), Adapter.types());
+      Expected<FunctionDecl*> decl = jit.CreateAdapter(E->getOperand(), Adapter->types());
       if (decl) {
         Expected<std::string> fn_name = jit.compile(*decl);
         if (fn_name) {
@@ -7857,18 +7857,18 @@ public:
 
     if (Expected<void*> fn_v = jit.GetSymbol(Symbol)) {
       AdapterFnTy fn = (AdapterFnTy)*fn_v;
-      fn(Adapter);
+      fn(*Adapter->call_adapter());
     }
     else {
       Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << strErrorAndConsume(fn_v.takeError());
       return false;
     }
 
-    if (Adapter.exception()) {
-      Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << *Adapter.exception();
+    if (Adapter->exception()) {
+      Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << *Adapter->exception();
       return false;
     }
-    else if (Optional<APValue> result = Adapter.getResult()) {
+    else if (Optional<APValue> result = Adapter->getResult()) {
       return DerivedSuccess(*result, E);
     }
     else {

@@ -4621,6 +4621,7 @@ public:
         assert(Arg != ArgRange.end() && "Running over edge of argument list!");
         QualType P = *I;
         const Expr *A = *Arg;
+        (void)A;
         assert((isGenericMethod ||
                 (P->isParameterType() || // TODO: Stop ignoring these
                  P->isVariablyModifiedType() ||

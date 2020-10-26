@@ -11,8 +11,6 @@
 
 #pragma once
 
-
-
 #include "clang/AST/APValue.h"
 #include "clang/AST/Type.h"
 #include "clang/AST/ASTContext.h"
@@ -20,10 +18,12 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Allocator.h"
 
-#include "Interp/State.h"
+#include "../AST/Interp/State.h"
 
 #include "../Headers/__clang_jenny_metacall.h"
 #include "../Headers/jenny/meta/compiler.h"
+
+#include "clang/Basic/JennyJIT.h"
 
 #include <tuple>
 #include <unordered_map>
@@ -42,7 +42,7 @@ using MetaCallAllocator = llvm::BumpPtrAllocatorImpl<llvm::MallocAllocator, 512>
 using MetaCallAllocationMap = std::unordered_map<void*, void*>;
 }
 
-class JennyMetaCallAdapterImpl final: public __jy::JennyMetaCallAdapter {
+class JennyMetaCallAdapterImpl final: public MetacallArgsAdapter, public __jy::JennyMetaCallAdapter {
 
   struct MemTy {
     void* Ptr;
@@ -86,15 +86,19 @@ public:
   {
   }
 
-  ~JennyMetaCallAdapterImpl() noexcept {
+  virtual ~JennyMetaCallAdapterImpl() noexcept {
     if (Exception) delete Exception;
   }
 
-  const std::string* exception() const noexcept {
+  ::__jy::JennyMetaCallAdapter* call_adapter() noexcept override {
+    return this;
+  }
+
+  const std::string* exception() const noexcept override {
     return Exception;
   }
 
-  ArrayRef<QualType> types() const {
+  ArrayRef<QualType> types() const override {
       return ParamTypes;
   }
 
@@ -108,9 +112,9 @@ public:
     return Params[num].Ptr;
   }
 
-  bool addParam(const APValue& value, QualType type);
+  bool addParam(const APValue& value, QualType type) noexcept override;
 
-  Optional<APValue> getResult() const {
+  Optional<APValue> getResult() const override {
     return Result;
   }
 

@@ -1,5 +1,6 @@
 set(LLVM_LINK_COMPONENTS
   Analysis
+  BinaryFormat
   BitReader
   BitWriter
   Core
@@ -17,6 +18,7 @@ set(LLVM_LINK_COMPONENTS
   MC
   ObjCARCOpts
   Object
+  OrcJIT
   Passes
   ProfileData
   Remarks
@@ -76,8 +78,12 @@ add_clang_library(clangCodeGen
   ConstantInitBuilder.cpp
   CoverageMappingGen.cpp
   ItaniumCXXABI.cpp
-  JennyJIT.cpp
   JennyASTMaker.cpp
+  JennyCStrLib.cpp
+  JennyCxxDeclLib.cpp
+  JennyJIT.cpp
+  JennyJITFnAdapter.cpp
+  JennyMetaLib.cpp
   MacroPPCallbacks.cpp
   MicrosoftCXXABI.cpp
   ModuleBuilder.cpp
@@ -94,8 +100,11 @@ add_clang_library(clangCodeGen
   LINK_LIBS
   clangAnalysis
   clangAST
+  clangASTMatchers
   clangBasic
+  clangSema
   clangFrontend
   clangLex
+  clangParse
   clangSerialization
   )
