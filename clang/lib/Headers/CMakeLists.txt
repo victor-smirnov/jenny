@@ -136,6 +136,11 @@ set(files
   xtestintrin.h
   )
 
+set(jenny_files
+  jenny/meta/compiler.h
+  jenny/meta/ctstr.h
+  jenny/meta/metacall.h
+)
 
 set(cuda_wrapper_files
   cuda_wrappers/algorithm
@@ -220,6 +225,13 @@ install(
   FILES ${files} ${generated_files}
   DESTINATION ${header_install_dir}
   COMPONENT clang-resource-headers)
+
+install(
+  FILES ${jenny_files}
+  DESTINATION ${header_install_dir}/jenny/meta
+  COMPONENT clang-resource-headers)
+
+
 
 install(
   FILES ${cuda_wrapper_files}

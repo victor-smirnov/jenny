@@ -1,19 +1,9 @@
 #include "hw_metalib.h"
 
+#include <stdio.h>
+
 int main() {
-  consteval {
-    //char data[5] = {'a', 'b', 'c', 'd', 0};
-    for (int i = 0; i < 3; i++) {
-      int val = meta_call metaFn("Hello World", 0);
-	    //int val = meta_call metaFn(data);
-	    meta_call printf("Result: %d\n", val);
-
-	    //StrView view("Hello world!", 0);
-	    //Helper hh{&view};
-
-	    //meta_call metaFn(hh);
-    }
-  }
-
-  return 0;
+    constexpr int iii = meta_call metaFn("HW!", 0);
+    (void)meta_call printf("Result: %d\n", iii);
+    return 0;
 }

@@ -15,6 +15,8 @@
 #ifndef __CLANG_JENNY_METACALL_H
 #define __CLANG_JENNY_METACALL_H
 
+#ifdef __cplusplus
+
 namespace clang {
 class Decl;
 class Expr;
@@ -114,5 +116,6 @@ struct JennyMetaCallAdapter {
 
 }
 
+#endif
 
 #endif //__CLANG_JENNY_METACALL_H
