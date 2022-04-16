@@ -68,6 +68,8 @@ protected:
 
   void EndSourceFileAction() override;
 
+  llvm::Error BeforeParsing(CompilerInstance &CI) override;
+
 public:
   ~CodeGenAction() override;
 

@@ -81,7 +81,7 @@ Preprocessor::Preprocessor(std::shared_ptr<PreprocessorOptions> PPOpts,
                            SourceManager &SM, HeaderSearch &Headers,
                            ModuleLoader &TheModuleLoader,
                            IdentifierInfoLookup *IILookup, bool OwnsHeaders,
-                           TranslationUnitKind TUKind)
+                           TranslationUnitKind TUKind, Preprocessor* Parent)
     : PPOpts(std::move(PPOpts)), Diags(&diags), LangOpts(opts),
       FileMgr(Headers.getFileMgr()), SourceMgr(SM),
       ScratchBuf(new ScratchBuffer(SourceMgr)), HeaderInfo(Headers),
@@ -92,6 +92,9 @@ Preprocessor::Preprocessor(std::shared_ptr<PreprocessorOptions> PPOpts,
       Identifiers(IILookup), PragmaHandlers(new PragmaNamespace(StringRef())),
       TUKind(TUKind), SkipMainFilePreamble(0, true),
       CurSubmoduleState(&NullSubmoduleState) {
+
+  this->Parent = Parent;
+
   OwnsHeaderSearch = OwnsHeaders;
 
   // Default to discarding comments.
@@ -1467,4 +1470,23 @@ void Preprocessor::createPreprocessingRecord() {
 
   Record = new PreprocessingRecord(getSourceManager());
   addPPCallbacks(std::unique_ptr<PPCallbacks>(Record));
+}
+
+
+void Preprocessor::InitPredefines()
+{
+  // Preprocess Predefines to populate the initial preprocessor state.
+  std::unique_ptr<llvm::MemoryBuffer> SB =
+    llvm::MemoryBuffer::getMemBufferCopy(Predefines, "<built-in>");
+  assert(SB && "Cannot create predefined source buffer");
+  FileID FID = SourceMgr.createFileID(std::move(SB));
+  assert(FID.isValid() && "Could not create FileID for predefines?");
+  setPredefinesFileID(FID);
+
+  // Start parsing the predefines.
+  EnterSourceFile(FID, nullptr, SourceLocation());
+}
+
+void Preprocessor::addJennyPredefines() {
+  Predefines += "\n#include <__clang_jenny_metacall.h>";
 }

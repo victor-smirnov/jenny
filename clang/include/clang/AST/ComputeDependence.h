@@ -106,6 +106,8 @@ class ObjCIsaExpr;
 class ObjCIndirectCopyRestoreExpr;
 class ObjCMessageExpr;
 
+class JennyMetaCallExpr;
+
 // The following functions are called from constructors of `Expr`, so they
 // should not access anything beyond basic
 ExprDependence computeDependence(FullExpr *E);
@@ -199,6 +201,8 @@ ExprDependence computeDependence(ObjCSubscriptRefExpr *E);
 ExprDependence computeDependence(ObjCIsaExpr *E);
 ExprDependence computeDependence(ObjCIndirectCopyRestoreExpr *E);
 ExprDependence computeDependence(ObjCMessageExpr *E);
+
+ExprDependence computeDependence(JennyMetaCallExpr *E);
 
 } // namespace clang
 #endif

@@ -387,6 +387,10 @@ void ASTStmtWriter::VisitCoyieldExpr(CoyieldExpr *E) {
   Code = serialization::EXPR_COYIELD;
 }
 
+void ASTStmtWriter::VisitJennyMetaCallExpr(JennyMetaCallExpr *E) {
+  llvm_unreachable("not implemented");
+}
+
 void ASTStmtWriter::VisitDependentCoawaitExpr(DependentCoawaitExpr *E) {
   VisitExpr(E);
   Record.AddSourceLocation(E->getKeywordLoc());

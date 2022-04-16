@@ -817,6 +817,10 @@ public:
   InMemoryModuleCache &getModuleCache() const { return *ModuleCache; }
 };
 
+CompilerInstance& currentThreadLocalCompilerInstance();
+bool hasThreadLocalCompilerInstance();
+void setThreadLocalCompilerInstance(CompilerInstance& instance);
+
 } // end namespace clang
 
 #endif

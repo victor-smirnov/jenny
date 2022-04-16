@@ -2415,6 +2415,8 @@ DEF_TRAVERSE_STMT(BuiltinBitCastExpr, {
   TRY_TO(TraverseTypeLoc(S->getTypeInfoAsWritten()->getTypeLoc()));
 })
 
+DEF_TRAVERSE_STMT(JennyMetaCallExpr, {})
+
 template <typename Derived>
 bool RecursiveASTVisitor<Derived>::TraverseSynOrSemInitListExpr(
     InitListExpr *S, DataRecursionQueue *Queue) {

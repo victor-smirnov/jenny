@@ -2905,6 +2905,8 @@ static bool ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
 
   Opts.DashX = DashX;
 
+  Opts.JennyJITLibraries = Args.getAllArgValues(OPT_jl);
+
   return Diags.getNumErrors() == NumErrorsBefore;
 }
 
@@ -4253,6 +4255,9 @@ bool CompilerInvocation::ParseLangArgs(LangOptions &Opts, ArgList &Args,
 
   if (const Arg *A = Args.getLastArg(OPT_frandomize_layout_seed_EQ))
     Opts.RandstructSeed = A->getValue(0);
+
+  // [Jenny] Determine if C++ Jenny extension is disabled.
+  Opts.Jenny = !Args.hasArg(OPT_fno_jenny);
 
   return Diags.getNumErrors() == NumErrorsBefore;
 }

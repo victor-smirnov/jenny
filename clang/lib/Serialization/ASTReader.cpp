@@ -6847,6 +6847,9 @@ QualType ASTReader::GetType(TypeID ID) {
   if (Index < NUM_PREDEF_TYPE_IDS) {
     QualType T;
     switch ((PredefinedTypeIDs)Index) {
+    case PREDEF_TYPE_JENNY_META_INFO_ID:
+      T = Context.JennyMetaInfoTy;
+      break;
     case PREDEF_TYPE_NULL_ID:
       return QualType();
     case PREDEF_TYPE_VOID_ID:

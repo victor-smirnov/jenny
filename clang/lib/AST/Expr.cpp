@@ -3650,6 +3650,10 @@ bool Expr::HasSideEffects(const ASTContext &Ctx,
     return false;
   }
 
+  case JennyMetaCallExprClass: {
+    return false;
+  }
+
   case ObjCBoxedExprClass:
   case ObjCArrayLiteralClass:
   case ObjCDictionaryLiteralClass:

@@ -7993,6 +7993,21 @@ TreeTransform<Derived>::TransformCoyieldExpr(CoyieldExpr *E) {
   return getDerived().RebuildCoyieldExpr(E->getKeywordLoc(), Result.get());
 }
 
+
+template<typename Derived>
+ExprResult
+TreeTransform<Derived>::TransformJennyMetaCallExpr(JennyMetaCallExpr *E) {
+  ExprResult Result = getDerived().TransformCallExpr(E->getOperand());
+  if (Result.isInvalid())
+    return ExprError();
+
+  return getSema().ActOnJennyMetaCallExpr(
+              E->getKeywordLoc(),
+              dyn_cast<CallExpr>(Result.get()),
+              SourceLocation{}, SourceLocation{});
+}
+
+
 // Objective-C Statements.
 
 template<typename Derived>

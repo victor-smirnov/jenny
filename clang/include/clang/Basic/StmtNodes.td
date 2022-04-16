@@ -287,3 +287,6 @@ def OMPTeamsGenericLoopDirective : StmtNode<OMPLoopDirective>;
 def OMPTargetTeamsGenericLoopDirective : StmtNode<OMPLoopDirective>;
 def OMPParallelGenericLoopDirective : StmtNode<OMPLoopDirective>;
 def OMPTargetParallelGenericLoopDirective : StmtNode<OMPLoopDirective>;
+
+// [Jenny] expressions
+def JennyMetaCallExpr : StmtNode<Expr>;

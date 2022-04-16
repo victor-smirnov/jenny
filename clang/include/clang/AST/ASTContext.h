@@ -31,6 +31,7 @@
 #include "clang/Basic/AddressSpaces.h"
 #include "clang/Basic/AttrKinds.h"
 #include "clang/Basic/IdentifierTable.h"
+#include "clang/Basic/JennyJIT.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/Linkage.h"
@@ -476,6 +477,8 @@ class ASTContext : public RefCountedBase<ASTContext> {
   static constexpr unsigned GeneralTypesLog2InitSize = 9;
   static constexpr unsigned FunctionProtoTypesLog2InitSize = 12;
 
+  std::shared_ptr<JennyJIT> JennyJit;
+
   ASTContext &this_() { return *this; }
 
 public:
@@ -679,6 +682,15 @@ public:
 
   /// Returns the dynamic AST node parent map context.
   ParentMapContext &getParentMapContext();
+
+  JennyJIT& GetJennyJIT() {
+    assert(JennyJit.get() && "JIT is not specified for ASTContext");
+    return *this->JennyJit.get();
+  }
+
+  void SetJennyJIT(std::shared_ptr<JennyJIT> jit) noexcept {
+    this->JennyJit = std::move(jit);
+  }
 
   // A traversal scope limits the parts of the AST visible to certain analyses.
   // RecursiveASTVisitor only visits specified children of TranslationUnitDecl.
@@ -1121,6 +1133,7 @@ public:
   CanQualType BFloat16Ty;
   CanQualType Float16Ty; // C11 extension ISO/IEC TS 18661-3
   CanQualType VoidPtrTy, NullPtrTy;
+  CanQualType JennyMetaInfoTy;
   CanQualType DependentTy, OverloadTy, BoundMemberTy, UnknownAnyTy;
   CanQualType BuiltinFnTy;
   CanQualType PseudoObjectTy, ARCUnbridgedCastTy;

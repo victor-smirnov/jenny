@@ -2172,9 +2172,10 @@ Type::ScalarTypeKind Type::getScalarTypeKind() const {
   if (const auto *BT = dyn_cast<BuiltinType>(T)) {
     if (BT->getKind() == BuiltinType::Bool) return STK_Bool;
     if (BT->getKind() == BuiltinType::NullPtr) return STK_CPointer;
+    if (BT->getKind() == BuiltinType::JennyMetaInfo) return STK_Integral;
     if (BT->isInteger()) return STK_Integral;
     if (BT->isFloatingPoint()) return STK_Floating;
-    if (BT->isFixedPointType()) return STK_FixedPoint;
+    if (BT->isFixedPointType()) return STK_FixedPoint;    
     llvm_unreachable("unknown scalar builtin type");
   } else if (isa<PointerType>(T)) {
     return STK_CPointer;
@@ -3066,6 +3067,8 @@ StringRef BuiltinType::getName(const PrintingPolicy &Policy) const {
     return "char32_t";
   case NullPtr:
     return "std::nullptr_t";
+  case JennyMetaInfo:
+    return "::jenny::info";
   case Overload:
     return "<overloaded function type>";
   case BoundMember:
@@ -4162,6 +4165,7 @@ bool Type::canHaveNullability(bool ResultIfUnknown) const {
 #include "clang/Basic/RISCVVTypes.def"
     case BuiltinType::BuiltinFn:
     case BuiltinType::NullPtr:
+    case BuiltinType::JennyMetaInfo:
     case BuiltinType::IncompleteMatrixIdx:
     case BuiltinType::OMPArraySection:
     case BuiltinType::OMPArrayShaping:

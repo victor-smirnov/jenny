@@ -429,6 +429,29 @@ public:
     }
     return Visit(E->getSubExpr());
   }
+
+  Value *VisitJennyMetaCallExpr(JennyMetaCallExpr *E) {
+    bool IsNonVoidType = !E->getType()->isVoidType();
+
+    if (IsNonVoidType) {
+        if (Value *Result = ConstantEmitter(CGF).tryEmitConstantExpr(E)) {
+          if (E->isGLValue())
+            return CGF.Builder.CreateLoad(Address(
+                Result, CGF.ConvertTypeForMem(E->getType()),
+                CGF.getContext().getTypeAlignInChars(E->getType())));
+          return Result;
+        }
+    }
+    else {
+        Expr::EvalResult Result;
+        if (!E->EvaluateAsConstantExpr(Result, CGF.getContext(), ConstantExprKind::Normal)) {
+        }
+    }
+
+    return nullptr;
+  }
+
+
   Value *VisitParenExpr(ParenExpr *PE) {
     return Visit(PE->getSubExpr());
   }

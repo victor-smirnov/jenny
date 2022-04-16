@@ -1755,6 +1755,8 @@ public:
 
   ExprResult ParseStringLiteralExpression(bool AllowUserDefinedLiteral = false);
 
+  ExprResult ParseJennyMetaCallExpression();
+
 private:
   ExprResult ParseExpressionWithLeadingAt(SourceLocation AtLoc);
 

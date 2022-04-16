@@ -7231,6 +7231,20 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       Input.getInputArg().renderAsInput(Args, CmdArgs);
   }
 
+  // -fjenny is ON by default, despite it is experimental.
+  if (Args.hasFlag(options::OPT_fjenny,
+           options::OPT_fno_jenny, true)) {
+    CmdArgs.push_back("-fjenny");
+  }
+  else {
+    CmdArgs.push_back("-fno-jenny");
+  }
+
+  for (auto fileName: Args.getAllArgValues(options::OPT_jl)) {
+      CmdArgs.push_back("-jl");
+      CmdArgs.push_back(Args.MakeArgString(fileName));
+  }
+
   if (D.CC1Main && !D.CCGenDiagnostics) {
     // Invoke the CC1 directly in this process
     C.addCommand(std::make_unique<CC1Command>(JA, *this,

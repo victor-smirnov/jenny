@@ -306,6 +306,10 @@ def note_constexpr_bit_cast_indet_dest : Note<
   "%select{, 'char',|}1 or 'std::byte'; %0 is invalid">;
 def note_constexpr_bit_cast_unrepresentable_value : Note<
   "value %1 cannot be represented in type %0">;
+def note_metacall_unsupported_construction : Note<
+  "construction is not supported for meta_call: %0">;
+def note_metacall_unsupported_type : Note<
+  "type is not supported for meta_call: %0">;
 def note_constexpr_pseudo_destructor : Note<
   "pseudo-destructor call is not permitted in constant expressions "
   "until C++20">;
@@ -366,6 +370,9 @@ def note_constexpr_unsupported_layout : Note<
   "type %0 has unexpected layout">;
 def err_experimental_clang_interp_failed : Error<
   "the experimental clang interpreter failed to evaluate an expression">;
+
+def err_metacall_nonconsteval_argument : Error<
+  "Metacall function argument is not a constexpr">;
 
 def warn_integer_constant_overflow : Warning<
   "overflow in expression; result is %0 with type %1">,

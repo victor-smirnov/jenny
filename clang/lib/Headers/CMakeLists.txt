@@ -55,6 +55,7 @@ set(files
   __clang_hip_cmath.h
   __clang_hip_math.h
   __clang_hip_runtime_wrapper.h
+  __clang_jenny_metacall.h
   cetintrin.h
   cet.h
   cldemoteintrin.h
@@ -182,6 +183,13 @@ set(openmp_wrapper_files
   openmp_wrappers/new
 )
 
+set(jenny_files
+  jenny/meta/compiler.h
+  jenny/meta/ctstr.h
+  jenny/meta/metacall.h
+)
+
+
 set(output_dir ${LLVM_LIBRARY_OUTPUT_INTDIR}/clang/${CLANG_VERSION}/include)
 set(out_files)
 set(generated_files)
@@ -210,7 +218,7 @@ endfunction(clang_generate_header)
 
 
 # Copy header files from the source directory to the build directory
-foreach( f ${files} ${cuda_wrapper_files} ${ppc_wrapper_files} ${openmp_wrapper_files})
+foreach( f ${files} ${cuda_wrapper_files} ${ppc_wrapper_files} ${openmp_wrapper_files} ${jenny_files})
   copy_header_to_output_dir(${CMAKE_CURRENT_SOURCE_DIR} ${f})
 endforeach( f )
 
@@ -248,6 +256,11 @@ set(header_install_dir lib${LLVM_LIBDIR_SUFFIX}/clang/${CLANG_VERSION}/include)
 install(
   FILES ${files} ${generated_files}
   DESTINATION ${header_install_dir}
+  COMPONENT clang-resource-headers)
+
+install(
+  FILES ${jenny_files}
+  DESTINATION ${header_install_dir}/jenny/meta
   COMPONENT clang-resource-headers)
 
 install(

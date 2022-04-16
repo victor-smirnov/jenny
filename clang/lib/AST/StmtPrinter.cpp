@@ -2459,6 +2459,12 @@ void StmtPrinter::VisitCoyieldExpr(CoyieldExpr *S) {
   PrintExpr(S->getOperand());
 }
 
+void StmtPrinter::VisitJennyMetaCallExpr(JennyMetaCallExpr *E) {
+  OS << "__jy_meta_call(";
+  PrintExpr(E->getOperand());
+  OS << ')';
+}
+
 // Obj-C
 
 void StmtPrinter::VisitObjCStringLiteral(ObjCStringLiteral *Node) {

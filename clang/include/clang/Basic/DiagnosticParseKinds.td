@@ -192,6 +192,7 @@ def ext_gnu_case_range : Extension<"use of GNU case range extension">,
 
 // Generic errors.
 def err_expected_expression : Error<"expected expression">;
+def err_expected_call_expression : Error<"expected call expression">;
 def err_expected_type : Error<"expected a type">;
 def err_expected_external_declaration : Error<"expected external declaration">;
 def err_extraneous_closing_brace : Error<"extraneous closing brace ('}')">;

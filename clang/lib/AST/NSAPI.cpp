@@ -457,6 +457,7 @@ NSAPI::getNSNumberFactoryMethodKind(QualType T) const {
   case BuiltinType::Float16:
   case BuiltinType::Float128:
   case BuiltinType::Ibm128:
+  case BuiltinType::JennyMetaInfo:
   case BuiltinType::NullPtr:
   case BuiltinType::ObjCClass:
   case BuiltinType::ObjCId:

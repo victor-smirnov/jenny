@@ -108,6 +108,7 @@ namespace {
     KEYOPENCLCXX  = 0x400000,
     KEYMSCOMPAT   = 0x800000,
     KEYSYCL       = 0x1000000,
+    KEYJENNY      = 0x10000000,
     KEYALLCXX = KEYCXX | KEYCXX11 | KEYCXX20,
     KEYALL = (0x1ffffff & ~KEYNOMS18 &
               ~KEYNOOPENCL) // KEYNOMS18 and KEYNOOPENCL are used to exclude.
@@ -158,6 +159,10 @@ static KeywordStatus getKeywordStatus(const LangOptions &LangOpts,
     return KS_Future;
   if (LangOpts.isSYCL() && (Flags & KEYSYCL))
     return KS_Enabled;
+
+  // Jenny's stuff
+  if (LangOpts.Jenny && (Flags & KEYJENNY)) return KS_Extension;
+
   return KS_Disabled;
 }
 

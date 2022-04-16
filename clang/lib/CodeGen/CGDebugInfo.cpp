@@ -816,6 +816,7 @@ llvm::DIType *CGDebugInfo::CreateType(const BuiltinType *BT) {
   case BuiltinType::ULong:
   case BuiltinType::WChar_U:
   case BuiltinType::ULongLong:
+  case BuiltinType::JennyMetaInfo:
     Encoding = llvm::dwarf::DW_ATE_unsigned;
     break;
   case BuiltinType::Short:

@@ -582,6 +582,10 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
         LangOptions::GPUDefaultStreamKind::PerThread)
       Builder.defineMacro("HIP_API_PER_THREAD_DEFAULT_STREAM");
   }
+
+  if (LangOpts.Jenny) {
+      Builder.defineMacro("__jenny__"); // Jenny Frontend
+  }
 }
 
 /// Initialize the predefined C++ language feature test macros defined in

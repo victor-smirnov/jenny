@@ -1319,6 +1319,22 @@ LValue CodeGenFunction::EmitLValue(const Expr *E) {
     }
     return EmitLValue(cast<ConstantExpr>(E)->getSubExpr());
   }
+  case Expr::JennyMetaCallExprClass: {
+    const JennyMetaCallExpr *CE = cast<JennyMetaCallExpr>(E);
+    bool IsNonVoidType = !E->getType()->isVoidType();
+
+    if (IsNonVoidType) {
+        if (llvm::Value *Result = ConstantEmitter(*this).tryEmitConstantExpr(CE)) {
+            QualType RetType = CE->getOperand()
+                    ->getCallReturnType(getContext());
+            return MakeNaturalAlignAddrLValue(Result, RetType);
+        }
+        CGM.Error(E->getBeginLoc(), "Can't evaluate arguments of the metacall");
+        return LValue{};
+    }
+
+    llvm_unreachable("Don't know how to handle void return type here for __jy_meta_call");
+  }
   case Expr::ParenExprClass:
     return EmitLValue(cast<ParenExpr>(E)->getSubExpr());
   case Expr::GenericSelectionExprClass:

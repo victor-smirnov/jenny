@@ -347,6 +347,7 @@ public:
   /// Retrieve the header-search options with which this header search
   /// was initialized.
   HeaderSearchOptions &getHeaderSearchOpts() const { return *HSOpts; }
+  std::shared_ptr<HeaderSearchOptions> getHeaderSearchOptsPtr() { return HSOpts; }
 
   FileManager &getFileMgr() const { return FileMgr; }
 

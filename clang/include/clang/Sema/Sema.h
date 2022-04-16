@@ -9676,6 +9676,13 @@ public:
   DeclContext *FindInstantiatedContext(SourceLocation Loc, DeclContext *DC,
                           const MultiLevelTemplateArgumentList &TemplateArgs);
 
+  // Jenny's Stuff
+
+  ExprResult ActOnJennyMetaCallExpr(SourceLocation KWLoc, CallExpr *E,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation RParenLoc);
+
+
   // Objective-C declarations.
   enum ObjCContainerKind {
     OCK_None = -1,

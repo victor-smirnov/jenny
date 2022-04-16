@@ -236,6 +236,10 @@ public:
   /// objects, and run statistics and output file cleanup code.
   virtual void EndSourceFile();
 
+  virtual llvm::Error BeforeParsing(CompilerInstance &CI) {
+    return llvm::Error::success();
+  }
+
   /// @}
 };
 

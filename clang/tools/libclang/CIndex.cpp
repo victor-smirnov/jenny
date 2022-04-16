@@ -1534,6 +1534,7 @@ bool CursorVisitor::VisitBuiltinTypeLoc(BuiltinTypeLoc TL) {
 
   case BuiltinType::Void:
   case BuiltinType::NullPtr:
+  case BuiltinType::JennyMetaInfo:
   case BuiltinType::Dependent:
 #define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix)                   \
   case BuiltinType::Id:

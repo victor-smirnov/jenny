@@ -3040,6 +3040,9 @@ void CXXNameMangler::mangleType(const BuiltinType *T) {
   case BuiltinType::NullPtr:
     Out << "Dn";
     break;
+  case BuiltinType::JennyMetaInfo:
+    Out << "Dm";
+    break;
 
 #define BUILTIN_TYPE(Id, SingletonId)
 #define PLACEHOLDER_TYPE(Id, SingletonId) \
@@ -4219,6 +4222,7 @@ recurse:
   case Expr::OMPArrayShapingExprClass:
   case Expr::OMPIteratorExprClass:
   case Expr::CXXInheritedCtorInitExprClass:
+  case Expr::JennyMetaCallExprClass:
     llvm_unreachable("unexpected statement kind");
 
   case Expr::ConstantExprClass:

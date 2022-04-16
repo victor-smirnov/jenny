@@ -29,6 +29,9 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
+
+#include <iostream>
+
 using namespace clang;
 using namespace CodeGen;
 
@@ -1017,6 +1020,12 @@ public:
     return Visit(CE->getSubExpr(), T);
   }
 
+  llvm::Constant *VisitJennyMetaCallExpr(JennyMetaCallExpr *CE, QualType T) {
+    if (llvm::Constant *Result = Emitter.tryEmitConstantExpr(CE))
+      return Result;
+    llvm_unreachable("Don't know how to handle constexpr record for __jy_meta_call");
+  }
+
   llvm::Constant *VisitParenExpr(ParenExpr *PE, QualType T) {
     return Visit(PE->getSubExpr(), T);
   }
@@ -1376,6 +1385,28 @@ llvm::Constant *ConstantEmitter::tryEmitConstantExpr(const ConstantExpr *CE) {
   llvm::Constant *Res =
       emitAbstract(CE->getBeginLoc(), CE->getAPValueResult(), RetType);
   return Res;
+}
+
+llvm::Constant *ConstantEmitter::tryEmitConstantExpr(const JennyMetaCallExpr *CE) {
+  //const CallExpr *Inner = CE->getOperand();
+
+  QualType RetType = CE->getType();
+
+  Expr::EvalResult Result;
+  SmallVector<PartialDiagnosticAt, 10> Diag;
+  Result.Diag = &Diag;
+  if (CE->EvaluateAsRValue(Result, CGM.getContext(), true)) {
+    llvm::Constant *Res =
+      emitAbstract(CE->getBeginLoc(), Result.Val, RetType);
+    return Res;
+  }
+
+  for (auto diag: Diag) {
+    DiagnosticBuilder DB = CGM.getDiags().Report(diag.first, diag.second.getDiagID());
+    diag.second.Emit(DB);
+  }
+
+  return nullptr;
 }
 
 llvm::Constant *
@@ -1778,6 +1809,7 @@ private:
 
   ConstantLValue VisitStmt(const Stmt *S) { return nullptr; }
   ConstantLValue VisitConstantExpr(const ConstantExpr *E);
+  ConstantLValue VisitJennyMetaCallExpr(const JennyMetaCallExpr *E);
   ConstantLValue VisitCompoundLiteralExpr(const CompoundLiteralExpr *E);
   ConstantLValue VisitStringLiteral(const StringLiteral *E);
   ConstantLValue VisitObjCBoxedExpr(const ObjCBoxedExpr *E);
@@ -1939,6 +1971,17 @@ ConstantLValueEmitter::VisitConstantExpr(const ConstantExpr *E) {
     return Result;
   return Visit(E->getSubExpr());
 }
+
+ConstantLValue
+ConstantLValueEmitter::VisitJennyMetaCallExpr(const JennyMetaCallExpr *E) {
+  if (llvm::Constant *Result = Emitter.tryEmitConstantExpr(E))
+    return Result;
+  else {
+      CGM.Error(E->getBeginLoc(), "Can't evaluate arguments of the metacall");
+  }
+  return ConstantAddress::invalid();
+}
+
 
 ConstantLValue
 ConstantLValueEmitter::VisitCompoundLiteralExpr(const CompoundLiteralExpr *E) {

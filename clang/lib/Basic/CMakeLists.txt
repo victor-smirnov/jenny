@@ -52,6 +52,7 @@ add_clang_library(clangBasic
   FileManager.cpp
   FileSystemStatCache.cpp
   IdentifierTable.cpp
+  JennyBasic.cpp
   LangOptions.cpp
   LangStandards.cpp
   Module.cpp

@@ -2017,6 +2017,7 @@ public:
   bool isAggregateType() const;
   bool isFundamentalType() const;
   bool isCompoundType() const;
+  bool isJennyMetaInfoType() const;
 
   // Type Predicates: Check to see if this type is structurally the specified
   // type, ignoring typedefs and qualifiers.
@@ -6737,6 +6738,12 @@ inline bool Type::isCompoundType() const {
          isMemberPointerType();
 }
 
+inline bool Type::isJennyMetaInfoType() const {
+    if (const auto *BT = dyn_cast<BuiltinType>(CanonicalType))
+      return BT->getKind() == BuiltinType::JennyMetaInfo;
+    return false;
+}
+
 inline bool Type::isFunctionType() const {
   return isa<FunctionType>(CanonicalType);
 }
@@ -7120,7 +7127,7 @@ inline bool Type::isUnsignedFixedPointType() const {
 inline bool Type::isScalarType() const {
   if (const auto *BT = dyn_cast<BuiltinType>(CanonicalType))
     return BT->getKind() > BuiltinType::Void &&
-           BT->getKind() <= BuiltinType::NullPtr;
+           BT->getKind() <= BuiltinType::JennyMetaInfo;
   if (const EnumType *ET = dyn_cast<EnumType>(CanonicalType))
     // Enums are scalar types, but only if they are defined.  Incomplete enums
     // are not treated as scalar types.

@@ -51,6 +51,7 @@
 #include "clang/AST/TypeLoc.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/TargetInfo.h"
+#include "clang/Basic/JennyJIT.h"
 #include "llvm/ADT/APFixedPoint.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -59,6 +60,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include <cstring>
 #include <functional>
+
+#include <iostream>
 
 #define DEBUG_TYPE "exprconstant"
 
@@ -6045,6 +6048,8 @@ static bool HandleUnionActiveMemberChange(EvalInfo &Info, const Expr *LHSExpr,
   return true;
 }
 
+
+
 static bool EvaluateCallArg(const ParmVarDecl *PVD, const Expr *Arg,
                             CallRef Call, EvalInfo &Info,
                             bool NonNull = false) {
@@ -6054,7 +6059,7 @@ static bool EvaluateCallArg(const ParmVarDecl *PVD, const Expr *Arg,
   // FIXME: For calling conventions that destroy parameters in the callee,
   // should we consider performing destruction when the function returns
   // instead?
-  APValue &V = PVD ? Info.CurrentCall->createParam(Call, PVD, LV)
+  APValue& V = PVD ? Info.CurrentCall->createParam(Call, PVD, LV)
                    : Info.CurrentCall->createTemporary(Arg, Arg->getType(),
                                                        ScopeKind::Call, LV);
   if (!EvaluateInPlace(V, Info, LV, Arg))
@@ -6070,8 +6075,11 @@ static bool EvaluateCallArg(const ParmVarDecl *PVD, const Expr *Arg,
   return true;
 }
 
+
 /// Evaluate the arguments to a function call.
-static bool EvaluateArgs(ArrayRef<const Expr *> Args, CallRef Call,
+static bool EvaluateArgs(ArrayRef<const Expr *> Args,
+                         //ArgVector& Values,
+                         CallRef Call,
                          EvalInfo &Info, const FunctionDecl *Callee,
                          bool RightToLeft = false) {
   bool Success = true;
@@ -6096,6 +6104,7 @@ static bool EvaluateArgs(ArrayRef<const Expr *> Args, CallRef Call,
     const ParmVarDecl *PVD =
         Idx < Callee->getNumParams() ? Callee->getParamDecl(Idx) : nullptr;
     bool NonNull = !ForbiddenNullArgs.empty() && ForbiddenNullArgs[Idx];
+
     if (!EvaluateCallArg(PVD, Args[Idx], Call, Info, NonNull)) {
       // If we're checking for a potential constant expression, evaluate all
       // initializers even if some of them fail.
@@ -6106,6 +6115,7 @@ static bool EvaluateArgs(ArrayRef<const Expr *> Args, CallRef Call,
   }
   return Success;
 }
+
 
 /// Perform a trivial copy from Param, which is the parameter of a copy or move
 /// constructor or assignment operator.
@@ -7973,6 +7983,94 @@ public:
       return;
     VisitIgnoredValue(E);
   }
+
+  bool VisitJennyMetaCallExpr(const JennyMetaCallExpr* E)
+  {
+    auto Args = llvm::makeArrayRef(E->getOperand()->getArgs(), E->getOperand()->getNumArgs());
+    const FunctionDecl* Callee = E->getOperand()->getDirectCallee();
+
+    CallRef Call = Info.CurrentCall->createCall(Callee);
+    if (!EvaluateArgs(Args, Call, Info, Callee, true)) {
+        return false;
+    }
+
+    if (Info.CheckingPotentialConstantExpression) {
+        return true;
+    }
+
+    JennyJIT& jit = Info.Ctx.GetJennyJIT();
+
+    auto Adapter = jit.CreateMetacallArgsAdapter(
+          E->getType(), Callee->getReturnType(),
+          Info.Ctx, Info, E->getOperand()->getBeginLoc()
+    );
+
+
+    for (size_t Idx = 0; Idx < Args.size(); Idx++)
+    {
+      if (Idx < Callee->getNumParams()) {
+        const ParmVarDecl *PVD = Callee->getParamDecl(Idx);
+        APValue *V = Info.getParamSlot(Call, PVD);
+        if (!Adapter->addParam(*V, Args[Idx]->getType())) {
+          return false;
+        }
+      }
+      else {
+        LValue LV;
+        APValue& V = Info.CurrentCall->createTemporary(Args[Idx], Args[Idx]->getType(),
+                                                               ScopeKind::Call, LV);
+        if (!EvaluateInPlace(V, Info, LV, Args[Idx]))
+          return false;
+
+        if (!Adapter->addParam(V, Args[Idx]->getType())) {
+          return false;
+        }
+      }
+    }
+
+    const char* Symbol = E->GetSymbol();
+    if (!Symbol)
+    {
+      Expected<FunctionDecl*> decl = jit.CreateAdapter(E->getOperand(), Adapter->types());
+      if (decl) {
+        Expected<std::string> fn_name = jit.compile(*decl);
+        if (fn_name) {
+          Symbol = const_cast<JennyMetaCallExpr*>(E)->SetSymbol(Info.Ctx, fn_name->c_str());
+        }
+        else {
+          Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << strErrorAndConsume(fn_name.takeError());
+          return false;
+        }
+      }
+      else {
+        Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << strErrorAndConsume(decl.takeError());
+        return false;
+      }
+    }
+
+    using AdapterFnTy = JennyJIT::AdapterFn;
+
+    if (Expected<void*> fn_v = jit.GetSymbol(Symbol)) {
+      AdapterFnTy fn = (AdapterFnTy)*fn_v;
+      fn(*Adapter->call_adapter());
+    }
+    else {
+      Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << strErrorAndConsume(fn_v.takeError());
+      return false;
+    }
+
+    if (Adapter->exception()) {
+      Info.FFDiag(E->getBeginLoc(), diag::note_metacall_unsupported_construction) << *Adapter->exception();
+      return false;
+    }
+    else if (Optional<APValue> result = Adapter->getResult()) {
+      return DerivedSuccess(*result, E);
+    }
+    else {
+      return false;
+    }
+  }
+
 };
 
 } // namespace
@@ -11195,6 +11293,7 @@ EvaluateBuiltinClassifyType(QualType T, const LangOptions &LangOpts) {
     case BuiltinType::ULong:
     case BuiltinType::ULongLong:
     case BuiltinType::UInt128:
+    case BuiltinType::JennyMetaInfo:
       return GCCTypeClass::Integer;
 
     case BuiltinType::UShortAccum:
@@ -14710,6 +14809,9 @@ static bool Evaluate(APValue &Result, EvalInfo &Info, const Expr *E) {
   } else if (T->isIntegralOrEnumerationType()) {
     if (!IntExprEvaluator(Info, Result).Visit(E))
       return false;
+  } else if (T->isJennyMetaInfoType()) {
+    if (!IntExprEvaluator(Info, Result).Visit(E))
+      return false;
   } else if (T->hasPointerRepresentation()) {
     LValue LV;
     if (!EvaluatePointer(E, LV, Info))
@@ -15379,6 +15481,7 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
   case Expr::SizeOfPackExprClass:
   case Expr::GNUNullExprClass:
   case Expr::SourceLocExprClass:
+  case Expr::JennyMetaCallExprClass:
     return NoDiag();
 
   case Expr::SubstNonTypeTemplateParmExprClass:

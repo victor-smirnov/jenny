@@ -2454,6 +2454,10 @@ void MicrosoftCXXNameMangler::mangleType(const BuiltinType *T, Qualifiers,
     Out << "$$T";
     break;
 
+  case BuiltinType::JennyMetaInfo:
+    Out << "$$M";
+    break;
+
   case BuiltinType::Float16:
     mangleArtificialTagType(TTK_Struct, "_Float16", {"__clang"});
     break;

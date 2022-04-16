@@ -953,13 +953,16 @@ private:
 
   void updateOutOfDateIdentifier(IdentifierInfo &II) const;
 
+  // [Jenny's stuff]
+  Preprocessor* Parent;
+
 public:
   Preprocessor(std::shared_ptr<PreprocessorOptions> PPOpts,
                DiagnosticsEngine &diags, LangOptions &opts, SourceManager &SM,
                HeaderSearch &Headers, ModuleLoader &TheModuleLoader,
                IdentifierInfoLookup *IILookup = nullptr,
                bool OwnsHeaderSearch = false,
-               TranslationUnitKind TUKind = TU_Complete);
+               TranslationUnitKind TUKind = TU_Complete, Preprocessor* Parent = nullptr);
 
   ~Preprocessor();
 
@@ -986,11 +989,14 @@ public:
   /// Retrieve the preprocessor options used to initialize this
   /// preprocessor.
   PreprocessorOptions &getPreprocessorOpts() const { return *PPOpts; }
+  const std::shared_ptr<PreprocessorOptions> &getPreprocessorOptsPtr() const { return PPOpts; }
 
   DiagnosticsEngine &getDiagnostics() const { return *Diags; }
   void setDiagnostics(DiagnosticsEngine &D) { Diags = &D; }
 
   const LangOptions &getLangOpts() const { return LangOpts; }
+  LangOptions &getLangOpts() { return LangOpts; }
+
   const TargetInfo &getTargetInfo() const { return *Target; }
   const TargetInfo *getAuxTargetInfo() const { return AuxTarget; }
   FileManager &getFileManager() const { return FileMgr; }
@@ -1286,10 +1292,23 @@ public:
   /// These predefines are automatically injected when parsing the main file.
   void setPredefines(const char *P) { Predefines = P; }
   void setPredefines(StringRef P) { Predefines = std::string(P); }
+  void addJennyPredefines();
 
   /// Return information about the specified preprocessor
   /// identifier token.
   IdentifierInfo *getIdentifierInfo(StringRef Name) const {
+    // [Jenny's stuff]
+    auto ii0 = Identifiers.find(Name);
+    if (ii0 != Identifiers.end()) {
+      return ii0->second;
+    }
+    else if (Parent) {
+      auto ii1 = Parent->Identifiers.find(Name);
+      if (ii1 != Parent->Identifiers.end()) {
+        return ii1->second;
+      }
+    }
+
     return &Identifiers.get(Name);
   }
 
@@ -2173,6 +2192,13 @@ public:
   void EnterSubmodule(Module *M, SourceLocation ImportLoc, bool ForPragma);
   Module *LeaveSubmodule(bool ForPragma);
 
+  /// Get the DirectoryLookup structure used to find the current
+  /// FileEntry, if CurLexer is non-null and if applicable.
+  ///
+  /// This allows us to implement \#include_next and find directory-specific
+  /// properties.
+  ConstSearchDirIterator GetCurDirLookup() { return CurDirLookup; }
+
 private:
   friend void TokenLexer::ExpandFunctionArguments();
 
@@ -2581,6 +2607,8 @@ public:
         !SourceMgr.isInMainFile(Identifier.getLocation()))
       emitRestrictExpansionWarning(Identifier);
   }
+
+  void InitPredefines();
 
 private:
   void emitMacroDeprecationWarning(const Token &Identifier) const;

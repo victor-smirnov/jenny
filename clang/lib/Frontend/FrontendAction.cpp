@@ -1136,6 +1136,18 @@ void ASTFrontendAction::ExecuteAction() {
   if (!CI.hasSema())
     CI.createSema(getTranslationUnitKind(), CompletionConsumer);
 
+  llvm::Error err = BeforeParsing(CI);
+  if (err) {
+    std::string ss;
+    llvm::raw_string_ostream os(ss);
+    os << err;
+    CI.getDiagnostics().Report(diag::err_fe_error_backend) << ss;
+    llvm::consumeError(std::move(err));
+    return;
+  }
+
+  clang::setThreadLocalCompilerInstance(CI);
+
   ParseAST(CI.getSema(), CI.getFrontendOpts().ShowStats,
            CI.getFrontendOpts().SkipFunctionBodies);
 }

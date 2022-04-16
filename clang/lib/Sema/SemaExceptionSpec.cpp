@@ -1432,6 +1432,7 @@ CanThrowResult Sema::canThrow(const Stmt *S) {
   case Stmt::MSAsmStmtClass:
   case Stmt::MSDependentExistsStmtClass:
   case Stmt::NullStmtClass:
+  case Expr::JennyMetaCallExprClass:
   case Stmt::ObjCAtCatchStmtClass:
   case Stmt::ObjCAtFinallyStmtClass:
   case Stmt::ObjCAtSynchronizedStmtClass:
