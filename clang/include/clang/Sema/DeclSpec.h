@@ -288,6 +288,8 @@ public:
   static const TST TST_typename = clang::TST_typename;
   static const TST TST_typeofType = clang::TST_typeofType;
   static const TST TST_typeofExpr = clang::TST_typeofExpr;
+  static const TST TST_jy_printType = clang::TST_jy_printType;
+  static const TST TST_jy_printTypeExpr = clang::TST_jy_printTypeExpr;
   static const TST TST_decltype = clang::TST_decltype;
   static const TST TST_decltype_auto = clang::TST_decltype_auto;
   static const TST TST_underlyingType = clang::TST_underlyingType;

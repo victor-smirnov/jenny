@@ -4126,6 +4126,11 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       ParseTypeofSpecifier(DS);
       continue;
 
+    // GNU typeof support.
+    case tok::kw___jy_print_type:
+      ParseJennyPrintTypeSpecifier(DS);
+      continue;
+
     case tok::annot_decltype:
       ParseDecltypeSpecifier(DS);
       continue;
@@ -5118,6 +5123,8 @@ bool Parser::isTypeSpecifierQualifier() {
   case tok::kw___attribute:
     // GNU typeof support.
   case tok::kw_typeof:
+    // Jenny's stuff
+  case tok::kw___jy_print_type:
 
     // type-specifiers
   case tok::kw_short:
@@ -5357,6 +5364,8 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
 
     // GNU typeof support.
   case tok::kw_typeof:
+    // Jenny's stuff
+  case tok::kw___jy_print_type:
 
     // GNU attributes.
   case tok::kw___attribute:
@@ -7405,6 +7414,77 @@ void Parser::ParseTypeofSpecifier(DeclSpec &DS) {
                          Actions.getASTContext().getPrintingPolicy()))
     Diag(StartLoc, DiagID) << PrevSpec;
 }
+
+
+/// [GNU]   __jy_print_type-specifier:
+///           __jy_print_type ( expressions )
+///           __jy_print_type ( type-name )
+/// [GNU/C++] __jy_print_type unary-expression
+///
+void Parser::ParseJennyPrintTypeSpecifier(DeclSpec &DS) {
+  assert(Tok.is(tok::kw___jy_print_type) && "Not a __jy_print_type specifier");
+  Token OpTok = Tok;
+  SourceLocation StartLoc = ConsumeToken();
+
+  const bool hasParens = Tok.is(tok::l_paren);
+
+  EnterExpressionEvaluationContext Unevaluated(
+      Actions, Sema::ExpressionEvaluationContext::Unevaluated,
+      Sema::ReuseLambdaContextDecl);
+
+  bool isCastExpr;
+  ParsedType CastTy;
+  SourceRange CastRange;
+  ExprResult Operand = Actions.CorrectDelayedTyposInExpr(
+      ParseExprAfterUnaryExprOrTypeTrait(OpTok, isCastExpr, CastTy, CastRange));
+  if (hasParens)
+    DS.setTypeofParensRange(CastRange);
+
+  if (CastRange.getEnd().isInvalid())
+    // FIXME: Not accurate, the range gets one token more than it should.
+    DS.SetRangeEnd(Tok.getLocation());
+  else
+    DS.SetRangeEnd(CastRange.getEnd());
+
+  if (isCastExpr) {
+    if (!CastTy) {
+      DS.SetTypeSpecError();
+      return;
+    }
+
+    const char *PrevSpec = nullptr;
+    unsigned DiagID;
+    // Check for duplicate type specifiers (e.g. "int __jy_print_type(int)").
+    if (DS.SetTypeSpecType(DeclSpec::TST_jy_printType, StartLoc, PrevSpec,
+                           DiagID, CastTy,
+                           Actions.getASTContext().getPrintingPolicy()))
+      Diag(StartLoc, DiagID) << PrevSpec;
+    return;
+  }
+
+  // If we get here, the operand to the __jy_print_type was an expression.
+  if (Operand.isInvalid()) {
+    DS.SetTypeSpecError();
+    return;
+  }
+
+  // We might need to transform the operand if it is potentially evaluated.
+  Operand = Actions.HandleExprEvaluationContextForTypeof(Operand.get());
+  if (Operand.isInvalid()) {
+    DS.SetTypeSpecError();
+    return;
+  }
+
+  const char *PrevSpec = nullptr;
+  unsigned DiagID;
+  // Check for duplicate type specifiers (e.g. "int __jy_print_type(int)").
+  if (DS.SetTypeSpecType(DeclSpec::TST_jy_printTypeExpr, StartLoc, PrevSpec,
+                         DiagID, Operand.get(),
+                         Actions.getASTContext().getPrintingPolicy()))
+    Diag(StartLoc, DiagID) << PrevSpec;
+}
+
+
 
 /// [C11]   atomic-specifier:
 ///           _Atomic ( type-name )

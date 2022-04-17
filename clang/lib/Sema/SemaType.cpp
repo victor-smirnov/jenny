@@ -1634,8 +1634,50 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
       Result = Context.IntTy;
       declarator.setInvalidType(true);
     }
+    break;  
+  }
+
+  case DeclSpec::TST_jy_printType: {
+    // FIXME: Preserve type source info.
+    Result = S.GetTypeFromParser(DS.getRepAsType());
+    assert(!Result.isNull() && "Didn't get a type for __jy_print_type?");
+    if (!Result->isDependentType())
+      if (const TagType *TT = Result->getAs<TagType>())
+        S.DiagnoseUseOfDecl(TT->getDecl(), DS.getTypeSpecTypeLoc());
+    // TypeQuals handled by caller.
+    Result = Context.getTypeOfType(Result);
+
+    QualType TT = Context.getCanonicalType(Result);
+
+    std::string ss;
+    llvm::raw_string_ostream os(ss);
+
+    TT.print(os, Context.getPrintingPolicy());
+    std::string loc = DS.getBeginLoc().printToString(Context.getSourceManager());
+    printf("%s __jy_print_type: %s\n", loc.c_str(), ss.c_str());
+
     break;
   }
+  case DeclSpec::TST_jy_printTypeExpr: {
+    Expr *E = DS.getRepAsExpr();
+    assert(E && "Didn't get an expression for __jy_print_type?");
+    // TypeQuals handled by caller.
+    Result = S.BuildTypeofExprType(E);
+    if (Result.isNull()) {
+      Result = Context.IntTy;
+      declarator.setInvalidType(true);
+    }
+
+    std::string ss;
+    llvm::raw_string_ostream os(ss);
+    QualType TT = Context.getCanonicalType(Result);
+    TT.print(os, Context.getPrintingPolicy());
+    std::string loc = DS.getBeginLoc().printToString(Context.getSourceManager());
+    printf("%s __jy_print_type: %s\n", loc.c_str(), ss.c_str());
+
+    break;
+  }
+
   case DeclSpec::TST_decltype: {
     Expr *E = DS.getRepAsExpr();
     assert(E && "Didn't get an expression for decltype?");

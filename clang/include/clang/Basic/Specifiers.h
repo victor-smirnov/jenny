@@ -81,6 +81,8 @@ namespace clang {
     TST_typename,     // Typedef, C++ class-name or enum name, etc.
     TST_typeofType,
     TST_typeofExpr,
+    TST_jy_printType,
+    TST_jy_printTypeExpr,
     TST_decltype,         // C++11 decltype
     TST_underlyingType,   // __underlying_type for C++11
     TST_auto,             // C++11 auto

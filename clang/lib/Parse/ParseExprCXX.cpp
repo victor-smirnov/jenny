@@ -2297,6 +2297,11 @@ void Parser::ParseCXXSimpleTypeSpecifier(DeclSpec &DS) {
     ParseTypeofSpecifier(DS);
     DS.Finish(Actions, Policy);
     return;
+
+  case tok::kw___jy_print_type:
+      ParseJennyPrintTypeSpecifier(DS);
+      DS.Finish(Actions, Policy);
+      return;
   }
   ConsumeAnyToken();
   DS.SetRangeEnd(PrevTokLocation);

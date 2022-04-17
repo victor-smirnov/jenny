@@ -389,6 +389,11 @@ bool Declarator::isDeclarationOfFunction() const {
         return E->getType()->isFunctionType();
       return false;
 
+    case TST_jy_printTypeExpr:
+      if (Expr *E = DS.getRepAsExpr())
+        return E->getType()->isFunctionType();
+      return false;
+
     case TST_underlyingType:
     case TST_typename:
     case TST_typeofType: {
@@ -403,6 +408,20 @@ bool Declarator::isDeclarationOfFunction() const {
         return false;
 
       return QT->isFunctionType();
+    }
+
+    case TST_jy_printType: {
+      QualType QT = DS.getRepAsType().get();
+        if (QT.isNull())
+          return false;
+
+        if (const LocInfoType *LIT = dyn_cast<LocInfoType>(QT))
+          QT = LIT->getType();
+
+        if (QT.isNull())
+          return false;
+
+        return QT->isFunctionType();
     }
   }
 
@@ -572,6 +591,8 @@ const char *DeclSpec::getSpecifierName(DeclSpec::TST T,
   case DeclSpec::TST_typename:    return "type-name";
   case DeclSpec::TST_typeofType:
   case DeclSpec::TST_typeofExpr:  return "typeof";
+  case DeclSpec::TST_jy_printType:
+  case DeclSpec::TST_jy_printTypeExpr:  return "__jy_print_type";
   case DeclSpec::TST_auto:        return "auto";
   case DeclSpec::TST_auto_type:   return "__auto_type";
   case DeclSpec::TST_decltype:    return "(decltype)";

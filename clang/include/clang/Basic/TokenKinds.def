@@ -393,6 +393,8 @@ CXX11_KEYWORD(thread_local          , 0)
 CXX11_KEYWORD(__jy_meta_call        , KEYJENNY)
 ALIAS("meta_call" , __jy_meta_call  , KEYJENNY)
 
+CXX11_KEYWORD(__jy_print_type       , KEYJENNY)
+
 // C++20 keywords
 CONCEPTS_KEYWORD(concept)
 CONCEPTS_KEYWORD(requires)

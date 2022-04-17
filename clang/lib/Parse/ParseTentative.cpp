@@ -160,6 +160,7 @@ Parser::TPResult Parser::TryConsumeDeclarationSpecifier() {
     }
     LLVM_FALLTHROUGH;
   case tok::kw_typeof:
+  case tok::kw___jy_print_type:
   case tok::kw___attribute:
   case tok::kw___underlying_type: {
     ConsumeToken();
@@ -1682,6 +1683,29 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
     return TPResult::True;
   }
 
+  case tok::kw___jy_print_type: {
+    if (NextToken().isNot(tok::l_paren))
+      return TPResult::True;
+
+    RevertingTentativeParsingAction PA(*this);
+
+    TPResult TPR = TryParseJennyPrintTypeSpecifier();
+    bool isFollowedByParen = Tok.is(tok::l_paren);
+    bool isFollowedByBrace = Tok.is(tok::l_brace);
+
+    if (TPR == TPResult::Error)
+      return TPResult::Error;
+
+    if (isFollowedByParen)
+      return TPResult::Ambiguous;
+
+    if (getLangOpts().CPlusPlus11 && isFollowedByBrace)
+      return BracedCastResult;
+
+    return TPResult::True;
+  }
+
+
   // C++0x type traits support
   case tok::kw___underlying_type:
     return TPResult::True;
@@ -1721,6 +1745,7 @@ bool Parser::isCXXDeclarationSpecifierAType() {
   case tok::annot_template_id:
   case tok::annot_typename:
   case tok::kw_typeof:
+  case tok::kw___jy_print_type:
   case tok::kw___underlying_type:
     return true;
 
@@ -1784,6 +1809,24 @@ Parser::TPResult Parser::TryParseTypeofSpecifier() {
 
   assert(Tok.is(tok::l_paren) && "Expected '('");
   // Parse through the parens after 'typeof'.
+  ConsumeParen();
+  if (!SkipUntil(tok::r_paren, StopAtSemi))
+    return TPResult::Error;
+
+  return TPResult::Ambiguous;
+}
+
+
+/// [GNU] __jy_print_type-specifier:
+///         '__jy_print_type' '(' expressions ')'
+///         '__jy_print_type' '(' type-name ')'
+///
+Parser::TPResult Parser::TryParseJennyPrintTypeSpecifier() {
+  assert(Tok.is(tok::kw___jy_print_type) && "Expected '__jy_print_type'!");
+  ConsumeToken();
+
+  assert(Tok.is(tok::l_paren) && "Expected '('");
+  // Parse through the parens after '__jy_print_type'.
   ConsumeParen();
   if (!SkipUntil(tok::r_paren, StopAtSemi))
     return TPResult::Error;

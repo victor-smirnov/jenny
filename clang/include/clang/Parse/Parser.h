@@ -2551,6 +2551,7 @@ private:
 
   TPResult TryParseSimpleDeclaration(bool AllowForRangeDecl);
   TPResult TryParseTypeofSpecifier();
+  TPResult TryParseJennyPrintTypeSpecifier();
   TPResult TryParseProtocolQualifiers();
   TPResult TryParsePtrOperatorSeq();
   TPResult TryParseOperatorId();
@@ -2866,6 +2867,7 @@ private:
                                  ParsedAttr::Syntax Syntax);
 
   void ParseTypeofSpecifier(DeclSpec &DS);
+  void ParseJennyPrintTypeSpecifier(DeclSpec &DS);
   SourceLocation ParseDecltypeSpecifier(DeclSpec &DS);
   void AnnotateExistingDecltypeSpecifier(const DeclSpec &DS,
                                          SourceLocation StartLoc,

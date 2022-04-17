@@ -153,6 +153,7 @@ bool Sema::isSimpleTypeSpecifier(tok::TokenKind Kind) const {
   case tok::kw_char16_t:
   case tok::kw_char32_t:
   case tok::kw_typeof:
+  case tok::kw___jy_print_type:
   case tok::annot_decltype:
   case tok::kw_decltype:
     return getLangOpts().CPlusPlus;

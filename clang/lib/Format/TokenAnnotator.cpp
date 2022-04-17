@@ -306,11 +306,11 @@ private:
       if (PrevNonComment->is(tok::kw___attribute)) {
         OpeningParen.setType(TT_AttributeParen);
       } else if (PrevNonComment->isOneOf(TT_TypenameMacro, tok::kw_decltype,
-                                         tok::kw_typeof, tok::kw__Atomic,
+                                         tok::kw_typeof, tok::kw___jy_print_type, tok::kw__Atomic,
                                          tok::kw___underlying_type)) {
         OpeningParen.setType(TT_TypeDeclarationParen);
         // decltype() and typeof() usually contain expressions.
-        if (PrevNonComment->isOneOf(tok::kw_decltype, tok::kw_typeof))
+        if (PrevNonComment->isOneOf(tok::kw_decltype, tok::kw_typeof, tok::kw___jy_print_type))
           Contexts.back().IsExpression = true;
       }
     }
@@ -3666,7 +3666,7 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
           Left.Tok.getIdentifierInfo())
         return false;
       // Additional unary JavaScript operators that need a space after.
-      if (Left.isOneOf(tok::kw_throw, Keywords.kw_await, Keywords.kw_typeof,
+      if (Left.isOneOf(tok::kw_throw, Keywords.kw_await, Keywords.kw_typeof, tok::kw___jy_print_type,
                        tok::kw_void))
         return true;
     }
