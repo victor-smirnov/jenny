@@ -2357,6 +2357,170 @@ static ExprResult BuiltinInvoke(Sema &S, CallExpr *TheCall) {
                          Args.drop_front(), TheCall->getRParenLoc());
 }
 
+
+static ExprResult BuiltinGreenCall(Sema &S, CallExpr *TheCall) {
+  if (TheCall->getNumArgs() < 2) {
+    S.Diag(TheCall->getEndLoc(), diag::err_typecheck_call_too_few_args)
+        << 0 << 2 << TheCall->getNumArgs() << 0 << TheCall->getSourceRange();
+    return ExprError();
+  }
+
+  // Arg 0: Context pointer
+  ExprResult CtxRes = S.DefaultLvalueConversion(TheCall->getArg(0));
+  if (CtxRes.isInvalid()) return ExprError();
+  Expr *CtxArg = CtxRes.get();
+  TheCall->setArg(0, CtxArg);
+
+  if (!CtxArg->getType()->isPointerType()) {
+    S.Diag(CtxArg->getBeginLoc(), diag::err_typecheck_convert_incompatible)
+        << CtxArg->getType() << S.Context.VoidPtrTy << 1 << 0 << 0
+        << CtxArg->getSourceRange();
+    return ExprError();
+  }
+
+  // Arg 1: Function pointer
+  ExprResult FnRes = S.DefaultFunctionArrayLvalueConversion(TheCall->getArg(1));
+  if (FnRes.isInvalid()) return ExprError();
+  Expr *FnArg = FnRes.get();
+  TheCall->setArg(1, FnArg);
+
+  const FunctionType *FT = nullptr;
+  if (const auto *PtrTy = FnArg->getType()->getAs<PointerType>()) {
+    FT = PtrTy->getPointeeType()->getAs<FunctionType>();
+  } else if (const auto *RefTy = FnArg->getType()->getAs<ReferenceType>()) {
+    FT = RefTy->getPointeeType()->getAs<FunctionType>();
+  }
+
+  if (!FT) {
+    S.Diag(FnArg->getBeginLoc(), diag::err_typecheck_call_not_function)
+        << FnArg->getType() << FnArg->getSourceRange();
+    return ExprError();
+  }
+
+  const FunctionProtoType *FPT = dyn_cast<FunctionProtoType>(FT);
+  unsigned NumParams = FPT ? FPT->getNumParams() : 0;
+  unsigned NumArgs = TheCall->getNumArgs() - 2;
+
+  if (FPT) {
+    if (NumArgs < FPT->getNumParams()) {
+      S.Diag(TheCall->getEndLoc(), diag::err_typecheck_call_too_few_args)
+          << 0 << FPT->getNumParams() << NumArgs << 0
+          << TheCall->getSourceRange();
+      return ExprError();
+    }
+    if (NumArgs > NumParams && !FPT->isVariadic()) {
+      S.Diag(TheCall->getArg(NumParams + 2)->getBeginLoc(),
+             diag::err_typecheck_call_too_many_args)
+          << 0 << NumParams << NumArgs << 0 << TheCall->getSourceRange();
+      return ExprError();
+    }
+  }
+
+  for (unsigned i = 0; i < NumArgs; ++i) {
+    Expr *Arg = TheCall->getArg(i + 2);
+    if (FPT && i < NumParams) {
+      QualType ParamType = FPT->getParamType(i);
+      InitializedEntity Entity = InitializedEntity::InitializeParameter(
+          S.Context, ParamType, false);
+      ExprResult ArgRes = S.PerformCopyInitialization(Entity, SourceLocation(), Arg);
+      if (ArgRes.isInvalid()) return ExprError();
+      TheCall->setArg(i + 2, ArgRes.get());
+    } else {
+      ExprResult ArgRes = S.DefaultVariadicArgumentPromotion(
+          Arg, VariadicCallType::Function, nullptr);
+      if (ArgRes.isInvalid()) return ExprError();
+      TheCall->setArg(i + 2, ArgRes.get());
+    }
+  }
+
+  TheCall->setType(FT->getReturnType());
+  
+  if (TheCall->getType()->isLValueReferenceType())
+    TheCall->setValueKind(VK_LValue);
+  else if (TheCall->getType()->isRValueReferenceType())
+    TheCall->setValueKind(VK_XValue);
+  else
+    TheCall->setValueKind(VK_PRValue);
+
+  return TheCall;
+}
+
+static bool BuiltinRedCall(Sema &S, CallExpr *TheCall) {
+  if (TheCall->getNumArgs() < 1) {
+    S.Diag(TheCall->getEndLoc(), diag::err_typecheck_call_too_few_args)
+        << 0 << 1 << TheCall->getNumArgs() << 0 << TheCall->getSourceRange();
+    return true;
+  }
+
+  // Arg 0: Function pointer
+  ExprResult FnRes = S.DefaultFunctionArrayLvalueConversion(TheCall->getArg(0));
+  if (FnRes.isInvalid()) return true;
+  Expr *FnArg = FnRes.get();
+  TheCall->setArg(0, FnArg);
+
+  const FunctionType *FT = nullptr;
+  if (const auto *PtrTy = FnArg->getType()->getAs<PointerType>()) {
+    FT = PtrTy->getPointeeType()->getAs<FunctionType>();
+  } else if (const auto *RefTy = FnArg->getType()->getAs<ReferenceType>()) {
+    FT = RefTy->getPointeeType()->getAs<FunctionType>();
+  }
+
+  if (!FT) {
+    S.Diag(FnArg->getBeginLoc(), diag::err_typecheck_call_not_function)
+        << FnArg->getType() << FnArg->getSourceRange();
+    return true;
+  }
+
+  const FunctionProtoType *FPT = dyn_cast<FunctionProtoType>(FT);
+  unsigned NumParams = FPT ? FPT->getNumParams() : 0;
+  unsigned NumArgs = TheCall->getNumArgs() - 1;
+
+  if (FPT) {
+    if (NumArgs < FPT->getNumParams()) {
+      S.Diag(TheCall->getEndLoc(), diag::err_typecheck_call_too_few_args)
+          << 0 << FPT->getNumParams() << NumArgs << 0
+          << TheCall->getSourceRange();
+      return true;
+    }
+
+    if (FPT->isVariadic() ? NumArgs < NumParams : NumArgs != NumParams) {
+      S.Diag(TheCall->getEndLoc(), diag::err_typecheck_call_too_many_args)
+          << 0 << NumParams << NumArgs << 0 << TheCall->getSourceRange();
+      return true;
+    }
+  }
+
+  // Check arguments
+  for (unsigned i = 0; i < NumArgs; ++i) {
+    Expr *Arg = TheCall->getArg(i + 1);
+    QualType ParamType;
+    if (FPT && i < NumParams) {
+      ParamType = FPT->getParamType(i);
+    } else {
+      // Default argument promotion for variadic args
+      ExprResult Res = S.DefaultVariadicArgumentPromotion(Arg, VariadicCallType::Function, nullptr);
+      if (Res.isInvalid()) return true;
+      TheCall->setArg(i + 1, Res.get());
+      continue;
+    }
+
+    InitializedEntity Entity = InitializedEntity::InitializeParameter(S.Context, ParamType, false);
+    ExprResult Res = S.PerformCopyInitialization(Entity, SourceLocation(), Arg);
+    if (Res.isInvalid()) return true;
+    TheCall->setArg(i + 1, Res.get());
+  }
+
+  TheCall->setType(FT->getReturnType());
+  
+  if (TheCall->getType()->isLValueReferenceType())
+    TheCall->setValueKind(VK_LValue);
+  else if (TheCall->getType()->isRValueReferenceType())
+    TheCall->setValueKind(VK_XValue);
+  else
+    TheCall->setValueKind(VK_PRValue);
+
+  return false;
+}
 ExprResult
 Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
                                CallExpr *TheCall) {
@@ -2518,6 +2682,12 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     // BuiltinShuffleVector guts it, but then doesn't release it.
   case Builtin::BI__builtin_invoke:
     return BuiltinInvoke(*this, TheCall);
+  case Builtin::BI__builtin_green_call:
+    return BuiltinGreenCall(*this, TheCall);
+  case Builtin::BI__builtin_red_call:
+    if (BuiltinRedCall(*this, TheCall))
+      return ExprError();
+    break;
   case Builtin::BI__builtin_prefetch:
     if (BuiltinPrefetch(TheCall))
       return ExprError();

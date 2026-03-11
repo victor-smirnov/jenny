@@ -50,6 +50,30 @@
 using namespace clang;
 using namespace sema;
 
+// Green Fibers: Helper function to check if a declaration is green
+static bool isGreen(const Decl *D) {
+  if (!D) return false;
+  
+  // Check the declaration itself first.
+  if (D->hasAttr<GreenAttr>()) return true;
+  if (D->hasAttr<RedAttr>()) return false;
+
+  // Walk up the semantic parent chain.
+  const DeclContext *DC = D->getDeclContext();
+  while (DC) {
+    if (const auto *ND = dyn_cast<NamespaceDecl>(DC)) {
+      if (ND->hasAttr<GreenAttr>()) return true;
+      if (ND->hasAttr<RedAttr>()) return false;
+    } else if (const auto *RD = dyn_cast<CXXRecordDecl>(DC)) {
+      if (RD->hasAttr<GreenAttr>()) return true;
+      if (RD->hasAttr<RedAttr>()) return false;
+    }
+    DC = DC->getParent();
+  }
+  return false;
+}
+
+
 using AllowedExplicit = Sema::AllowedExplicit;
 
 static bool functionHasPassObjectSizeParams(const FunctionDecl *FD) {
@@ -16301,6 +16325,16 @@ ExprResult Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
 
   DiagnoseSentinelCalls(Method, LParenLoc, Args);
 
+  // Green Fibers: Check for Red -> Green method calls
+  if (Method && isGreen(Method) && !getLangOpts().NoGreenCode && !isUnevaluatedContext()) {
+    FunctionDecl *Caller = getCurFunctionDecl();
+    // If Caller is nullptr (global scope) or not green, error
+    if (!Caller || !isGreen(Caller)) {
+      Diag(LParenLoc, diag::err_green_call_from_red);
+      return ExprError();
+    }
+  }
+
   if (CheckFunctionCall(Method, TheCall, Proto))
     return ExprError();
 
@@ -16613,6 +16647,16 @@ Sema::BuildCallToObjectOfClassType(Scope *S, Expr *Obj,
   CallExpr *TheCall = CXXOperatorCallExpr::Create(
       Context, OO_Call, NewFn.get(), MethodArgs, ResultTy, VK, RParenLoc,
       CurFPFeatureOverrides());
+
+  // Green Fibers: Check for Red -> Green method calls (Functors/Lambdas)
+  if (Method && isGreen(Method) && !getLangOpts().NoGreenCode && !isUnevaluatedContext()) {
+    FunctionDecl *Caller = getCurFunctionDecl();
+    // If Caller is nullptr (global scope) or not green, error
+    if (!Caller || !isGreen(Caller)) {
+      Diag(LParenLoc, diag::err_green_call_from_red);
+      return true;
+    }
+  }
 
   if (CheckCallReturnType(Method->getReturnType(), LParenLoc, TheCall, Method))
     return true;

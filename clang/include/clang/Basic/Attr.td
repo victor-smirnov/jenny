@@ -5223,3 +5223,17 @@ def NonString : InheritableAttr {
   let Subjects = SubjectList<[Var, Field]>;
   let Documentation = [NonStringDocs];
 }
+// Green Fibers attributes for lightweight concurrency
+def Green : DeclOrTypeAttr {
+  let Spellings = [Clang<"green">];
+  let Subjects = SubjectList<[Function, CXXMethod, Namespace, CXXRecord], ErrorDiag>;
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+def Red : DeclOrTypeAttr {
+  let Spellings = [Clang<"red">];
+  let Subjects = SubjectList<[Function, CXXMethod, Namespace, CXXRecord], ErrorDiag>;
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}

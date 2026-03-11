@@ -5163,3 +5163,16 @@ def CountedByRef : Builtin {
   let Attributes = [NoThrow, CustomTypeChecking];
   let Prototype = "int(...)";
 }
+
+// Green Fibers builtins
+def BuiltinGreenCall : Builtin {
+  let Spellings = ["__builtin_green_call"];
+  let Attributes = [CustomTypeChecking];
+  let Prototype = "void(...)";
+}
+
+def BuiltinRedCall : Builtin {
+  let Spellings = ["__builtin_red_call"];
+  let Attributes = [CustomTypeChecking];
+  let Prototype = "void(...)";
+}

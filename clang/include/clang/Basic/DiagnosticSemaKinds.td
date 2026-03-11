@@ -13482,4 +13482,8 @@ def err_acc_device_type_multiple_archs
 // AMDGCN builtins diagnostics
 def err_amdgcn_load_lds_size_invalid_value : Error<"invalid size value">;
 def note_amdgcn_load_lds_size_valid_value : Note<"size must be %select{1, 2, or 4|1, 2, 4, 12 or 16}0">;
+// Green Fibers diagnostic
+def err_green_call_from_red : Error<
+  "function with 'green' attribute cannot be called from a non-green function">;
+
 } // end of sema component.

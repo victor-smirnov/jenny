@@ -2799,6 +2799,31 @@ void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
       F->addTypeMetadata(0, Id);
     }
   }
+
+  // Green Fibers: Add split-stack attribute for green functions
+  if (D) {
+    bool IsGreen = false;
+    // Check the declaration itself first.
+    if (D->hasAttr<GreenAttr>()) IsGreen = true;
+    else if (D->hasAttr<RedAttr>()) IsGreen = false;
+    else {
+      // Walk up the semantic parent chain.
+      const DeclContext *DC = D->getDeclContext();
+      while (DC) {
+        if (const auto *ND = dyn_cast<NamespaceDecl>(DC)) {
+          if (ND->hasAttr<GreenAttr>()) { IsGreen = true; break; }
+          if (ND->hasAttr<RedAttr>()) { IsGreen = false; break; }
+        } else if (const auto *RD = dyn_cast<CXXRecordDecl>(DC)) {
+          if (RD->hasAttr<GreenAttr>()) { IsGreen = true; break; }
+          if (RD->hasAttr<RedAttr>()) { IsGreen = false; break; }
+        }
+        DC = DC->getParent();
+      }
+    }
+    
+    if (IsGreen && !Context.getLangOpts().NoGreenCode)
+      F->addFnAttr("split-stack");
+  }
 }
 
 void CodeGenModule::SetCommonAttributes(GlobalDecl GD, llvm::GlobalValue *GV) {
