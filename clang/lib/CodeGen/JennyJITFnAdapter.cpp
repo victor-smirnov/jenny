@@ -569,8 +569,9 @@ class MemBufferToAPValueConverter {
     }
     else {
       if (const TagDecl* TD = dyn_cast_or_null<TagDecl>(*res0)) {
-        QualType type = ASTCtx.getTagDeclType(TD);
-        return APValue{RK_type, type.getTypePtr()};
+        //QualType type = ASTCtx.getTagDeclType(TD);
+        //return APValue{RK_type, type.getTypePtr()};
+          return APValue{RK_declaration, TD};
       }
       return APValue::IndeterminateValue();
     }

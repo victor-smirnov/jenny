@@ -7832,8 +7832,6 @@ public:
         }
     }
 
-
-
     const char* Symbol = E->GetSymbol();
     if (!Symbol) {
       Expected<FunctionDecl*> decl = jit.CreateAdapter(E->getOperand(), Adapter->types());

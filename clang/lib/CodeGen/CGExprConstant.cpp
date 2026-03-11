@@ -1419,6 +1419,8 @@ llvm::Constant *ConstantEmitter::tryEmitConstantExpr(const JennyMetaCallExpr *CE
 
   return nullptr;
 }
+
+
 llvm::Constant *ConstantEmitter::tryEmitInjectedValueExpr(
     const CXXInjectedValueExpr *IVE) {
   QualType RetType = extractQualTypeForConstantExpr(
