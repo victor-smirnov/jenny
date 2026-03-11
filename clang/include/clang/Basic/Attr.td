@@ -4719,3 +4719,17 @@ def ClspvLibclcBuiltin: InheritableAttr {
   let Documentation = [ClspvLibclcBuiltinDoc];
   let SimpleHandler = 1;
 }
+
+def Green : DeclOrTypeAttr {
+  let Spellings = [Clang<"green">];
+  let Subjects = SubjectList<[Function, CXXMethod, Namespace, CXXRecord], ErrorDiag>;
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}
+
+def Red : DeclOrTypeAttr {
+  let Spellings = [Clang<"red">];
+  let Subjects = SubjectList<[Function, CXXMethod, Namespace, CXXRecord], ErrorDiag>;
+  let Documentation = [Undocumented];
+  let SimpleHandler = 1;
+}

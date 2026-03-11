@@ -5281,6 +5281,106 @@ RValue CodeGenFunction::EmitBuiltinExpr(const GlobalDecl GD, unsigned BuiltinID,
   case Builtin::BI__noop:
     // __noop always evaluates to an integer literal zero.
     return RValue::get(ConstantInt::get(IntTy, 0));
+
+  case Builtin::BI__builtin_green_call: {
+    EmitScalarExpr(E->getArg(0)); // Context (ignored)
+    const Expr *FnArg = E->getArg(1);
+    CGCallee Callee = EmitCallee(FnArg);
+    QualType FnType = FnArg->getType();
+    if (const auto *PtrTy = FnType->getAs<PointerType>())
+      FnType = PtrTy->getPointeeType();
+    else if (const auto *RefTy = FnType->getAs<ReferenceType>())
+      FnType = RefTy->getPointeeType();
+    const FunctionProtoType *FPT = FnType->getAs<FunctionProtoType>();
+    if (!FPT) return RValue::get(nullptr);
+    CallArgList Args;
+    EmitCallArgs(Args, FPT, llvm::make_range(E->arg_begin() + 2, E->arg_end()));
+    const CGFunctionInfo &FnInfo = CGM.getTypes().arrangeFreeFunctionCall(
+        Args, FPT, /*Chain=*/false);
+    return EmitCall(FnInfo, Callee, ReturnValueSlot(), Args);
+  }
+
+
+
+  case Builtin::BI__builtin_red_call: {
+    const Expr *FnArg = E->getArg(0);
+    CGCallee Callee = EmitCallee(FnArg);
+    QualType FnType = FnArg->getType();
+    if (const auto *PtrTy = FnType->getAs<PointerType>())
+      FnType = PtrTy->getPointeeType();
+    else if (const auto *RefTy = FnType->getAs<ReferenceType>())
+      FnType = RefTy->getPointeeType();
+    const FunctionProtoType *FPT = FnType->getAs<FunctionProtoType>();
+    if (!FPT) {
+      CGM.Error(E->getExprLoc(), "__builtin_red_call requires a function type");
+      return RValue::get(nullptr);
+    }
+    if (!Callee.isOrdinary() && !Callee.isVirtual()) {
+      llvm::Value *FnPtr = EmitScalarExpr(FnArg);
+      CGCalleeInfo CalleeInfo(
+          FPT, Callee.isBuiltin() ? GlobalDecl(Callee.getBuiltinDecl())
+                                  : GlobalDecl());
+      Callee = CGCallee(CalleeInfo, FnPtr);
+    }
+
+    QualType RetType = FPT->getReturnType();
+
+    // Compute function info without evaluating arguments yet. This keeps all
+    // argument preparation on the system stack after we switch stacks.
+    CanQualType CanFnType = getContext().getCanonicalType(FnType);
+    CanQual<FunctionProtoType> CanFPT = CanFnType.getAs<FunctionProtoType>();
+    const CGFunctionInfo &FnProtoInfo =
+        CGM.getTypes().arrangeFreeFunctionType(CanFPT);
+    
+    // Prepare return value slot on fiber stack BEFORE switching stacks
+    // This ensures that if the return value needs memory (large types),
+    // it will be allocated on the fiber stack, not the system stack
+    ReturnValueSlot RetSlot = ReturnValue;
+    if (!RetType->isVoidType() && FnProtoInfo.getReturnInfo().isIndirect() &&
+        RetSlot.isNull()) {
+      // Return value is returned indirectly (via hidden pointer),
+      // allocate memory on fiber stack
+      llvm::Type *RetLLVMTy = CGM.getTypes().ConvertType(RetType);
+      CharUnits RetAlign = getContext().getTypeAlignInChars(RetType);
+      Address RetAddr = CreateTempAlloca(RetLLVMTy, RetAlign, "red_call.ret");
+      RetSlot = ReturnValueSlot(RetAddr, RetType.isVolatileQualified());
+    }
+
+    // 1. Save current (fiber) stack
+    llvm::Function *StackSaveFn =
+        CGM.getIntrinsic(llvm::Intrinsic::stacksave, {CGM.Int8PtrTy});
+    llvm::Value *FiberSP = Builder.CreateCall(StackSaveFn);
+
+    // 2. Load system stack from TLS
+    llvm::GlobalVariable *SystemStackVar = CGM.getModule().getNamedGlobal("__green_fiber_system_stack");
+    if (!SystemStackVar) {
+        SystemStackVar = new llvm::GlobalVariable(
+            CGM.getModule(), CGM.Int8PtrTy, false, llvm::GlobalValue::ExternalLinkage,
+            nullptr, "__green_fiber_system_stack", nullptr, 
+            llvm::GlobalVariable::GeneralDynamicTLSModel);
+        SystemStackVar->setThreadLocal(true);
+    }
+    llvm::Value *SystemSP = Builder.CreateAlignedLoad(
+        CGM.Int8PtrTy, SystemStackVar, CGM.getPointerAlign());
+
+    // 3. Switch to system stack
+    llvm::Function *StackRestoreFn =
+        CGM.getIntrinsic(llvm::Intrinsic::stackrestore, {CGM.Int8PtrTy});
+    Builder.CreateCall(StackRestoreFn, SystemSP);
+
+    // 4. Prepare arguments on the system stack and perform the call.
+    CallArgList Args;
+    EmitCallArgs(Args, FPT, llvm::make_range(E->arg_begin() + 1, E->arg_end()));
+    const CGFunctionInfo &CallFnInfo =
+        CGM.getTypes().arrangeFreeFunctionCall(Args, FPT, /*Chain=*/false);
+    RValue Ret = EmitCall(CallFnInfo, Callee, RetSlot, Args);
+
+    // 5. Restore fiber stack
+    Builder.CreateCall(StackRestoreFn, FiberSP);
+
+    return Ret;
+  }
+
   case Builtin::BI__builtin_call_with_static_chain: {
     const CallExpr *Call = cast<CallExpr>(E->getArg(0));
     const Expr *Chain = E->getArg(1);

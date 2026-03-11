@@ -3827,6 +3827,10 @@ defm split_stack : BoolFOption<"split-stack",
   CodeGenOpts<"EnableSegmentedStacks">, DefaultFalse,
   NegFlag<SetFalse, [], [ClangOption], "Wouldn't use segmented stack">,
   PosFlag<SetTrue, [], [ClangOption, CC1Option], "Use segmented stack">>;
+defm no_green_code : BoolFOption<"no-green-code",
+  LangOpts<"NoGreenCode">, DefaultFalse,
+  NegFlag<SetFalse, [], [ClangOption, CC1Option], "Enable green code">,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option], "Disable green code">>;
 def fstack_protector_all : Flag<["-"], "fstack-protector-all">, Group<f_Group>,
   HelpText<"Enable stack protectors for all functions">;
 defm stack_clash_protection : BoolFOption<"stack-clash-protection",

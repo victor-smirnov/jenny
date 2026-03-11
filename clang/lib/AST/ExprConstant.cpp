@@ -12594,6 +12594,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     return false;
   }
 
+
   case Builtin::BI__builtin_is_constant_evaluated: {
     const auto *Callee = Info.CurrentCall->getCallee();
     if (Info.InConstantContext && !Info.CheckingPotentialConstantExpression &&

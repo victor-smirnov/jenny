@@ -524,6 +524,7 @@ BENIGN_LANGOPT(CheckConstexprFunctionBodies, 1, 1,
                "be used in a constant expression.")
 
 LANGOPT(BoundsSafety, 1, 0, "Bounds safety extension for C")
+LANGOPT(NoGreenCode, 1, 0, "Disable green code, treat all green functions as red")
 
 #undef LANGOPT
 #undef COMPATIBLE_LANGOPT

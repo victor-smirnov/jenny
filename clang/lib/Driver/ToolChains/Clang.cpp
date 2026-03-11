@@ -7507,6 +7507,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddAllArgs(CmdArgs, options::OPT_fcomment_block_commands);
   // Forward -fparse-all-comments to -cc1.
   Args.AddAllArgs(CmdArgs, options::OPT_fparse_all_comments);
+  // Forward -fno-green-code to -cc1.
+  Args.AddLastArg(CmdArgs, options::OPT_fno_green_code,
+                  options::OPT_fno_no_green_code);
 
   // Turn -fplugin=name.so into -load name.so
   for (const Arg *A : Args.filtered(options::OPT_fplugin_EQ)) {

@@ -2174,6 +2174,30 @@ void CodeGenModule::SetLLVMFunctionAttributes(GlobalDecl GD,
   }
   F->setAttributes(PAL);
   F->setCallingConv(static_cast<llvm::CallingConv::ID>(CallingConv));
+
+  if (const Decl *D = GD.getDecl()) {
+    bool IsGreen = false;
+    // Check the declaration itself first.
+    if (D->hasAttr<GreenAttr>()) IsGreen = true;
+    else if (D->hasAttr<RedAttr>()) IsGreen = false;
+    else {
+      // Walk up the semantic parent chain.
+      const DeclContext *DC = D->getDeclContext();
+      while (DC) {
+        if (const auto *ND = dyn_cast<NamespaceDecl>(DC)) {
+          if (ND->hasAttr<GreenAttr>()) { IsGreen = true; break; }
+          if (ND->hasAttr<RedAttr>()) { IsGreen = false; break; }
+        } else if (const auto *RD = dyn_cast<CXXRecordDecl>(DC)) {
+          if (RD->hasAttr<GreenAttr>()) { IsGreen = true; break; }
+          if (RD->hasAttr<RedAttr>()) { IsGreen = false; break; }
+        }
+        DC = DC->getParent();
+      }
+    }
+    
+    if (IsGreen && !Context.getLangOpts().NoGreenCode)
+      F->addFnAttr("split-stack");
+  }
 }
 
 static void removeImageAccessQualifier(std::string& TyName) {
